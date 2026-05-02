@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "dgSpecHash": "lJv1jTBvi4Q=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\Jorge Beltre\\Desktop\\EcfDgi.Client\\EcfDgii.Client\\EcfDgii.Client.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Jorge Beltre\\.nuget\\packages\\system.security.cryptography.pkcs\\10.0.0-preview.2.25163.2\\system.security.cryptography.pkcs.10.0.0-preview.2.25163.2.nupkg.sha512",
+    "C:\\Users\\Jorge Beltre\\.nuget\\packages\\system.security.cryptography.xml\\10.0.0-preview.2.25163.2\\system.security.cryptography.xml.10.0.0-preview.2.25163.2.nupkg.sha512"
+  ],
+  "logs": [
+    {
+      "code": "NU1603",
+      "level": "Warning",
+      "message": "EcfDgii.Client depends on System.Security.Cryptography.Xml (>= 10.0.0-preview.2.25120.4) but System.Security.Cryptography.Xml 10.0.0-preview.2.25120.4 was not found. System.Security.Cryptography.Xml 10.0.0-preview.2.25163.2 was resolved instead.",
+      "projectPath": "C:\\Users\\Jorge Beltre\\Desktop\\EcfDgi.Client\\EcfDgii.Client\\EcfDgii.Client.csproj",
+      "warningLevel": 1,
+      "filePath": "C:\\Users\\Jorge Beltre\\Desktop\\EcfDgi.Client\\EcfDgii.Client\\EcfDgii.Client.csproj",
+      "libraryId": "System.Security.Cryptography.Xml",
+      "targetGraphs": [
+        "net10.0"
+      ]
+    }
+  ]
+}

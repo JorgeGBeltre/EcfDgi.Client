@@ -1,0 +1,12 @@
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\EcfDgii.Client.csproj.AssemblyReference.cache
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\EcfDgii.Client.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\EcfDgii.Client.AssemblyInfoInputs.cache
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\EcfDgii.Client.AssemblyInfo.cs
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\EcfDgii.Client.csproj.CoreCompileInputs.cache
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\bin\Debug\net10.0\EcfDgii.Client.deps.json
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\bin\Debug\net10.0\EcfDgii.Client.dll
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\bin\Debug\net10.0\EcfDgii.Client.pdb
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\EcfDgii.Client.dll
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\refint\EcfDgii.Client.dll
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\EcfDgii.Client.pdb
+C:\Users\Jorge Beltre\Desktop\EcfDgi.Client\EcfDgii.Client\obj\Debug\net10.0\ref\EcfDgii.Client.dll

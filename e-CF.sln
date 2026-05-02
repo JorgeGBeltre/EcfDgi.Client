@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EcfDgii.Client", "EcfDgii.Client\EcfDgii.Client.csproj", "{511C6750-42E9-7A3F-DF51-D7C1D7414BD2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EcfDgii.Client.Tests", "EcfDgii.Client.Tests\EcfDgii.Client.Tests.csproj", "{820FA918-E063-62B8-C485-D11DBB05D4B1}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{511C6750-42E9-7A3F-DF51-D7C1D7414BD2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{511C6750-42E9-7A3F-DF51-D7C1D7414BD2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{511C6750-42E9-7A3F-DF51-D7C1D7414BD2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{511C6750-42E9-7A3F-DF51-D7C1D7414BD2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{820FA918-E063-62B8-C485-D11DBB05D4B1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{820FA918-E063-62B8-C485-D11DBB05D4B1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{820FA918-E063-62B8-C485-D11DBB05D4B1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{820FA918-E063-62B8-C485-D11DBB05D4B1}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {2D7C85AB-EBCC-4D18-9407-3A5ACC66C364}
+	EndGlobalSection
+EndGlobal

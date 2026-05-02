@@ -1,0 +1,67 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "EcfDgii.Client/1.0.0": {
+        "dependencies": {
+          "System.Security.Cryptography.Xml": "10.0.0-preview.2.25163.2"
+        },
+        "runtime": {
+          "EcfDgii.Client.dll": {}
+        }
+      },
+      "System.Security.Cryptography.Pkcs/10.0.0-preview.2.25163.2": {
+        "runtime": {
+          "lib/net10.0/System.Security.Cryptography.Pkcs.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.16302"
+          }
+        },
+        "runtimeTargets": {
+          "runtimes/win/lib/net10.0/System.Security.Cryptography.Pkcs.dll": {
+            "rid": "win",
+            "assetType": "runtime",
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.16302"
+          }
+        }
+      },
+      "System.Security.Cryptography.Xml/10.0.0-preview.2.25163.2": {
+        "dependencies": {
+          "System.Security.Cryptography.Pkcs": "10.0.0-preview.2.25163.2"
+        },
+        "runtime": {
+          "lib/net10.0/System.Security.Cryptography.Xml.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.16302"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "EcfDgii.Client/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "System.Security.Cryptography.Pkcs/10.0.0-preview.2.25163.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-JTjPK7LDXRUWORzYk5h4Mgoq6fOsDg1onpMG8G1lMNy6ncQzsr26K+H9q1DhOpLJVtpqgAuivNiG8ss623/W3A==",
+      "path": "system.security.cryptography.pkcs/10.0.0-preview.2.25163.2",
+      "hashPath": "system.security.cryptography.pkcs.10.0.0-preview.2.25163.2.nupkg.sha512"
+    },
+    "System.Security.Cryptography.Xml/10.0.0-preview.2.25163.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-1EKq0kd690u+/2FAgQm9zQLY+tLQUhO7gBrbjLkROMb2Nq5/o+GZA+dFh+/xW/C1/J6uTPAg53IcUJORbyHtPg==",
+      "path": "system.security.cryptography.xml/10.0.0-preview.2.25163.2",
+      "hashPath": "system.security.cryptography.xml.10.0.0-preview.2.25163.2.nupkg.sha512"
+    }
+  }
+}
