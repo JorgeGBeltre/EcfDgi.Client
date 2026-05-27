@@ -1,133 +1,135 @@
-# EcfDgi.Client SDK - Facturación Electrónica República Dominicana
+> # EcfDgi.Client SDK - Dominican Republic Electronic Invoicing
 
-Este SDK proporciona una integración robusta y simplificada con los servicios de Facturación Electrónica (e-CF) de la **Dirección General de Impuestos Internos (DGII)** de la República Dominicana. Diseñado bajo principios de Clean Architecture, permite la generación, firma digital, envío y consulta de comprobantes fiscales electrónicos de forma eficiente.
+> **Note:** The SDK name appears to be "EcfDgii.Client" in the text, but the title says "EcfDgi.Client". I've kept the original as written, but there may be a typo.
+
+This SDK provides a robust and simplified integration with the Electronic Invoicing (e-CF) services of the **General Directorate of Internal Taxes (DGII)** of the Dominican Republic. Designed under Clean Architecture principles, it enables the generation, digital signing, sending, and querying of electronic tax receipts efficiently.
 
 ## Table of Contents
-- [Descripción Técnica](#descripción-técnica)
-  - [Flujo de Funcionamiento](#flujo-de-funcionamiento)
-  - [Autenticación y Seguridad](#autenticación-y-seguridad)
-- [Gestión de Credenciales](#gestión-de-credenciales)
-  - [Estructura de Directorios](#estructura-de-directorios)
-- [Formatos de Datos](#formatos-de-datos)
-  - [Ejemplo JSON (Pre-envío)](#ejemplo-json-pre-envío)
-  - [Ejemplo XML (Firmado)](#ejemplo-xml-firmado)
-  - [Respuestas de la DGII](#respuestas-de-la-dgii)
-- [Métodos Principales](#métodos-principales)
-- [Configuración de Entorno](#configuración-de-entorno)
-- [Instalación](#instalación)
-- [Ejemplo de Uso Mínimo](#ejemplo-de-uso-mínimo)
-- [Seguridad](#seguridad)
-- [Licencia](#-licencia)
-- [Contacto](#-contacto)
-- [Soporte](#-soporte)
+- [Technical Description](#technical-description)
+  - [Operational Flow](#operational-flow)
+  - [Authentication and Security](#authentication-and-security)
+- [Credential Management](#credential-management)
+  - [Directory Structure](#directory-structure)
+- [Data Formats](#data-format)
+  - [JSON Example (Pre-Submission)](#json-example-pre-submission)
+  - [XML Example (Signed)](#xml-example-signed)
+  - [DGII Responses](#dgii-responses)
+- [Main Methods](#main-methods)
+- [Environment Configuration](#environment-configuration)
+- [Installation](#installation)
+- [Minimal Usage Example](#minimal-usage-example)
+- [Security](#security)
+- [License](#-license)
+- [Contact](#-contact)
+- [Support](#-support)
 
 
 ---
 
-## Descripción Técnica
+## Technical Description
 
-El SDK actúa como una capa de abstracción sobre los servicios SOAP/REST de la DGII. Maneja internamente la complejidad de la firma digital XMLDSig, la gestión de tokens de acceso y la serialización de documentos.
+The SDK acts as an abstraction layer over the DGII's SOAP/REST services. It internally handles the complexity of XMLDSig digital signing, access token management, and document serialization.
 
-### Flujo de Funcionamiento (Diagrama ASCII)
+### Operational Flow (ASCII Diagram)
 
 ```text
 +-----------+       +-------------------+       +-------------------+
-|  Tu App   | ----> |   EcfDgii SDK     | ----> |   Servidor DGII   |
+|  Your App | ----> |   EcfDgii SDK     | ----> |   DGII Server     |
 +-----------+       +-------------------+       +-------------------+
       |                       |                           |
-      | 1. Generar Factura    |                           |
+      | 1. Generate Invoice   |                           |
       |---------------------->|                           |
-      |                       | 2. Autenticación (Auth)   |
+      |                       | 2. Authentication (Auth)  |
       |                       |-------------------------->|
       |                       |<--------------------------|
-      |                       |    Token de Acceso        |
+      |                       |    Access Token           |
       |                       |                           |
-      |                       | 3. Firmar XML (P12/PFX)   |
+      |                       | 3. Sign XML (P12/PFX)     |
       |                       |------------------|        |
       |                       |                  |        |
       |                       |<-----------------|        |
       |                       |                           |
-      |                       | 4. Envío de e-CF          |
+      |                       | 4. e-CF Submission        |
       |                       |-------------------------->|
       |                       |<--------------------------|
-      |                       |    TrackId / Respuesta    |
-      | 5. Resultado Final    |                           |
+      |                       |    TrackId / Response     |
+      | 5. Final Result       |                           |
       |<----------------------|                           |
 ```
 
-### Autenticación y Seguridad
-1. **Firma de Semilla**: El SDK solicita una "semilla" (seed) a la DGII, la firma con el certificado digital del contribuyente y la envía para obtener un **Token de Acceso**.
-2. **Ciclo de Vida del Token**: El SDK gestiona automáticamente la expiración y renovación del token durante la sesión de envío.
-3. **Firma Digital**: Todos los documentos XML son firmados utilizando el estándar **XMLDSig (Enveloped Signature)** con algoritmos SHA-256.
+### Authentication and Security
+1. **Seed Signing**: The SDK requests a "seed" from the DGII, signs it with the taxpayer's digital certificate, and sends it to obtain an **Access Token**.
+2. **Token Lifecycle**: The SDK automatically manages token expiration and renewal during the submission session.
+3. **Digital Signature**: All XML documents are signed using the **XMLDSig (Enveloped Signature)** standard with SHA-256 algorithms.
 
 ---
 
-## Gestión de Credenciales
+## Credential Management
 
-El SDK requiere un certificado digital de persona física (emitido por entidades como Avansi o BHD) en formato `.p12` o `.pfx`.
+The SDK requires an individual digital certificate (issued by entities such as Avansi or BHD) in `.p12` or `.pfx` format.
 
-### Estructura de Directorios Recomendada
-Se recomienda centralizar las credenciales fuera del acceso público del servidor web:
+### Recommended Directory Structure
+It is recommended to centralize credentials outside the public access of the web server:
 
 ```text
 /root-project
 │
 ├── /config
-│   └── /credenciales
-│       ├── certificado_dgii.p12  <-- Certificado Digital
-│       └── password.txt          <-- (Opcional) Pin/Password cifrado
+│   └── /credentials
+│       ├── dgii_certificate.p12  <-- Digital Certificate
+│       └── password.txt          <-- (Optional) Encrypted Pin/Password
 │
-├── .env                          <-- Configuración de rutas
+├── .env                          <-- Path configuration
 └── ...
 ```
 
 ---
 
-## Formatos de Datos
+## Data Formats
 
-### Ejemplo JSON (Pre-envío)
-Estructura simplificada de una factura electrónica (e-CF) antes de ser procesada por el SDK.
+### JSON Example (Pre-Submission)
+Simplified structure of an electronic invoice (e-CF) before being processed by the SDK.
 
 ```json
 {
-  "Encabezado": {
-    "IdDoc": {
-      "TipoeCF": 31,
+  "Header": {
+    "DocId": {
+      "eCFType": 31,
       "ENcf": "E310000000001",
-      "FechaEmision": "2023-10-27"
+      "IssueDate": "2023-10-27"
     },
-    "Emisor": {
-      "RncEmisor": "123456789",
-      "RazonSocialEmisor": "Mi Empresa S.R.L",
-      "DireccionEmisor": "Av. Winston Churchill"
+    "Issuer": {
+      "IssuerRnc": "123456789",
+      "IssuerBusinessName": "My Company S.R.L",
+      "IssuerAddress": "Av. Winston Churchill"
     },
-    "Comprador": {
-      "RncComprador": "987654321",
-      "RazonSocialComprador": "Cliente Ejemplo"
+    "Buyer": {
+      "BuyerRnc": "987654321",
+      "BuyerBusinessName": "Example Client"
     },
-    "Totales": {
-      "MontoTotal": 1180.00,
-      "MontoITBIS": 180.00
+    "Totals": {
+      "TotalAmount": 1180.00,
+      "ITBISTotal": 180.00
     }
   },
-  "Detalles": [
+  "Details": [
     {
-      "NombreItem": "Servicio de Consultoría",
-      "CantidadItem": 1,
-      "PrecioUnitarioItem": 1000.00,
-      "MontoItem": 1000.00
+      "ItemName": "Consulting Service",
+      "ItemQuantity": 1,
+      "ItemUnitPrice": 1000.00,
+      "ItemAmount": 1000.00
     }
   ]
 }
 ```
 
-### Ejemplo XML (Firmado)
-El SDK transforma el JSON a un XML conforme al esquema XSD de la DGII e incluye la firma.
+### XML Example (Signed)
+The SDK transforms the JSON into XML according to the DGII's XSD schema and includes the signature.
 
 ```xml
 <eCF xmlns="http://dgii.gov.do/eCF">
-  <Encabezado>...</Encabezado>
-  <Detalles>...</Detalles>
+  <Header>...</Header>
+  <Details>...</Details>
   <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
     <SignedInfo>...</SignedInfo>
     <SignatureValue>MIIEpAIBAAKCAQEA...</SignatureValue>
@@ -140,27 +142,27 @@ El SDK transforma el JSON a un XML conforme al esquema XSD de la DGII e incluye 
 </eCF>
 ```
 
-### Respuestas de la DGII
+### DGII Responses
 
-#### Éxito (JSON)
+#### Success (JSON)
 ```json
 {
   "trackId": "f9b8c7d6-e5f4-4321-a1b2-c3d4e5f6g7h8",
-  "codigo": "0",
-  "mensaje": "Archivo recibido correctamente",
-  "fechaRecepcion": "2023-10-27T10:00:00Z"
+  "code": "0",
+  "message": "File received successfully",
+  "receiptDate": "2023-10-27T10:00:00Z"
 }
 ```
 
-#### Error (Rechazo)
+#### Error (Rejection)
 ```json
 {
-  "codigo": "12",
-  "mensaje": "Error de validación de firma",
-  "detalles": [
+  "code": "12",
+  "message": "Signature validation error",
+  "details": [
     {
-      "codigoError": "SIG01",
-      "descripcion": "El certificado ha expirado o no es válido para este RNC"
+      "errorCode": "SIG01",
+      "description": "The certificate has expired or is not valid for this RNC"
     }
   ]
 }
@@ -168,36 +170,36 @@ El SDK transforma el JSON a un XML conforme al esquema XSD de la DGII e incluye 
 
 ---
 
-## Métodos Principales
+## Main Methods
 
-| Método | Descripción |
+| Method | Description |
 | :--- | :--- |
-| `SendEcfAsync(xml, filename)` | Envía un documento e-CF ya serializado y firmado. |
-| `SendRfceAsync(rfceModel)` | Procesa, firma y envía un Resumen de Factura de Consumo (RFCE). |
-| `ConsultarResultadoAsync(trackId)` | Consulta el estatus de procesamiento de un envío previo. |
-| `ConsultarEstadoAsync(rnc, encf)` | Verifica el estatus actual de un e-CF específico en los servidores DGII. |
-| `ValidarTimbreEcfAsync(request)` | Valida la integridad de un timbre electrónico. |
+| `SendEcfAsync(xml, filename)` | Sends an already serialized and signed e-CF document. |
+| `SendRfceAsync(rfceModel)` | Processes, signs, and sends a Consumption Invoice Summary (RFCE). |
+| `QueryResultAsync(trackId)` | Queries the processing status of a previous submission. |
+| `QueryStatusAsync(rnc, encf)` | Checks the current status of a specific e-CF on DGII servers. |
+| `ValidateEcfStampAsync(request)` | Validates the integrity of an electronic stamp. |
 
 ---
 
-## Configuración de Entorno
+## Environment Configuration
 
-Crea un archivo `.env` en la raíz de tu proyecto para configurar el SDK de forma dinámica.
+Create a `.env` file in your project root to configure the SDK dynamically.
 
 ```env
-# Configuración DGII
-DGI_RNC_EMISOR=123456789
-DGI_ENVIRONMENT=Homologacion # Homologacion o Produccion
-DGI_CERT_PATH=C:/config/credenciales/mi_certificado.p12
-DGI_CERT_PASSWORD=TuPasswordSeguro123
+# DGII Configuration
+DGI_ISSUER_RNC=123456789
+DGI_ENVIRONMENT=Homologacion # Homologacion or Produccion
+DGI_CERT_PATH=C:/config/credentials/my_certificate.p12
+DGI_CERT_PASSWORD=YourSecurePassword123
 
-# Opciones del SDK
+# SDK Options
 DGI_AUTO_RETRY_SEQUENCE=true
 ```
 
 ---
 
-## Instalación
+## Installation
 
 ### .NET (NuGet)
 ```bash
@@ -206,58 +208,57 @@ dotnet add package EcfDgii.Client
 
 ---
 
-## Ejemplo de Uso Mínimo
+## Minimal Usage Example
 
 ```csharp
 using EcfDgii.Client;
 
-// 1. Configurar opciones desde variables de entorno
+// 1. Configure options from environment variables
 var options = new EcfClientOptions {
-    RncEmisor = Environment.GetEnvironmentVariable("DGI_RNC_EMISOR"),
+    IssuerRnc = Environment.GetEnvironmentVariable("DGI_ISSUER_RNC"),
     CertificatePath = Environment.GetEnvironmentVariable("DGI_CERT_PATH"),
     CertificatePassword = Environment.GetEnvironmentVariable("DGI_CERT_PASSWORD"),
     Environment = AmbienteEnum.Homologacion
 };
 
-// 2. Inicializar el cliente
+// 2. Initialize the client
 var client = new EcfClient(options);
 
-// 3. Preparar el contenido (XML o Objeto)
-string xmlContent = File.ReadAllText("factura.xml");
+// 3. Prepare content (XML or Object)
+string xmlContent = File.ReadAllText("invoice.xml");
 string fileName = "101672957E3100000001.xml";
 
-// 4. Enviar a DGII
+// 4. Send to DGII
 try {
     var response = await client.SendEcfAsync(xmlContent, fileName);
-    Console.WriteLine($"Envío exitoso. TrackId: {response.TrackId}");
+    Console.WriteLine($"Successful submission. TrackId: {response.TrackId}");
 } catch (EcfException ex) {
-    Console.WriteLine($"Error DGII: {ex.Message}");
+    Console.WriteLine($"DGII Error: {ex.Message}");
 }
 ```
 
 ---
 
-## Seguridad
+## Security
 
 > [!IMPORTANT]
-> El manejo del certificado digital y la llave privada es responsabilidad crítica del integrador.
+> The handling of the digital certificate and private key is the integrator's critical responsibility.
 
-- **Almacenamiento**: Nunca guardes el certificado `.p12` en directorios accesibles vía HTTP.
-- **Cifrado**: Si almacenas la contraseña en archivos de configuración, asegúrate de utilizar mecanismos de cifrado de secretos (como Azure Key Vault o AWS Secrets Manager).
-- **Vigencia**: Monitorea la fecha de expiración de tu certificado para evitar interrupciones en el servicio.
-
----
-
-##  Licencia
-
-Esta biblioteca está bajo la **MIT License**. Consulte [LICENSE](LICENSE) para obtener más detalles.
+- **Storage**: Never save the `.p12` certificate in directories accessible via HTTP.
+- **Encryption**: If you store the password in configuration files, make sure to use secret encryption mechanisms (such as Azure Key Vault or AWS Secrets Manager).
+- **Validity**: Monitor your certificate's expiration date to avoid service interruptions.
 
 ---
 
+## License
 
-## Contacto
+This library is under the **MIT License**. See [LICENSE](LICENSE) for more details.
 
-Autor: **Jorge Gaspar Beltre Rivera**  
+---
+
+## Contact
+
+Author: **Jorge Gaspar Beltre Rivera**  
 Project: **EcfDgii.Client**
 
  [![GitHub](https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/JorgeGBeltre)
@@ -266,10 +267,10 @@ Project: **EcfDgii.Client**
 
 ---
 
-## Soporte
+## Support
 
-Este proyecto es desarrollado de forma independiente.
+This project is developed independently.
 
-Incluso una pequeña contribución me ayuda a dedicar más tiempo al desarrollo, pruebas y lanzamiento de nuevas características.
+Even a small contribution helps me dedicate more time to development, testing, and launching new features.
 
  [![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.paypal.com/donate/?hosted_button_id=2VLA8BWT967LU)
