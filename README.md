@@ -1,6 +1,5 @@
-> # EcfDgi.Client SDK - Dominican Republic Electronic Invoicing
+# EcfDgi.Client SDK - Dominican Republic Electronic Invoicing
 
-> **Note:** The SDK name appears to be "EcfDgii.Client" in the text, but the title says "EcfDgi.Client". I've kept the original as written, but there may be a typo.
 
 This SDK provides a robust and simplified integration with the Electronic Invoicing (e-CF) services of the **General Directorate of Internal Taxes (DGII)** of the Dominican Republic. Designed under Clean Architecture principles, it enables the generation, digital signing, sending, and querying of electronic tax receipts efficiently.
 
