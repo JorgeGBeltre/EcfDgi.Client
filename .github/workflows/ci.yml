@@ -1,0 +1,44 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "develop" ]
+
+jobs:
+  # 1. COMPILAR Y VERIFICAR
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código EcfDgi.Client
+        uses: actions/checkout@v4
+
+      - name: Configurar .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Compilar Solución
+        run: dotnet build e-CF.sln
+
+      - name: Ejecutar Pruebas
+        run: dotnet test e-CF.sln --configuration Release --verbosity normal
+
+  # 2. AUTO-MERGE A MAIN (Solo si compila correctamente)
+  merge-to-main:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AUTO_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Fusionar develop en main
+        run: |
+          git config --global user.name "JorgeGBeltre"
+          git config --global user.email "Jorgegaspar3021@gmail.com"
+          git checkout main
+          git merge origin/develop --ff-only
+          git push origin main
+
