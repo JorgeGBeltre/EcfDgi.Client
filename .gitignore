@@ -219,8 +219,8 @@ csx/
 *.build.csdef
 
 # Microsoft Azure Emulator
-ecf/
-rcf/
+# ecf/
+# rcf/
 
 # Windows Store app package directories and files
 AppPackages/
