@@ -135,7 +135,7 @@ try
         var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         if (context.Database.IsRelational())
         {
-            context.Database.Migrate();
+            context.Database.EnsureCreated();
         }
     }
 
