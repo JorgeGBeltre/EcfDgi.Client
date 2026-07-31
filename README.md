@@ -541,9 +541,43 @@ Application Handler          EcfClient Service              DGII Gateway
 
 ---
 
+## Redis Integration Architecture
+
+```mermaid
+graph TD
+    Client[Client / API Request] --> API[EcfDgii.Client.Api]
+    API --> CacheService[ICacheService / DistributedCache]
+    CacheService --> Redis[(Redis Cache)]
+    
+    subgraph Use Cases
+        UC1[DGII Token Cache per RNC]
+        UC2[Taxpayer Directory & DGII Status]
+        UC3[Distributed Locking / e-CF Idempotency]
+        UC4[Query Response Cache]
+    end
+    
+    CacheService --> UC1
+    CacheService --> UC2
+    CacheService --> UC3
+    CacheService --> UC4
+    
+    UC1 -. Miss .-> DGII[DGII Web Services]
+    UC2 -. Miss .-> DGII
+```
+
+> [!IMPORTANT]
+> **Fallback Strategy (High Availability)**:
+> A resilience strategy is implemented where, if Redis is unavailable or temporarily fails, the system will gracefully degrade using `IMemoryCache` as a local in-memory fallback without interrupting the operation of the DGII client.
+
+> [!NOTE]
+> **Orchestration with Docker Compose**:
+> The official `redis:7-alpine` image is included with optional persistence (RDB/AOF) and memory limit configuration (`maxmemory 256mb`, policy `allkeys-lru`).
+
+---
+
 ## Docker Orchestration
 
-The API stack uses Docker Compose, linking the REST wrapper API container and a PostgreSQL database.
+The API stack uses Docker Compose, linking the REST wrapper API container, a PostgreSQL database, and a Redis cache server.
 
 ### Dockerfile (`./Dockerfile`)
 
@@ -569,6 +603,7 @@ ENTRYPOINT ["dotnet", "Api.dll"]
 
 ```yaml
 version: '3.8'
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -581,8 +616,28 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ecf_dgii"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecf_dgii_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel notice
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   api:
+    image: ecf_dgii_api
     build:
       context: .
       dockerfile: Dockerfile
@@ -590,12 +645,18 @@ services:
     ports:
       - "8080:8080"
     environment:
+      - ASPNETCORE_ENVIRONMENT=Development
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=ecf_dgii;Username=postgres;Password=postgres
+      - ConnectionStrings__Redis=redis:6379
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  redis_data:
 ```
 
 ---
