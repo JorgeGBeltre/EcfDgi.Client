@@ -1,10 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Domain.Entities;
 using EcfDgii.Client.Application.Common.Interfaces;
+using EcfDgii.Client.Infrastructure.Caching;
+using EcfDgii.Client.Infrastructure.Dgii;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Infrastructure.Persistence.Repositories;
 using EcfDgii.Client.Infrastructure.Security;
@@ -30,6 +34,40 @@ namespace EcfDgii.Client.Infrastructure
                         b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName)));
             }
 
+            // Redis Infrastructure Setup
+            var redisConnectionString = configuration.GetConnectionString("Redis");
+            if (!string.IsNullOrEmpty(redisConnectionString))
+            {
+                services.AddSingleton<IConnectionMultiplexer>(sp =>
+                {
+                    var logger = sp.GetRequiredService<ILogger<RedisCacheService>>();
+                    try
+                    {
+                        var configOptions = ConfigurationOptions.Parse(redisConnectionString);
+                        configOptions.AbortOnConnectFail = false;
+                        configOptions.ConnectTimeout = 5000;
+                        return ConnectionMultiplexer.Connect(configOptions);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        logger.LogWarning(ex, "Could not connect to Redis server at '{ConnectionString}'. Cache will operate in bypass/fallback mode.", redisConnectionString);
+                        return null!;
+                    }
+                });
+
+                services.AddStackExchangeRedisCache(options =>
+                {
+                    options.Configuration = redisConnectionString;
+                    options.InstanceName = "EcfDgii:";
+                });
+            }
+            else
+            {
+                services.AddSingleton<IConnectionMultiplexer>(_ => null!);
+            }
+
+            services.AddSingleton<ICacheService, RedisCacheService>();
+
             // JWT Settings Configuration
             services.Configure<JwtSettings>(configuration.GetSection("JwtSettings"));
 
@@ -46,11 +84,13 @@ namespace EcfDgii.Client.Infrastructure
             services.AddScoped<ITokenService, TokenService>();
             services.AddSingleton<IEcfXmlSerializer, EcfXmlSerializer>();
 
-            // Register EcfClient from SDK
-            services.AddSingleton<IEcfClient, EcfClient>(sp =>
+            // Register EcfClient wrapped with Redis Caching Decorator
+            services.AddSingleton<IEcfClient>(sp =>
             {
                 var options = sp.GetRequiredService<IOptions<EcfClientOptions>>().Value;
-                return new EcfClient(options);
+                var baseClient = new EcfClient(options);
+                var cacheService = sp.GetRequiredService<ICacheService>();
+                return new CachedEcfClient(baseClient, cacheService);
             });
 
             return services;

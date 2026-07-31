@@ -12,6 +12,7 @@ using System.Xml.Serialization;
 
 using EcfDgii.Client.Infrastructure.Security;
 using EcfDgii.Client.Domain.Exceptions;
+using EcfDgii.Client.Application.Common.Interfaces;
 
 namespace EcfDgii.Client.Infrastructure.Dgii
 {
@@ -21,44 +22,99 @@ namespace EcfDgii.Client.Infrastructure.Dgii
         private readonly EcfXmlSigner _signer;
         private readonly EcfEnvironmentConfig _config;
         private readonly string _rncEmisor;
+        private readonly ICacheService? _cacheService;
 
-        private string _cachedToken;
+        private string? _cachedToken;
         private DateTimeOffset _tokenExpiry;
         private readonly SemaphoreSlim _renewLock = new SemaphoreSlim(1, 1);
 
-        public EcfTokenManager(HttpClient httpClient, EcfXmlSigner signer, EcfEnvironmentConfig config, string rncEmisor)
+        public class CachedEcfToken
+        {
+            public string Token { get; set; } = string.Empty;
+            public DateTimeOffset Expiration { get; set; }
+        }
+
+        public EcfTokenManager(
+            HttpClient httpClient, 
+            EcfXmlSigner signer, 
+            EcfEnvironmentConfig config, 
+            string rncEmisor,
+            ICacheService? cacheService = null)
         {
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
             _signer = signer ?? throw new ArgumentNullException(nameof(signer));
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _rncEmisor = rncEmisor ?? throw new ArgumentNullException(nameof(rncEmisor));
+            _cacheService = cacheService;
         }
 
         public async Task<string> GetTokenAsync(CancellationToken ct = default)
         {
+            string cacheKey = $"ecf:tokens:{_rncEmisor}";
+
+            // 1. Check Redis Cache if available
+            if (_cacheService != null)
+            {
+                var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                {
+                    return cachedTokenObj.Token;
+                }
+            }
+
+            // 2. Check Local Memory Cache
             if (!string.IsNullOrEmpty(_cachedToken) && (_tokenExpiry - DateTimeOffset.UtcNow).TotalMinutes > 5)
             {
                 return _cachedToken;
             }
 
-            await _renewLock.WaitAsync(ct);
+            // 3. Renew Token under Distributed Lock / Local Lock
+            string lockKey = $"ecf:tokens:lock:{_rncEmisor}";
+            string lockValue = Guid.NewGuid().ToString();
+            bool acquiredDistributedLock = false;
+
             try
             {
-                if (!string.IsNullOrEmpty(_cachedToken) && (_tokenExpiry - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                if (_cacheService != null)
                 {
-                    return _cachedToken;
+                    acquiredDistributedLock = await _cacheService.AcquireLockAsync(lockKey, lockValue, TimeSpan.FromSeconds(30), ct);
+                    if (acquiredDistributedLock)
+                    {
+                        // Double check cache after acquiring lock
+                        var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                        if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                        {
+                            return cachedTokenObj.Token;
+                        }
+                    }
                 }
 
-                await RenewTokenAsync(ct);
-                return _cachedToken;
+                await _renewLock.WaitAsync(ct);
+                try
+                {
+                    if (!string.IsNullOrEmpty(_cachedToken) && (_tokenExpiry - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                    {
+                        return _cachedToken;
+                    }
+
+                    await RenewTokenAsync(cacheKey, ct);
+                    return _cachedToken!;
+                }
+                finally
+                {
+                    _renewLock.Release();
+                }
             }
             finally
             {
-                _renewLock.Release();
+                if (acquiredDistributedLock && _cacheService != null)
+                {
+                    await _cacheService.ReleaseLockAsync(lockKey, lockValue, ct);
+                }
             }
         }
 
-        private async Task RenewTokenAsync(CancellationToken ct)
+        private async Task RenewTokenAsync(string cacheKey, CancellationToken ct)
         {
             var semillaXml = await _httpClient.GetStringAsync($"{_config.AutenticacionUrl}/api/autenticacion/semilla", ct);
 
@@ -89,6 +145,20 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             else
             {
                 _tokenExpiry = DateTimeOffset.UtcNow.AddHours(1);
+            }
+
+            // Save to Redis if available
+            if (_cacheService != null && !string.IsNullOrEmpty(_cachedToken))
+            {
+                var timeToLive = _tokenExpiry - DateTimeOffset.UtcNow;
+                if (timeToLive > TimeSpan.Zero)
+                {
+                    await _cacheService.SetAsync(cacheKey, new CachedEcfToken
+                    {
+                        Token = _cachedToken,
+                        Expiration = _tokenExpiry
+                    }, timeToLive, ct);
+                }
             }
         }
     }

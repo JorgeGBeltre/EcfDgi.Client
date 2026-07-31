@@ -77,8 +77,14 @@ try
     builder.Services.AddOpenApi();
 
     // Configure Health Checks
-    builder.Services.AddHealthChecks()
+    var healthChecksBuilder = builder.Services.AddHealthChecks()
         .AddDbContextCheck<ApplicationDbContext>();
+
+    var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+    if (!string.IsNullOrEmpty(redisConnectionString))
+    {
+        healthChecksBuilder.AddRedis(redisConnectionString, name: "redis");
+    }
 
     // Configure OpenTelemetry Tracing and Metrics
     builder.Services.AddOpenTelemetry()
