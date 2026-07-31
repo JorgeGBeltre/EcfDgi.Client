@@ -73,7 +73,14 @@ namespace EcfDgii.Client.Infrastructure.Caching
                 if (db == null) return;
 
                 string serialized = JsonSerializer.Serialize(value, JsonOptions);
-                await db.StringSetAsync(key, serialized, absoluteExpiration);
+                if (absoluteExpiration.HasValue)
+                {
+                    await db.StringSetAsync(key, serialized, absoluteExpiration.Value);
+                }
+                else
+                {
+                    await db.StringSetAsync(key, serialized);
+                }
             }
             catch (Exception ex)
             {
