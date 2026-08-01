@@ -68,9 +68,26 @@ try
             ValidAudience = jwtSettings?.Audience ?? "EcfDgiiClientAudience",
             ClockSkew = TimeSpan.Zero
         };
-    });
+    })
+    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, EcfDgii.Client.Api.Infrastructure.Security.WorkerAuthenticationHandler>("WorkerAuth", null);
 
-    builder.Services.AddAuthorization();
+    builder.Services.AddAuthorization(options =>
+    {
+        options.AddPolicy("WorkerOnly", policy =>
+        {
+            policy.AuthenticationSchemes.Add("WorkerAuth");
+            policy.RequireClaim("client_type", "worker");
+        });
+
+        options.AddPolicy("UserOrWorker", policy =>
+        {
+            policy.AuthenticationSchemes.Add(JwtBearerDefaults.AuthenticationScheme);
+            policy.AuthenticationSchemes.Add("WorkerAuth");
+            policy.RequireAssertion(context =>
+                context.User.HasClaim("client_type", "worker") ||
+                context.User.Identity?.IsAuthenticated == true);
+        });
+    });
 
     builder.Services.AddControllers(options =>
     {
