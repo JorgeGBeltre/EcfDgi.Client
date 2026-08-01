@@ -22,7 +22,7 @@ namespace EcfDgii.Client.IntegrationTests
         public async Task Register_ValidCredentials_ReturnsAuthResponse()
         {
             // Arrange
-            var command = new RegisterUserCommand("newuser", "newuser@test.com", "Password123!", "User");
+            var command = new RegisterUserCommand("newuser", "newuser@test.com", "Password123!");
 
             // Act
             var response = await _client.PostAsJsonAsync("api/auth/register", command);

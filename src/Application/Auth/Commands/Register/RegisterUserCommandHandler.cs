@@ -47,7 +47,7 @@ namespace EcfDgii.Client.Application.Auth.Commands.Register
                 Username = request.Username,
                 Email = request.Email,
                 PasswordHash = _passwordHasher.HashPassword(request.Password),
-                Role = request.Role
+                Role = "User" // Default role assignment for secure registration
             };
 
             await _userRepository.AddAsync(user, cancellationToken);

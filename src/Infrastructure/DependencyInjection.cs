@@ -80,6 +80,7 @@ namespace EcfDgii.Client.Infrastructure
             services.AddScoped<IUserRepository, UserRepository>();
             services.AddScoped<IEcfDocumentRepository, EcfDocumentRepository>();
 
+            services.AddSingleton<IEcfSequenceManager, EcfSequenceManager>();
             services.AddSingleton<IPasswordHasher, PasswordHasher>();
             services.AddScoped<ITokenService, TokenService>();
             services.AddSingleton<IEcfXmlSerializer, EcfXmlSerializer>();

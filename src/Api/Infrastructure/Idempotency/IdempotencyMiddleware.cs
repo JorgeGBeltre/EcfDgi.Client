@@ -79,7 +79,17 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
             {
                 await _next(context);
 
-                if (context.Response.StatusCode < 500)
+                var sc = context.Response.StatusCode;
+                // Selective caching: Cache business domain results (2xx, 400, 404, 422).
+                // Exclude auth/pipeline errors (401, 403), transient timeouts/limits (408, 409, 429), and server failures (>= 500)
+                var shouldCache = sc >= 200 && sc < 500 &&
+                                  sc != StatusCodes.Status401Unauthorized &&
+                                  sc != StatusCodes.Status403Forbidden &&
+                                  sc != StatusCodes.Status408RequestTimeout &&
+                                  sc != StatusCodes.Status409Conflict &&
+                                  sc != StatusCodes.Status429TooManyRequests;
+
+                if (shouldCache)
                 {
                     responseBuffer.Seek(0, SeekOrigin.Begin);
                     var responseBody = await new StreamReader(responseBuffer).ReadToEndAsync();

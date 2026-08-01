@@ -1,0 +1,116 @@
+﻿{
+  "version": "1.0.0",
+  "secret": "SharedTestSecretKey123",
+  "vectors": [
+    {
+      "id": "1_GET_NoBody",
+      "method": "GET",
+      "rawTarget": "/api/ecf/status?rncEmisor=101010101\u0026eNcf=E310000000001",
+      "timestamp": "1740000000",
+      "nonce": "a1b2c3d4e5f6",
+      "body": "",
+      "expectedBodyHashHex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedCanonicalString": "GET\n/api/ecf/status?rncEmisor=101010101\u0026eNcf=E310000000001\n1740000000\na1b2c3d4e5f6\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedSignature": "16KDtr5DsTBGFXoKMUf74vsl4hwXGnwObsQhApC629E="
+    },
+    {
+      "id": "2_POST_JsonBody",
+      "method": "POST",
+      "rawTarget": "/api/ecf/send-rfce",
+      "timestamp": "1740000000",
+      "nonce": "f6e5d4c3b2a1",
+      "body": "{\u0022rncEmisor\u0022:\u0022101010101\u0022}",
+      "expectedBodyHashHex": "25efdacd9924cb16b77d213780b7823c3ff08514f89fd664b54f095443d6b871",
+      "expectedCanonicalString": "POST\n/api/ecf/send-rfce\n1740000000\nf6e5d4c3b2a1\n25efdacd9924cb16b77d213780b7823c3ff08514f89fd664b54f095443d6b871",
+      "expectedSignature": "\u002B6fW0WNMr3Ap81QcqviylMrN20KJHTU/KieShCvkBxM="
+    },
+    {
+      "id": "3_Path_Accents",
+      "method": "GET",
+      "rawTarget": "/api/ecf/emisi\u00F3n?rnc=101010101",
+      "timestamp": "1740000000",
+      "nonce": "accent123",
+      "body": "",
+      "expectedBodyHashHex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedCanonicalString": "GET\n/api/ecf/emisi\u00F3n?rnc=101010101\n1740000000\naccent123\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedSignature": "T3gkaE2Y5iVEwfDH0s4BpcB228qQwaec1du8mHiNmx4="
+    },
+    {
+      "id": "4_Path_Spaces_UrlEncoded",
+      "method": "GET",
+      "rawTarget": "/api/ecf/consulta%20estado?rnc=101010101",
+      "timestamp": "1740000000",
+      "nonce": "space123",
+      "body": "",
+      "expectedBodyHashHex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedCanonicalString": "GET\n/api/ecf/consulta%20estado?rnc=101010101\n1740000000\nspace123\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedSignature": "faYZOlidOs9NouidAlfwq6X6DDXxQj/8ytpgg10/RF0="
+    },
+    {
+      "id": "5_Query_PlusVsPercent20",
+      "method": "GET",
+      "rawTarget": "/api/ecf/query?name=Juan\u002BPerez\u0026company=ACME%20Inc",
+      "timestamp": "1740000000",
+      "nonce": "plusperc123",
+      "body": "",
+      "expectedBodyHashHex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedCanonicalString": "GET\n/api/ecf/query?name=Juan\u002BPerez\u0026company=ACME%20Inc\n1740000000\nplusperc123\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedSignature": "bdB0LScWgntvdxpnwsvtlLFIqnaRwScTMDUtqYdbxio="
+    },
+    {
+      "id": "6_Query_UnorderedParams",
+      "method": "GET",
+      "rawTarget": "/api/ecf/query?z=2\u0026a=1",
+      "timestamp": "1740000000",
+      "nonce": "unorder123",
+      "body": "",
+      "expectedBodyHashHex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedCanonicalString": "GET\n/api/ecf/query?z=2\u0026a=1\n1740000000\nunorder123\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedSignature": "fq9sBBm9gjEDtsK\u002BxvEoxKJ6BZR0xda7cfDgl810mb4="
+    },
+    {
+      "id": "7_POST_EmptyBody",
+      "method": "POST",
+      "rawTarget": "/api/ecf/ping",
+      "timestamp": "1740000000",
+      "nonce": "emptybody123",
+      "body": "",
+      "expectedBodyHashHex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedCanonicalString": "POST\n/api/ecf/ping\n1740000000\nemptybody123\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expectedSignature": "htvnz6fmFFYYMmn6HQ/12X7S8MDfMcAK5KqJ48Ao5wU="
+    },
+    {
+      "id": "8_Body_Utf8NonAscii",
+      "method": "POST",
+      "rawTarget": "/api/ecf/comprobante",
+      "timestamp": "1740000000",
+      "nonce": "utf8nonascii123",
+      "body": "{\u0022razonSocial\u0022:\u0022Comercial Jos\u00E9 Mar\u00EDa S.R.L.\u0022}",
+      "expectedBodyHashHex": "41e343c715b916d2a97efefc25735e8328a2c1c23260c309ecb451b5a5619f52",
+      "expectedCanonicalString": "POST\n/api/ecf/comprobante\n1740000000\nutf8nonascii123\n41e343c715b916d2a97efefc25735e8328a2c1c23260c309ecb451b5a5619f52",
+      "expectedSignature": "tn/5rWoJHeO6WtsmYUmkRj558MZbUkZvxhfWvDNOksE="
+    },
+    {
+      "id": "9_PathBase_Prefix",
+      "method": "POST",
+      "rawTarget": "/ecf/api/ecf/send-rfce",
+      "timestamp": "1740000000",
+      "nonce": "pathbase123",
+      "body": "{\u0022rncEmisor\u0022:\u0022101010101\u0022}",
+      "expectedBodyHashHex": "25efdacd9924cb16b77d213780b7823c3ff08514f89fd664b54f095443d6b871",
+      "expectedCanonicalString": "POST\n/ecf/api/ecf/send-rfce\n1740000000\npathbase123\n25efdacd9924cb16b77d213780b7823c3ff08514f89fd664b54f095443d6b871",
+      "expectedSignature": "0HNuCxYe7qQCMHLPiLjcEwcmGSLkM4H5DwhAIKTW\u002B18="
+    },
+    {
+      "id": "10_Body_CarriageReturnLineFeed",
+      "method": "POST",
+      "rawTarget": "/api/ecf/multiline",
+      "timestamp": "1740000000",
+      "nonce": "crlf123",
+      "body": "{\r\n\u0022rnc\u0022:\u0022101010101\u0022\r\n}",
+      "expectedBodyHashHex": "1b81d2d6c7cd40b93e1ebed9ccf3b0bf05c22cdb44ce9787eb6e0f19e5d4e759",
+      "expectedCanonicalString": "POST\n/api/ecf/multiline\n1740000000\ncrlf123\n1b81d2d6c7cd40b93e1ebed9ccf3b0bf05c22cdb44ce9787eb6e0f19e5d4e759",
+      "expectedSignature": "tlQoz\u002BuyJQdaUjgG\u002Bj4Ys4wJy2L1tdXnOGotpAYONac="
+    }
+  ]
+}

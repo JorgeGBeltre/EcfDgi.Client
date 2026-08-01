@@ -36,7 +36,9 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
     public class DbIdempotencyStore : IIdempotencyStore
     {
         private readonly IServiceScopeFactory _scopeFactory;
-        public static readonly TimeSpan LeaseTimeout = TimeSpan.FromMinutes(5); // Reclaim stuck reservations after 5 minutes
+
+        // Invariant: HttpClient Timeout (15s) < LeaseTimeout (5m) < Max DGII Processing Timeout (3m)
+        public static readonly TimeSpan LeaseTimeout = TimeSpan.FromMinutes(5);
 
         public DbIdempotencyStore(IServiceScopeFactory scopeFactory)
         {
@@ -70,16 +72,33 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                     };
                 }
 
-                // Check for expired lease on stuck 'Processing' reservations (e.g. server crash or reboot)
-                if (existing.Status == IdempotencyStatus.Processing &&
-                    (DateTimeOffset.UtcNow - existing.CreatedAt) > LeaseTimeout)
+                // Atomic Lease Reclamation for expired 'Processing' reservations (e.g. server crash or reboot)
+                var cutoff = DateTimeOffset.UtcNow - LeaseTimeout;
+                if (existing.Status == IdempotencyStatus.Processing && existing.CreatedAt < cutoff)
                 {
-                    // Reclaim expired lease
-                    existing.CreatedAt = DateTimeOffset.UtcNow;
-                    existing.CreatedByWorkerKeyId = workerKeyId;
-                    existing.UpdatedAt = DateTimeOffset.UtcNow;
-                    await db.SaveChangesAsync();
-                    return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
+                    if (db.Database.IsRelational())
+                    {
+                        var rowsAffected = await db.IdempotencyRecords
+                            .Where(r => r.Key == key && r.Status == IdempotencyStatus.Processing && r.CreatedAt < cutoff)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(r => r.CreatedAt, DateTimeOffset.UtcNow)
+                                .SetProperty(r => r.CreatedByWorkerKeyId, workerKeyId)
+                                .SetProperty(r => r.UpdatedAt, DateTimeOffset.UtcNow));
+
+                        if (rowsAffected > 0)
+                        {
+                            return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
+                        }
+                    }
+                    else
+                    {
+                        // Fallback for InMemory test database
+                        existing.CreatedAt = DateTimeOffset.UtcNow;
+                        existing.CreatedByWorkerKeyId = workerKeyId;
+                        existing.UpdatedAt = DateTimeOffset.UtcNow;
+                        await db.SaveChangesAsync();
+                        return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
+                    }
                 }
 
                 return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.AlreadyProcessing };

@@ -5,6 +5,7 @@ using System.Text.Encodings.Web;
 using EcfDgii.Client.Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 
 namespace EcfDgii.Client.Api.Infrastructure.Security
@@ -104,7 +105,14 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 Request.Body.Position = 0; // Rewind for model binder / controller
             }
 
-            var pathAndQuery = (Request.PathBase.HasValue ? Request.PathBase.Value : string.Empty) + Request.Path.Value + Request.QueryString.Value;
+            // Use RawTarget feature for literal, undecoded URI matching (preserves %7E, %2f, accents, spaces & reverse proxy prefixes byte-for-byte)
+            var httpFeature = Context.Features.Get<IHttpRequestFeature>();
+            var pathAndQuery = httpFeature?.RawTarget;
+            if (string.IsNullOrWhiteSpace(pathAndQuery))
+            {
+                pathAndQuery = (Request.PathBase.HasValue ? Request.PathBase.Value : string.Empty) + Request.Path.Value + Request.QueryString.Value;
+            }
+
             var canonicalString = CanonicalRequestHelper.BuildCanonicalString(Request.Method, pathAndQuery, timestamp, nonce, bodyStr);
             var computedSignature = CanonicalRequestHelper.ComputeHmacSha256(keyInfo.Secret, canonicalString);
 

@@ -60,6 +60,30 @@ namespace EcfDgii.Client.IntegrationTests
         }
 
         [Fact]
+        public async Task RawTarget_AccentsSpacesAndUrlEncodedQuery_HMAC_VerificationSucceeds()
+        {
+            var client = _factory.CreateClient();
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+            var nonce = Guid.NewGuid().ToString("N");
+            // RawTarget literal containing accents, spaces, and encoded query
+            var rawTarget = "/api/ecf/status?rncEmisor=101010101&comprobante=Factura%20Electr%C3%B3nica";
+
+            var canonicalString = CanonicalRequestHelper.BuildCanonicalString("GET", rawTarget, timestamp, nonce, string.Empty);
+            var signature = CanonicalRequestHelper.ComputeHmacSha256("WorkerSecretKey", canonicalString);
+
+            var request = new HttpRequestMessage(HttpMethod.Get, rawTarget);
+            request.Headers.Add(WorkerAuthenticationHandler.KeyIdHeader, "default-worker-id");
+            request.Headers.Add(WorkerAuthenticationHandler.TimestampHeader, timestamp);
+            request.Headers.Add(WorkerAuthenticationHandler.NonceHeader, nonce);
+            request.Headers.Add(WorkerAuthenticationHandler.SignatureHeader, signature);
+
+            var response = await client.SendAsync(request);
+
+            Assert.True(response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound || response.StatusCode == HttpStatusCode.BadRequest);
+            Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+
+        [Fact]
         public async Task TamperedSignature_ReturnsUnauthorized401()
         {
             var client = _factory.CreateClient();

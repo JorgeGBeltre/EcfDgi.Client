@@ -27,6 +27,7 @@ namespace EcfDgii.Client.Infrastructure.Persistence
         public DbSet<Customer> Customers => Set<Customer>();
         public DbSet<EcfDocument> EcfDocuments => Set<EcfDocument>();
         public DbSet<EcfIdempotencyRecord> IdempotencyRecords => Set<EcfIdempotencyRecord>();
+        public DbSet<EcfSequence> Sequences => Set<EcfSequence>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -37,6 +38,12 @@ namespace EcfDgii.Client.Infrastructure.Persistence
                 entity.HasKey(e => e.Key);
                 entity.Property(e => e.PayloadHash).HasMaxLength(64).IsRequired();
                 entity.HasIndex(e => e.ExpiresAt);
+            });
+
+            modelBuilder.Entity<EcfSequence>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.TenantId, e.TipoComprobante }).IsUnique();
             });
 
             // Apply all configurations from current assembly

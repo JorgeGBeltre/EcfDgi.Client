@@ -142,6 +142,20 @@ try
 
     var app = builder.Build();
 
+    // Fail-fast check for default worker secrets in Non-Development environments (Point #10)
+    if (!app.Environment.IsDevelopment())
+    {
+        var workerSecrets = app.Configuration.GetSection("WorkerKeys").GetChildren();
+        foreach (var sec in workerSecrets)
+        {
+            var secret = sec["Secret"];
+            if (string.IsNullOrWhiteSpace(secret) || secret == "WorkerSecretKey" || secret.Contains("Default", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"CRITICAL SECURITY FAIL-FAST: WorkerKey '{sec["KeyId"]}' is configured with insecure default secret in Non-Development environment.");
+            }
+        }
+    }
+
     // Configure the HTTP request pipeline
     app.UseMiddleware<GlobalExceptionMiddleware>();
 
