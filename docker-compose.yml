@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -43,6 +43,7 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
+      - DOTNET_SYSTEM_NET_DISABLE_IPV6=1
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=ecf_dgii;Username=postgres;Password=postgres
       - ConnectionStrings__Redis=redis:6379
     depends_on:

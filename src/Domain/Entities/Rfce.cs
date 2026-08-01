@@ -27,7 +27,7 @@ namespace EcfDgii.Client.Domain.Entities
         public RfceEmisor Emisor { get; set; } = new RfceEmisor();
 
         [XmlElement("Comprador")]
-        public RfceComprador Comprador { get; set; }
+        public RfceComprador? Comprador { get; set; }
 
         [XmlElement("Totales")]
         public RfceTotales Totales { get; set; } = new RfceTotales();
@@ -36,7 +36,7 @@ namespace EcfDgii.Client.Domain.Entities
     public class RfceIdDoc
     {
         public string TipoeCF { get; set; } = "32";
-        public string ENcf { get; set; }
+        public string ENcf { get; set; } = string.Empty;
         public int TipoIngresos { get; set; }
         public int TipoPago { get; set; }
 
@@ -53,16 +53,16 @@ namespace EcfDgii.Client.Domain.Entities
 
     public class RfceEmisor
     {
-        public string RncEmisor { get; set; }
-        public string RazonSocialEmisor { get; set; }
-        public string FechaEmision { get; set; }
+        public string RncEmisor { get; set; } = string.Empty;
+        public string RazonSocialEmisor { get; set; } = string.Empty;
+        public string FechaEmision { get; set; } = string.Empty;
     }
 
     public class RfceComprador
     {
-        public string RncComprador { get; set; }
-        public string IdentificadorExtranjero { get; set; }
-        public string RazonSocialComprador { get; set; }
+        public string? RncComprador { get; set; }
+        public string? IdentificadorExtranjero { get; set; }
+        public string? RazonSocialComprador { get; set; }
     }
 
     public class RfceTotales
@@ -86,12 +86,12 @@ namespace EcfDgii.Client.Domain.Entities
         public decimal? MontoNoFacturable { get; set; }
         public decimal? MontoPeriodo { get; set; }
 
-        public string CodigoSeguridadeCF { get; set; }
+        public string? CodigoSeguridadeCF { get; set; }
     }
 
     public class ImpuestoAdicionalItem
     {
-        public string TipoImpuesto { get; set; }
+        public string? TipoImpuesto { get; set; }
         public decimal? MontoImpuestoSelectivoConsumoEspecifico { get; set; }
         public decimal? MontoImpuestoSelectivoConsumoAdvalorem { get; set; }
         public decimal? OtrosImpuestosAdicionales { get; set; }
