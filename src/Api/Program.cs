@@ -75,6 +75,7 @@ try
     builder.Services.AddControllers(options =>
     {
         options.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true;
+        options.ModelValidatorProviders.Clear();
     });
 
     builder.Services.Configure<ApiBehaviorOptions>(options =>
