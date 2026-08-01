@@ -71,7 +71,10 @@ try
 
     builder.Services.AddAuthorization();
 
-    builder.Services.AddControllers();
+    builder.Services.AddControllers(options =>
+    {
+        options.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true;
+    });
 
     // Configure OpenApi Support (Scalar UI)
     builder.Services.AddOpenApi();
