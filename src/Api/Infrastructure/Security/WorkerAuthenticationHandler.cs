@@ -2,7 +2,9 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
+using EcfDgii.Client.Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
 namespace EcfDgii.Client.Api.Infrastructure.Security
@@ -15,7 +17,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
         public const string SignatureHeader = "X-Request-Signature";
 
         private const int MaxTimeDriftSeconds = 300; // 5 minute max drift window
-        private const long MaxRequestBodySizeBytes = 10 * 1024 * 1024; // 10 MB safe limit
+        private const long MaxRequestBodySizeBytes = 10 * 1024 * 1024; // 10 MB max safe limit
 
         private readonly IWorkerKeyResolver _keyResolver;
         private readonly INonceCache _nonceCache;
@@ -39,6 +41,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             var nonce = Request.Headers[NonceHeader].FirstOrDefault();
             var signature = Request.Headers[SignatureHeader].FirstOrDefault();
 
+            // 1. Verify Required Headers
             if (string.IsNullOrWhiteSpace(keyId) ||
                 string.IsNullOrWhiteSpace(timestamp) ||
                 string.IsNullOrWhiteSpace(nonce) ||
@@ -47,7 +50,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail("Missing required authentication headers (X-Worker-Key-Id, X-Request-Timestamp, X-Request-Nonce, X-Request-Signature).");
             }
 
-            // 1. Verify Timestamp & Clock Drift
+            // 2. Verify Timestamp & Clock Drift (Cheap check first)
             if (!long.TryParse(timestamp, out var clientTs))
             {
                 return AuthenticateResult.Fail("Invalid timestamp format.");
@@ -62,7 +65,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail($"Request expired due to clock drift (drift: {driftSeconds}s, max allowed: {MaxTimeDriftSeconds}s). Code: timestamp_drift.");
             }
 
-            // 2. Resolve Worker Key Info
+            // 3. Resolve Worker Key Credentials
             WorkerKeyInfo? keyInfo;
             try
             {
@@ -86,14 +89,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail("Worker key has expired. Code: key_expired.");
             }
 
-            // 3. Verify Anti-Replay Nonce
-            if (!_nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromSeconds(MaxTimeDriftSeconds)))
-            {
-                Logger.LogWarning("Worker authentication failed: Replayed nonce detected. KeyId: {KeyId}, Nonce: {Nonce}", keyId, nonce);
-                return AuthenticateResult.Fail("Replayed nonce detected. Code: nonce_replayed.");
-            }
-
-            // 4. Safely Read Body with EnableBuffering & Size Limit
+            // 4. Safely Read Request Body & Verify HMAC Signature FIRST (Before mutating state/nonce cache)
             if (Request.ContentLength.HasValue && Request.ContentLength.Value > MaxRequestBodySizeBytes)
             {
                 return AuthenticateResult.Fail($"Request body exceeds max allowed size of {MaxRequestBodySizeBytes} bytes.");
@@ -105,10 +101,9 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             {
                 using var reader = new StreamReader(Request.Body, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
                 bodyStr = await reader.ReadToEndAsync();
-                Request.Body.Position = 0; // Rewind for model binder / downstream handlers
+                Request.Body.Position = 0; // Rewind for model binder / controller
             }
 
-            // 5. Construct Canonical String & Verify Signature in Constant Time
             var pathAndQuery = Request.Path.Value + Request.QueryString.Value;
             var canonicalString = CanonicalRequestHelper.BuildCanonicalString(Request.Method, pathAndQuery, timestamp, nonce, bodyStr);
             var computedSignature = CanonicalRequestHelper.ComputeHmacSha256(keyInfo.Secret, canonicalString);
@@ -123,7 +118,14 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail("Invalid signature. Code: bad_signature.");
             }
 
-            // 6. Build Authenticated Principal with Scoped Claims
+            // 5. Verify Anti-Replay Nonce AFTER signature is proven valid (protects cache from unauthenticated DoS)
+            if (!_nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromSeconds(MaxTimeDriftSeconds)))
+            {
+                Logger.LogWarning("Worker authentication failed: Replayed nonce detected. KeyId: {KeyId}, Nonce: {Nonce}", keyId, nonce);
+                return AuthenticateResult.Fail("Replayed nonce detected. Code: nonce_replayed.");
+            }
+
+            // 6. Build Authenticated Principal with Scoped Multi-Tenant Claims
             var claims = new List<Claim>
             {
                 new Claim(ClaimTypes.NameIdentifier, keyInfo.KeyId),
@@ -138,6 +140,16 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             var ticket = new AuthenticationTicket(principal, Scheme.Name);
 
             return AuthenticateResult.Success(ticket);
+        }
+
+        protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
+        {
+            Response.StatusCode = StatusCodes.Status401Unauthorized;
+            Response.ContentType = "application/json";
+
+            var authResult = await HandleAuthenticateOnceAsync();
+            var message = authResult.Failure?.Message ?? "Unauthorized worker request.";
+            await Response.WriteAsync($"{{\"error\":\"{message}\"}}");
         }
     }
 }

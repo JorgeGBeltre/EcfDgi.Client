@@ -43,10 +43,10 @@ try
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 
-    // Register Security, Anti-Replay, Key Resolution & Idempotency
+    // Register Security, Anti-Replay, Key Resolution & Durable Idempotency
     builder.Services.AddSingleton<INonceCache, MemoryNonceCache>();
     builder.Services.AddScoped<IWorkerKeyResolver, ConfigurationWorkerKeyResolver>();
-    builder.Services.AddSingleton<IIdempotencyStore, MemoryIdempotencyStore>();
+    builder.Services.AddSingleton<IIdempotencyStore, DbIdempotencyStore>();
 
     // Register Clean Architecture Layer Services
     builder.Services.AddApplicationServices();

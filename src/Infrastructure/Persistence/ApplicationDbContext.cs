@@ -26,10 +26,17 @@ namespace EcfDgii.Client.Infrastructure.Persistence
         public DbSet<User> Users => Set<User>();
         public DbSet<Customer> Customers => Set<Customer>();
         public DbSet<EcfDocument> EcfDocuments => Set<EcfDocument>();
+        public DbSet<EcfIdempotencyRecord> IdempotencyRecords => Set<EcfIdempotencyRecord>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+            modelBuilder.Entity<EcfIdempotencyRecord>(entity =>
+            {
+                entity.HasKey(e => e.Key);
+                entity.Property(e => e.PayloadHash).HasMaxLength(64).IsRequired();
+            });
 
             // Apply all configurations from current assembly
             modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());

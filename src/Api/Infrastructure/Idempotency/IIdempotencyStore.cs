@@ -1,4 +1,8 @@
-using Microsoft.Extensions.Caching.Memory;
+using System.Security.Cryptography;
+using System.Text;
+using EcfDgii.Client.Domain.Entities;
+using EcfDgii.Client.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace EcfDgii.Client.Api.Infrastructure.Idempotency
 {
@@ -9,34 +13,101 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
         public string Body { get; set; } = string.Empty;
     }
 
-    public interface IIdempotencyStore
+    public enum IdempotencyReservationStatus
     {
-        Task<IdempotentResult?> GetAsync(string key);
-        Task SetAsync(string key, IdempotentResult result, TimeSpan ttl);
+        Reserved,
+        AlreadyCompleted,
+        AlreadyProcessing,
+        PayloadMismatch
     }
 
-    public class MemoryIdempotencyStore : IIdempotencyStore
+    public class IdempotencyReservationResult
     {
-        private readonly IMemoryCache _cache;
+        public IdempotencyReservationStatus Status { get; set; }
+        public IdempotentResult? CompletedResult { get; set; }
+    }
 
-        public MemoryIdempotencyStore(IMemoryCache cache)
+    public interface IIdempotencyStore
+    {
+        Task<IdempotencyReservationResult> ReserveOrGetAsync(string key, string payloadHash);
+        Task CompleteAsync(string key, IdempotentResult result);
+    }
+
+    public class DbIdempotencyStore : IIdempotencyStore
+    {
+        private readonly IServiceScopeFactory _scopeFactory;
+
+        public DbIdempotencyStore(IServiceScopeFactory scopeFactory)
         {
-            _cache = cache;
+            _scopeFactory = scopeFactory;
         }
 
-        public Task<IdempotentResult?> GetAsync(string key)
+        public async Task<IdempotencyReservationResult> ReserveOrGetAsync(string key, string payloadHash)
         {
-            if (_cache.TryGetValue(key, out IdempotentResult? result))
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            var existing = await db.IdempotencyRecords.FirstOrDefaultAsync(r => r.Key == key);
+            if (existing != null)
             {
-                return Task.FromResult(result);
+                if (!string.Equals(existing.PayloadHash, payloadHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.PayloadMismatch };
+                }
+
+                if (existing.Status == IdempotencyStatus.Completed)
+                {
+                    return new IdempotencyReservationResult
+                    {
+                        Status = IdempotencyReservationStatus.AlreadyCompleted,
+                        CompletedResult = new IdempotentResult
+                        {
+                            StatusCode = existing.StatusCode,
+                            ContentType = existing.ContentType,
+                            Body = existing.ResponseBody
+                        }
+                    };
+                }
+
+                return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.AlreadyProcessing };
             }
-            return Task.FromResult<IdempotentResult?>(null);
+
+            var newRecord = new EcfIdempotencyRecord
+            {
+                Key = key,
+                PayloadHash = payloadHash,
+                Status = IdempotencyStatus.Processing,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+
+            try
+            {
+                db.IdempotencyRecords.Add(newRecord);
+                await db.SaveChangesAsync();
+                return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
+            }
+            catch (DbUpdateException)
+            {
+                // Unique key violation -> Concurrent request reserved key at same time
+                return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.AlreadyProcessing };
+            }
         }
 
-        public Task SetAsync(string key, IdempotentResult result, TimeSpan ttl)
+        public async Task CompleteAsync(string key, IdempotentResult result)
         {
-            _cache.Set(key, result, ttl);
-            return Task.CompletedTask;
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            var existing = await db.IdempotencyRecords.FirstOrDefaultAsync(r => r.Key == key);
+            if (existing != null)
+            {
+                existing.Status = IdempotencyStatus.Completed;
+                existing.StatusCode = result.StatusCode;
+                existing.ContentType = result.ContentType;
+                existing.ResponseBody = result.Body;
+                existing.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync();
+            }
         }
     }
 }

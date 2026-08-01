@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace EcfDgii.Client.Api.Infrastructure.Security
+namespace EcfDgii.Client.Infrastructure.Security
 {
     public static class CanonicalRequestHelper
     {

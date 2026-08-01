@@ -8,7 +8,7 @@ using EcfDgii.Client.Domain.Entities;
 
 namespace EcfDgii.Client.Api.Controllers
 {
-    [Authorize]
+    [Authorize(Policy = "UserOrWorker")]
     public class EcfController : ApiControllerBase
     {
         [HttpPost("send")]

@@ -18,11 +18,15 @@ namespace EcfDgii.Client.IntegrationTests
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", "InMemory");
+            builder.UseEnvironment("Development");
+
+            // Disable Redis health check in integration tests and force InMemory database
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "InMemory");
+            builder.UseSetting("ConnectionStrings:Redis", "");
 
             builder.ConfigureServices(services =>
             {
-                // Remove existing IEcfClient registration
+                // Remove existing IEcfClient registration and inject mock
                 var sdkDescriptor = services.SingleOrDefault(
                     d => d.ServiceType == typeof(IEcfClient));
 
@@ -31,11 +35,11 @@ namespace EcfDgii.Client.IntegrationTests
                     services.Remove(sdkDescriptor);
                 }
 
-                // Inject mock SDK Client
                 services.AddSingleton<IEcfClient>(EcfClientMock.Object);
 
-                // Build a service provider and seed data
-                using var scope = services.BuildServiceProvider().CreateScope();
+                // Build service provider and ensure DB created
+                var sp = services.BuildServiceProvider();
+                using var scope = sp.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 db.Database.EnsureCreated();
             });

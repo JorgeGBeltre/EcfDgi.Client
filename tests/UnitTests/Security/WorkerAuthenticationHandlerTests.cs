@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
 using EcfDgii.Client.Api.Infrastructure.Security;
+using EcfDgii.Client.Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Memory;
@@ -76,14 +77,22 @@ namespace UnitTests.Security
         {
             var nonce = Guid.NewGuid().ToString("N");
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+            var keyId = "worker-key-1";
+            var secret = "SuperSecretKey123!";
 
-            _nonceCache.TryAddNonce("worker-key-1", nonce, TimeSpan.FromMinutes(5)); // Pre-add nonce to trigger replay
+            _nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromMinutes(5)); // Pre-add nonce to trigger replay
+
+            var canonicalString = CanonicalRequestHelper.BuildCanonicalString("GET", "/api/test", timestamp, nonce, string.Empty);
+            var signature = CanonicalRequestHelper.ComputeHmacSha256(secret, canonicalString);
 
             var context = new DefaultHttpContext();
-            context.Request.Headers[WorkerAuthenticationHandler.KeyIdHeader] = "worker-key-1";
+            context.Request.Method = "GET";
+            context.Request.Path = "/api/test";
+
+            context.Request.Headers[WorkerAuthenticationHandler.KeyIdHeader] = keyId;
             context.Request.Headers[WorkerAuthenticationHandler.TimestampHeader] = timestamp;
             context.Request.Headers[WorkerAuthenticationHandler.NonceHeader] = nonce;
-            context.Request.Headers[WorkerAuthenticationHandler.SignatureHeader] = "dummy-signature";
+            context.Request.Headers[WorkerAuthenticationHandler.SignatureHeader] = signature;
 
             var handler = CreateHandler(context);
             var result = await handler.AuthenticateAsync();
