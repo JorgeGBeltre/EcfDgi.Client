@@ -104,7 +104,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 Request.Body.Position = 0; // Rewind for model binder / controller
             }
 
-            var pathAndQuery = Request.Path.Value + Request.QueryString.Value;
+            var pathAndQuery = (Request.PathBase.HasValue ? Request.PathBase.Value : string.Empty) + Request.Path.Value + Request.QueryString.Value;
             var canonicalString = CanonicalRequestHelper.BuildCanonicalString(Request.Method, pathAndQuery, timestamp, nonce, bodyStr);
             var computedSignature = CanonicalRequestHelper.ComputeHmacSha256(keyInfo.Secret, canonicalString);
 

@@ -29,7 +29,8 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
 
             var tenantId = context.User.FindFirst("tenant_id")?.Value ?? "default-tenant";
             var keyId = context.User.FindFirst("worker_key_id")?.Value ?? "default-worker";
-            var scopedKey = $"{tenantId}:{keyId}:{idempotencyKey}";
+            // Key identity is Key = $"{tenantId}:{idempotencyKey}" (Independent of KeyId to safely allow key rotation without duplicating fiscal documents)
+            var scopedKey = $"{tenantId}:{idempotencyKey}";
 
             // Read request body safely to compute SHA-256 payload hash
             context.Request.EnableBuffering();
@@ -42,7 +43,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
             }
 
             var payloadHash = ComputeSha256Hex(bodyStr);
-            var reservation = await idempotencyStore.ReserveOrGetAsync(scopedKey, payloadHash);
+            var reservation = await idempotencyStore.ReserveOrGetAsync(scopedKey, payloadHash, keyId);
 
             if (reservation.Status == IdempotencyReservationStatus.AlreadyCompleted && reservation.CompletedResult != null)
             {

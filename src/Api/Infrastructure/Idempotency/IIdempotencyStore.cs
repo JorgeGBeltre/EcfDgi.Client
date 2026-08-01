@@ -29,20 +29,21 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
 
     public interface IIdempotencyStore
     {
-        Task<IdempotencyReservationResult> ReserveOrGetAsync(string key, string payloadHash);
+        Task<IdempotencyReservationResult> ReserveOrGetAsync(string key, string payloadHash, string workerKeyId);
         Task CompleteAsync(string key, IdempotentResult result);
     }
 
     public class DbIdempotencyStore : IIdempotencyStore
     {
         private readonly IServiceScopeFactory _scopeFactory;
+        public static readonly TimeSpan LeaseTimeout = TimeSpan.FromMinutes(5); // Reclaim stuck reservations after 5 minutes
 
         public DbIdempotencyStore(IServiceScopeFactory scopeFactory)
         {
             _scopeFactory = scopeFactory;
         }
 
-        public async Task<IdempotencyReservationResult> ReserveOrGetAsync(string key, string payloadHash)
+        public async Task<IdempotencyReservationResult> ReserveOrGetAsync(string key, string payloadHash, string workerKeyId)
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -69,15 +70,29 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                     };
                 }
 
+                // Check for expired lease on stuck 'Processing' reservations (e.g. server crash or reboot)
+                if (existing.Status == IdempotencyStatus.Processing &&
+                    (DateTimeOffset.UtcNow - existing.CreatedAt) > LeaseTimeout)
+                {
+                    // Reclaim expired lease
+                    existing.CreatedAt = DateTimeOffset.UtcNow;
+                    existing.CreatedByWorkerKeyId = workerKeyId;
+                    existing.UpdatedAt = DateTimeOffset.UtcNow;
+                    await db.SaveChangesAsync();
+                    return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
+                }
+
                 return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.AlreadyProcessing };
             }
 
             var newRecord = new EcfIdempotencyRecord
             {
                 Key = key,
+                CreatedByWorkerKeyId = workerKeyId,
                 PayloadHash = payloadHash,
                 Status = IdempotencyStatus.Processing,
-                CreatedAt = DateTimeOffset.UtcNow
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(30)
             };
 
             try

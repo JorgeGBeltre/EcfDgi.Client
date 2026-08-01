@@ -36,6 +36,7 @@ namespace EcfDgii.Client.Infrastructure.Persistence
             {
                 entity.HasKey(e => e.Key);
                 entity.Property(e => e.PayloadHash).HasMaxLength(64).IsRequired();
+                entity.HasIndex(e => e.ExpiresAt);
             });
 
             // Apply all configurations from current assembly

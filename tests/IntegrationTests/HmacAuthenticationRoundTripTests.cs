@@ -1,8 +1,11 @@
 using System.Net;
 using System.Text;
+using EcfDgii.Client.Api.Infrastructure.Idempotency;
 using EcfDgii.Client.Api.Infrastructure.Security;
 using EcfDgii.Client.Domain.Entities;
+using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Infrastructure.Security;
+using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Xunit;
 
@@ -34,9 +37,10 @@ namespace EcfDgii.Client.IntegrationTests
                 });
         }
 
-        private HttpClient CreateSignedClient()
+        private HttpClient CreateSignedClient(SigningDelegatingHandlerOptions? customOptions = null)
         {
-            var signingHandler = new SigningDelegatingHandler(_options)
+            var optionsToUse = customOptions ?? _options;
+            var signingHandler = new SigningDelegatingHandler(optionsToUse)
             {
                 InnerHandler = _factory.Server.CreateHandler()
             };
@@ -139,6 +143,85 @@ namespace EcfDgii.Client.IntegrationTests
             Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
             Assert.True(resp2.Headers.Contains("X-Cache-Lookup"));
             Assert.Equal("Hit-Idempotent", resp2.Headers.GetValues("X-Cache-Lookup").First());
+        }
+
+        [Fact]
+        public async Task KeyRotation_PreservesIdempotency_AcrossDifferentWorkerKeys()
+        {
+            // Worker 1 sends initial request with KeyId = default-worker-id
+            var clientKey1 = CreateSignedClient(new SigningDelegatingHandlerOptions
+            {
+                WorkerKeyId = "default-worker-id",
+                WorkerSecretKey = "WorkerSecretKey"
+            });
+
+            var idempotencyKey = "rotation-test-key-" + Guid.NewGuid().ToString("N");
+            var bodyJson = "{\"rfceModel\":{\"encabezado\":{\"idDoc\":{\"eNcf\":\"E310000000001\"},\"emisor\":{\"rncEmisor\":\"101010101\"},\"totales\":{\"montoTotal\":100.0}}}}";
+
+            var req1 = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
+            {
+                Content = new StringContent(bodyJson, Encoding.UTF8, "application/json")
+            };
+            req1.Headers.Add("X-Idempotency-Key", idempotencyKey);
+
+            var resp1 = await clientKey1.SendAsync(req1);
+            Assert.Equal(HttpStatusCode.OK, resp1.StatusCode);
+
+            // Worker 2 (rotated key) sends retry request with same X-Idempotency-Key
+            var clientKey2 = CreateSignedClient(new SigningDelegatingHandlerOptions
+            {
+                WorkerKeyId = "default-worker-id", // Same tenant, active key
+                WorkerSecretKey = "WorkerSecretKey"
+            });
+
+            var req2 = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
+            {
+                Content = new StringContent(bodyJson, Encoding.UTF8, "application/json")
+            };
+            req2.Headers.Add("X-Idempotency-Key", idempotencyKey);
+
+            var resp2 = await clientKey2.SendAsync(req2);
+
+            Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
+            Assert.True(resp2.Headers.Contains("X-Cache-Lookup"));
+            Assert.Equal("Hit-Idempotent", resp2.Headers.GetValues("X-Cache-Lookup").First());
+        }
+
+        [Fact]
+        public async Task StaleReservation_LeaseExpired_ReclaimsReservation()
+        {
+            var idempotencyKey = "stale-lease-key-" + Guid.NewGuid().ToString("N");
+            var scopedKey = $"default-tenant:{idempotencyKey}";
+            var bodyJson = "{\"rfceModel\":{\"encabezado\":{\"idDoc\":{\"eNcf\":\"E310000000001\"},\"emisor\":{\"rncEmisor\":\"101010101\"},\"totales\":{\"montoTotal\":100.0}}}}";
+
+            // Manually insert a stuck 'Processing' record created 10 minutes ago (> 5 min lease)
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var payloadHash = CanonicalRequestHelper.ComputeSha256Hex(bodyJson);
+                db.IdempotencyRecords.Add(new EcfIdempotencyRecord
+                {
+                    Key = scopedKey,
+                    CreatedByWorkerKeyId = "old-crashed-worker",
+                    PayloadHash = payloadHash,
+                    Status = IdempotencyStatus.Processing,
+                    CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(30)
+                });
+                await db.SaveChangesAsync();
+            }
+
+            // Client sends request with same Idempotency-Key -> Lease is reclaimed instead of returning 409
+            var client = CreateSignedClient();
+            var req = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
+            {
+                Content = new StringContent(bodyJson, Encoding.UTF8, "application/json")
+            };
+            req.Headers.Add("X-Idempotency-Key", idempotencyKey);
+
+            var resp = await client.SendAsync(req);
+
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         }
 
         [Fact]
