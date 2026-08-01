@@ -82,6 +82,8 @@ try
         options.SuppressModelStateInvalidFilter = true;
     });
 
+    builder.Services.AddSingleton<Microsoft.AspNetCore.Mvc.ModelBinding.Validation.IObjectModelValidator, NullObjectModelValidator>();
+
     // Configure OpenApi Support (Scalar UI)
     builder.Services.AddOpenApi();
 
