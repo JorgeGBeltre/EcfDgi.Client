@@ -21,6 +21,8 @@ using EcfDgii.Client.Application.Common.Interfaces;
 using EcfDgii.Client.Api.Services;
 using EcfDgii.Client.Api.Middleware;
 using EcfDgii.Client.Infrastructure.Persistence;
+using EcfDgii.Client.Api.Infrastructure.Security;
+using EcfDgii.Client.Api.Infrastructure.Idempotency;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -37,8 +39,14 @@ try
     Log.Information("Starting web host");
 
     // Add services to the container
+    builder.Services.AddMemoryCache();
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
+
+    // Register Security, Anti-Replay, Key Resolution & Idempotency
+    builder.Services.AddSingleton<INonceCache, MemoryNonceCache>();
+    builder.Services.AddScoped<IWorkerKeyResolver, ConfigurationWorkerKeyResolver>();
+    builder.Services.AddSingleton<IIdempotencyStore, MemoryIdempotencyStore>();
 
     // Register Clean Architecture Layer Services
     builder.Services.AddApplicationServices();
@@ -152,6 +160,7 @@ try
 
     app.UseAuthentication();
     app.UseAuthorization();
+    app.UseMiddleware<IdempotencyMiddleware>();
 
     app.MapControllers();
 
