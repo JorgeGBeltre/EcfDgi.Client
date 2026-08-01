@@ -27,7 +27,7 @@ namespace EcfDgii.Client.Domain.Entities
         public RfceEmisor Emisor { get; set; } = new RfceEmisor();
 
         [XmlElement("Comprador")]
-        public RfceComprador? Comprador { get; set; }
+        public RfceComprador? Comprador { get; set; } = new RfceComprador();
 
         [XmlElement("Totales")]
         public RfceTotales Totales { get; set; } = new RfceTotales();

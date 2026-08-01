@@ -12,8 +12,9 @@ namespace EcfDgii.Client.Api.Controllers
     public class EcfController : ApiControllerBase
     {
         [HttpPost("send")]
-        public async Task<ActionResult<EcfRecepcionResponse>> SendEcf([FromBody, Microsoft.AspNetCore.Mvc.ModelBinding.Validation.ValidateNever] SendEcfCommand command)
+        public async Task<ActionResult<EcfRecepcionResponse>> SendEcf([FromBody] SendEcfCommand command)
         {
+            ModelState.Clear();
             var result = await Mediator.Send(command);
 
             if (result.IsFailure)
@@ -25,8 +26,9 @@ namespace EcfDgii.Client.Api.Controllers
         }
 
         [HttpPost("send-rfce")]
-        public async Task<ActionResult<RfceRecepcionResponse>> SendRfce([FromBody, Microsoft.AspNetCore.Mvc.ModelBinding.Validation.ValidateNever] SendRfceCommand command)
+        public async Task<ActionResult<RfceRecepcionResponse>> SendRfce([FromBody] SendRfceCommand command)
         {
+            ModelState.Clear();
             var result = await Mediator.Send(command);
 
             if (result.IsFailure)
