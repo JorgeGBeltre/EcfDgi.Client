@@ -34,7 +34,7 @@ namespace UnitTests.Security
         [Fact]
         public void Verify_All10_HmacTestVectors_MatchCanonicalAndSignature()
         {
-            var jsonPath = @"c:\Users\Jorge\Desktop\New folder\New folder\EcfDgi.Client\tests\UnitTests\Security\hmac_test_vectors.json";
+            var jsonPath = Path.Combine(AppContext.BaseDirectory, "Security", "hmac_test_vectors.json");
             Assert.True(File.Exists(jsonPath), $"hmac_test_vectors.json must exist at '{jsonPath}'");
 
             var jsonContent = File.ReadAllText(jsonPath, Encoding.UTF8);
