@@ -35,15 +35,36 @@ namespace EcfDgii.Client.Infrastructure.Persistence
 
             modelBuilder.Entity<EcfIdempotencyRecord>(entity =>
             {
+                entity.ToTable("ecf_idempotency_records");
                 entity.HasKey(e => e.Key);
-                entity.Property(e => e.PayloadHash).HasMaxLength(64).IsRequired();
-                entity.HasIndex(e => e.ExpiresAt);
+                entity.Property(e => e.Key).HasColumnName("key");
+                entity.Property(e => e.CreatedByWorkerKeyId).HasColumnName("created_by_worker_key_id");
+                entity.Property(e => e.PayloadHash).HasColumnName("payload_hash");
+                entity.Property(e => e.Status).HasColumnName("status");
+                entity.Property(e => e.StatusCode).HasColumnName("status_code");
+                entity.Property(e => e.ContentType).HasColumnName("content_type");
+                entity.Property(e => e.ResponseBody).HasColumnName("response_body");
+                entity.Property(e => e.CreatedAt).HasColumnName("created_at");
+                entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+                entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+                entity.HasIndex(e => e.ExpiresAt).HasDatabaseName("ix_ecf_idempotency_records_expires_at");
             });
 
             modelBuilder.Entity<EcfSequence>(entity =>
             {
+                entity.ToTable("ecf_sequences");
                 entity.HasKey(e => e.Id);
-                entity.HasIndex(e => new { e.TenantId, e.TipoComprobante }).IsUnique();
+                entity.Property(e => e.Id).HasColumnName("id");
+                entity.Property(e => e.TenantId).HasColumnName("tenant_id");
+                entity.Property(e => e.TipoComprobante).HasColumnName("tipo_comprobante");
+                entity.Property(e => e.Prefix).HasColumnName("prefix");
+                entity.Property(e => e.RangoDesde).HasColumnName("rango_desde");
+                entity.Property(e => e.RangoHasta).HasColumnName("rango_hasta");
+                entity.Property(e => e.SecuenciaActual).HasColumnName("secuencia_actual");
+                entity.Property(e => e.FechaVencimiento).HasColumnName("fecha_vencimiento");
+                entity.Property(e => e.IsActive).HasColumnName("is_active");
+                entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+                entity.HasIndex(e => new { e.TenantId, e.TipoComprobante }).IsUnique().HasDatabaseName("uq_ecf_sequences_tenant_tipo");
             });
 
             // Apply all configurations from current assembly

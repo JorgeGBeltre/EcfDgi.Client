@@ -47,7 +47,14 @@ namespace EcfDgii.Client
                     throw new InvalidOperationException("CertificatePath is required for Direct mode.");
 
                 var signer = new EcfXmlSigner(_options.CertificatePath, _options.CertificatePassword ?? "");
-                var envConfig = EcfEnvironmentConfig.GetConfig((AmbienteEnum)_options.Environment);
+                var ambiente = _options.Environment switch
+                {
+                    EcfEnvironment.Test => AmbienteEnum.PreCertificacion,
+                    EcfEnvironment.Cert => AmbienteEnum.Certificacion,
+                    EcfEnvironment.Prod => AmbienteEnum.Produccion,
+                    _ => AmbienteEnum.Certificacion
+                };
+                var envConfig = EcfEnvironmentConfig.GetConfig(ambiente);
                 var tokenManager = new EcfTokenManager(httpClient, signer, envConfig, _options.RncEmisor);
 
                 _transport = new DgiiDirectTransport(httpClient, tokenManager, envConfig);

@@ -57,6 +57,27 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasColumnName("xml_content")
                 .IsRequired();
 
+            builder.Property(e => e.TenantId)
+                .HasColumnName("tenant_id")
+                .HasMaxLength(100)
+                .IsRequired();
+
+            builder.Property(e => e.SourceTxnId)
+                .HasColumnName("source_txn_id")
+                .HasMaxLength(100)
+                .IsRequired();
+
+            builder.Property(e => e.DocumentKind)
+                .HasColumnName("document_kind")
+                .HasMaxLength(50)
+                .IsRequired();
+
+            builder.Property(e => e.SignedXmlContent)
+                .HasColumnName("signed_xml_content");
+
+            builder.Property(e => e.DgiiResponseXml)
+                .HasColumnName("dgii_response_xml");
+
             builder.Property(e => e.ReceiptDate)
                 .HasColumnName("receipt_date");
 
