@@ -18,10 +18,10 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Compilar Solución
-        run: dotnet build e-CF.sln
+        run: dotnet build EcfDgii.Client.slnx
 
       - name: Ejecutar Pruebas
-        run: dotnet test e-CF.sln --configuration Release --verbosity normal
+        run: dotnet test EcfDgii.Client.slnx --configuration Release --verbosity normal
 
   # 2. AUTO-MERGE A MAIN (Solo si compila correctamente)
   merge-to-main:

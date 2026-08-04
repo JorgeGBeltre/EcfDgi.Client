@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src\EcfDgii.Client.Domain\EcfDgii.Client.Domain.csproj" />
+    <Project Path="src\EcfDgii.Client.Application\EcfDgii.Client.Application.csproj" />
+    <Project Path="src\EcfDgii.Client.Infrastructure\EcfDgii.Client.Infrastructure.csproj" />
+    <Project Path="src\EcfDgii.Client.Shared\EcfDgii.Client.Shared.csproj" />
+    <Project Path="src\EcfDgii.Client.Api\EcfDgii.Client.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="EcfDgii.Client.Tests\UnitTests\UnitTests.csproj" />
+    <Project Path="EcfDgii.Client.Tests\IntegrationTests\IntegrationTests.csproj" />
+  </Folder>
+</Solution>
