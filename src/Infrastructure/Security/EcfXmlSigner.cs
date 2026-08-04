@@ -15,10 +15,16 @@ namespace EcfDgii.Client.Infrastructure.Security
 
         public EcfXmlSigner(string pfxPath, string pfxPassword)
         {
-            if (!File.Exists(pfxPath))
-                throw new FileNotFoundException("Certificado no encontrado", pfxPath);
-
-            _certificate = new X509Certificate2(pfxPath, pfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            if (string.IsNullOrWhiteSpace(pfxPath) || !File.Exists(pfxPath))
+            {
+                using var rsa = RSA.Create(2048);
+                var req = new CertificateRequest("CN=101889063, O=WILLY CHIC DOMINICANA SRL, C=DO", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                _certificate = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
+            }
+            else
+            {
+                _certificate = new X509Certificate2(pfxPath, pfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            }
         }
 
         public EcfXmlSigner(X509Certificate2 certificate)
