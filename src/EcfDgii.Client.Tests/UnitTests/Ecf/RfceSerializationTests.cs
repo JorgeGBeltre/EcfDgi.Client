@@ -64,5 +64,44 @@ namespace EcfDgii.Client.UnitTests.Ecf
             Assert.True(indexOfTotales < indexOfSecCode);
             Assert.True(indexOfSecCode < indexOfEncabezado);
         }
+
+        [Fact]
+        public void Rfce_DecimalProperties_ShouldSerializeWithExactlyTwoDecimalDigits()
+        {
+            var rfce = new Rfce
+            {
+                Encabezado = new RfceEncabezado
+                {
+                    Version = "1.0",
+                    IdDoc = new RfceIdDoc
+                    {
+                        TipoeCF = "32",
+                        ENcf = "E320000000001",
+                        TipoIngresos = 1,
+                        TipoPago = 1
+                    },
+                    Emisor = new RfceEmisor
+                    {
+                        RncEmisor = "101672919",
+                        RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                        FechaEmision = "10-10-2020"
+                    },
+                    Totales = new RfceTotales
+                    {
+                        MontoTotal = 100.5m,      // 1 decimal
+                        MontoGravadoTotal = 100m,  // 0 decimal
+                        TotalITBIS = 18.00m       // 2 decimals
+                    },
+                    CodigoSeguridadeCF = "ABCD12"
+                }
+            };
+
+            var serializer = new EcfXmlSerializer();
+            var xml = serializer.Serialize(rfce);
+
+            Assert.Contains("<MontoTotal>100.50</MontoTotal>", xml);
+            Assert.Contains("<MontoGravadoTotal>100.00</MontoGravadoTotal>", xml);
+            Assert.Contains("<TotalITBIS>18.00</TotalITBIS>", xml);
+        }
     }
 }

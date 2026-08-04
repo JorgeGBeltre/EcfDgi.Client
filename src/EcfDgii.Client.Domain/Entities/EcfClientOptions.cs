@@ -24,6 +24,8 @@ namespace EcfDgii.Client.Domain.Entities
         public string? CertificatePath { get; set; }
         public string? CertificatePassword { get; set; }
         public bool AutoRetryOnReuseableSequence { get; set; } = true;
+        public string? XsdDirectoryPath { get; set; }
+        public bool ValidateSchemasLocal { get; set; } = true;
     }
 
     public class PollingOptions

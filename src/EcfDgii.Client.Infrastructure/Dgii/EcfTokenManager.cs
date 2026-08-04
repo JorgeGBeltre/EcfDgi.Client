@@ -139,7 +139,17 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 
             _cachedToken = tokenElement.Value;
 
-            if (DateTimeOffset.TryParseExact(expiraElement.Value, "yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var expiry))
+            var dateFormats = new[]
+            {
+                "yyyy-MM-ddTHH:mm:ss.fffZ",
+                "yyyy-MM-ddTHH:mm:ss.ffZ",
+                "yyyy-MM-ddTHH:mm:ss.fZ",
+                "yyyy-MM-ddTHH:mm:ssZ",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-ddTHH:mm:ss"
+            };
+
+            if (DateTimeOffset.TryParseExact(expiraElement.Value.Trim(), dateFormats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var expiry))
             {
                 _tokenExpiry = expiry;
             }
