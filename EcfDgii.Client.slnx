@@ -5,8 +5,6 @@
     <Project Path="src\EcfDgii.Client.Infrastructure\EcfDgii.Client.Infrastructure.csproj" />
     <Project Path="src\EcfDgii.Client.Shared\EcfDgii.Client.Shared.csproj" />
     <Project Path="src\EcfDgii.Client.Api\EcfDgii.Client.Api.csproj" />
-  </Folder>
-  <Folder Name="/tests/">
     <Project Path="src\EcfDgii.Client.Tests\UnitTests\UnitTests.csproj" />
     <Project Path="src\EcfDgii.Client.Tests\IntegrationTests\IntegrationTests.csproj" />
   </Folder>
