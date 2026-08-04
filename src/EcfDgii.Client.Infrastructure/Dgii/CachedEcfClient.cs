@@ -29,6 +29,11 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             return _innerClient.SendRfceAsync(rfce, ct);
         }
 
+        public Task<AprobacionComercialResponse> SendAprobacionComercialAsync(string xmlContent, string fileName, CancellationToken ct = default)
+        {
+            return _innerClient.SendAprobacionComercialAsync(xmlContent, fileName, ct);
+        }
+
         public Task<ConsultaResultadoResponse> ConsultarResultadoAsync(string trackId, CancellationToken ct = default)
         {
             return _innerClient.ConsultarResultadoAsync(trackId, ct);
