@@ -96,21 +96,8 @@ namespace EcfDgii.Client.UnitTests.Security
             var validator = new EcfSchemaValidator();
             
             // Resolve path robustly by walking up the directory tree
-            var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
-            string? xsdDir = null;
-            while (currentDir != null)
-            {
-                var checkDir = Path.Combine(currentDir.FullName, "Documentación Técnica (XSD)");
-                if (Directory.Exists(checkDir))
-                {
-                    xsdDir = checkDir;
-                    break;
-                }
-                currentDir = currentDir.Parent;
-            }
-
-            Assert.NotNull(xsdDir);
-            var xsdPath = Path.Combine(xsdDir, "RFCE 32 v.1.0.xsd");
+            var xsdDir = ResolveXsdDirectory();
+            var xsdPath = ResolveXsdFile(xsdDir, "*RFCE*32*.xsd");
 
             // Act
             var result = validator.Validate(signedXml, xsdPath);
@@ -120,7 +107,7 @@ namespace EcfDgii.Client.UnitTests.Security
         }
 
         [Fact]
-        public void TokenManager_ShouldSuccessfullyParseExpirationWithMilliseconds()
+        public async System.Threading.Tasks.Task TokenManager_ShouldSuccessfullyParseExpirationWithMilliseconds()
         {
             // Arrange
             var responseXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><RespuestaAutenticacion><token>test-token-value</token><expira>2026-08-04T23:55:06.893Z</expira><expedido>2026-08-04T22:55:06.893Z</expedido></RespuestaAutenticacion>";
@@ -148,13 +135,10 @@ namespace EcfDgii.Client.UnitTests.Security
 
             var tokenManager = new EcfTokenManager(httpClient, signerMock.Object, config, "101672919");
 
-            // Act & Assert
-            // We use reflection to invoke RenewTokenAsync, or we can just call GetTokenAsync which triggers it.
-            // Since we mocked HttpMessageHandler, GetTokenAsync will invoke the http calls and parse the response.
-            var task = tokenManager.GetTokenAsync();
-            task.Wait();
-            var token = task.Result;
+            // Act
+            var token = await tokenManager.GetTokenAsync();
 
+            // Assert
             Assert.Equal("test-token-value", token);
         }
 
@@ -187,22 +171,8 @@ namespace EcfDgii.Client.UnitTests.Security
 </ANECF>";
 
             var validator = new EcfSchemaValidator();
-            
-            var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
-            string? xsdDir = null;
-            while (currentDir != null)
-            {
-                var checkDir = Path.Combine(currentDir.FullName, "Documentación Técnica (XSD)");
-                if (Directory.Exists(checkDir))
-                {
-                    xsdDir = checkDir;
-                    break;
-                }
-                currentDir = currentDir.Parent;
-            }
-
-            Assert.NotNull(xsdDir);
-            var xsdPath = Path.Combine(xsdDir, "ANECF v.1.0.xsd");
+            var xsdDir = ResolveXsdDirectory();
+            var xsdPath = ResolveXsdFile(xsdDir, "*ANECF*.xsd");
 
             // Act
             var result = validator.Validate(anecfXml, xsdPath);
@@ -230,28 +200,43 @@ namespace EcfDgii.Client.UnitTests.Security
 </ACECF>";
 
             var validator = new EcfSchemaValidator();
-            
-            var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
-            string? xsdDir = null;
-            while (currentDir != null)
-            {
-                var checkDir = Path.Combine(currentDir.FullName, "Documentación Técnica (XSD)");
-                if (Directory.Exists(checkDir))
-                {
-                    xsdDir = checkDir;
-                    break;
-                }
-                currentDir = currentDir.Parent;
-            }
-
-            Assert.NotNull(xsdDir);
-            var xsdPath = Path.Combine(xsdDir, "ACECF v.1.0.xsd");
+            var xsdDir = ResolveXsdDirectory();
+            var xsdPath = ResolveXsdFile(xsdDir, "*ACECF*.xsd");
 
             // Act
             var result = validator.Validate(acecfXml, xsdPath);
 
             // Assert
             Assert.True(result.IsValid, string.Join("; ", result.Errors));
+        }
+
+        private static string ResolveXsdDirectory()
+        {
+            var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (currentDir != null)
+            {
+                var subDirs = currentDir.GetDirectories();
+                foreach (var subDir in subDirs)
+                {
+                    if (subDir.Name.Contains("XSD", StringComparison.OrdinalIgnoreCase) && 
+                        subDir.Name.Contains("Document", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return subDir.FullName;
+                    }
+                }
+                currentDir = currentDir.Parent;
+            }
+            throw new DirectoryNotFoundException("XSD directory containing 'XSD' and 'Document' not found in parent path.");
+        }
+
+        private static string ResolveXsdFile(string xsdDir, string searchPattern)
+        {
+            var files = Directory.GetFiles(xsdDir, searchPattern, new EnumerationOptions { MatchCasing = MatchCasing.CaseInsensitive });
+            if (files.Length == 0)
+            {
+                throw new FileNotFoundException($"XSD file matching '{searchPattern}' not found in {xsdDir}");
+            }
+            return files[0];
         }
     }
 }
