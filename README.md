@@ -85,18 +85,18 @@ The `EcfDgii.Client` solution acts as a middleware between internal billing plat
 
 ```mermaid
 graph TD
-    Api[src/Api] --> Application[src/Application]
-    Api --> Infrastructure[src/Infrastructure]
-    Api --> Shared[src/Shared]
+    Api[src/EcfDgii.Client.Api] --> Application[src/EcfDgii.Client.Application]
+    Api --> Infrastructure[src/EcfDgii.Client.Infrastructure]
+    Api --> Shared[src/EcfDgii.Client.Shared]
     Infrastructure --> Application
-    Infrastructure --> Domain[src/Domain]
+    Infrastructure --> Domain[src/EcfDgii.Client.Domain]
     Infrastructure --> Shared
     Application --> Domain
     Application --> Shared
-    tests/UnitTests --> Application
-    tests/UnitTests --> Domain
-    tests/UnitTests --> Infrastructure
-    tests/IntegrationTests --> Api
+    UnitTests[src/EcfDgii.Client.Tests/UnitTests] --> Application
+    UnitTests --> Domain
+    UnitTests --> Infrastructure
+    IntegrationTests[src/EcfDgii.Client.Tests/IntegrationTests] --> Api
 ```
 
 ---
@@ -125,23 +125,26 @@ graph TD
 
 ```text
 src/
-├── Domain/              # Enterprise core, entities, value objects, exceptions, and abstractions
+├── EcfDgii.Client.Domain/              # Enterprise core, entities, value objects, exceptions, and abstractions
 │   ├── Common/          # AuditableEntity base model
 │   ├── Entities/        # User, Customer, EcfDocument, Rfce schemas
 │   ├── Interfaces/      # Abstractions (IEcfClient, IEcfXmlSerializer, Repositories)
 │   └── Exceptions/      # Domain specific exceptions (EcfSigningException, EcfValidationException)
-├── Application/         # Application use cases, MediatR handlers, validation rules
+├── EcfDgii.Client.Application/         # Application use cases, MediatR handlers, validation rules
 │   ├── Common/          # Logging and Validation pipeline behaviors
 │   ├── Customers/       # Customer CRUD handlers
 │   ├── Ecf/             # SendEcf, SendRfce, and GetStatus handlers
 │   └── Auth/            # Authentication use cases
-├── Infrastructure/      # Concrete implementations, database contexts, soap clients
+├── EcfDgii.Client.Infrastructure/      # Concrete implementations, database contexts, soap clients
 │   ├── Persistence/     # ApplicationDbContext, repository configurations, migrations
 │   ├── Security/        # PasswordHasher, TokenService, XML Signer
 │   ├── Serialization/   # XML serializer helpers
 │   └── Dgii/            # Direct transport REST client and token managers
-├── Shared/              # Shared libraries (Result wrapper pattern)
-└── Api/                 # ASP.NET Core host, controllers, middleware, and services
+├── EcfDgii.Client.Shared/              # Shared libraries (Result wrapper pattern)
+├── EcfDgii.Client.Api/                 # ASP.NET Core host, controllers, middleware, and services
+└── EcfDgii.Client.Tests/               # Solution tests directory
+    ├── UnitTests/       # Unit tests project
+    └── IntegrationTests/# Integration tests project
 ```
 
 ---
@@ -156,11 +159,11 @@ src/
    ```
 2. Build the solution:
    ```bash
-   dotnet build e-CF.sln
+   dotnet build EcfDgii.Client.slnx
    ```
 3. Start the API project:
    ```bash
-   dotnet run --project src/Api/Api.csproj
+   dotnet run --project src/EcfDgii.Client.Api/EcfDgii.Client.Api.csproj
    ```
 
 ### Method 2: Docker Compose Run
@@ -292,10 +295,11 @@ public string SignXml(string xmlContent, string rncEmisor)
     var signedXml = new SignedXml(doc);
     signedXml.SigningKey = _certificate.GetRSAPrivateKey();
     signedXml.SignedInfo.SignatureMethod = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+    // Inclusive Canonicalization Method required by DGII
+    signedXml.SignedInfo.CanonicalizationMethod = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
 
     var reference = new Reference { Uri = "" };
     reference.AddTransform(new XmlDsigEnvelopedSignatureTransform());
-    reference.AddTransform(new XmlDsigExcC14NTransform());
     reference.DigestMethod = "http://www.w3.org/2001/04/xmlenc#sha256";
     signedXml.AddReference(reference);
 
@@ -308,6 +312,30 @@ public string SignXml(string xmlContent, string rncEmisor)
     doc.DocumentElement?.AppendChild(doc.ImportNode(xmlDigitalSignature, true));
 
     return doc.OuterXml;
+}
+```
+
+### Real Security Code Calculation
+
+The 6-character security code is computed by taking the SHA-256 hash of the `SignatureValue` inside the signed XML document:
+
+```csharp
+// EcfSecurityUtils.cs
+public static string CalcularCodigoSeguridad(string signedXml)
+{
+    var doc = new XmlDocument();
+    doc.LoadXml(signedXml);
+    
+    var ns = new XmlNamespaceManager(doc.NameTable);
+    ns.AddNamespace("ds", "http://www.w3.org/2000/09/xmldsig#");
+    
+    var node = doc.SelectSingleNode("//ds:SignatureValue", ns);
+    if (node == null)
+        throw new InvalidOperationException("XML does not contain a signature value.");
+
+    var signatureText = node.InnerText.Trim();
+    var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(signatureText));
+    return Convert.ToBase64String(hashBytes).Substring(0, 6).ToUpperInvariant();
 }
 ```
 
@@ -329,6 +357,12 @@ All endpoints except `Auth` require a valid JWT Bearer header: `Authorization: B
 | `/api/ecf/send` | `POST` | Bearer Token | `SendEcfCommand` | Signs and sends an XML e-CF document |
 | `/api/ecf/send-rfce` | `POST` | Bearer Token | `SendRfceCommand` | Signs and sends a Consumption Summary |
 | `/api/ecf/status` | `GET` | Bearer Token | Query Parameters | Queries current processing status |
+| `/api/documents` | `POST` | Bearer Token | `CanonicalDocumentDto` | ERP integration: compiles raw JSON into compliant XML, signs it, and sends it to DGII |
+| `/api/documents/by-source/{txnId}` | `GET` | Bearer Token | None | ERP integration: queries document status by original TxnId |
+| `/fe/recepcion/api/ecf` | `POST` | Anonymous | Multipart Form (`xml` file) | Electronic Receiver: receives e-CF from peers and yields signed Acuse de Recibo (ARECF) |
+| `/fe/aprobacioncomercial/api/ecf` | `POST` | Anonymous | Multipart Form (`xml` file) | Electronic Receiver: receives commercial approval (ACECF) and returns HTTP 200 |
+| `/fe/autenticacion/api/semilla` | `GET` | Anonymous | None | Peer Auth: yields a new seed XML (`SemillaModel`) |
+| `/fe/autenticacion/api/validacioncertificado` | `POST` | Anonymous | Multipart Form (`xml` seed signature) | Peer Auth: validates seed signature and returns a session token |
 
 ---
 
@@ -427,13 +461,13 @@ Run these commands from the root directory:
 
 ```bash
 # Add new database migration
-dotnet ef migrations add InitialCreate --project src/Infrastructure --startup-project src/Api --output-dir Persistence/Migrations
+dotnet ef migrations add InitialCreate --project src/EcfDgii.Client.Infrastructure --startup-project src/EcfDgii.Client.Api --output-dir Persistence/Migrations
 
 # Apply migration changes directly to PostgreSQL
-dotnet ef database update --project src/Infrastructure --startup-project src/Api
+dotnet ef database update --project src/EcfDgii.Client.Infrastructure --startup-project src/EcfDgii.Client.Api
 
 # Generate idempotent SQL script for Production pipelines
-dotnet ef migrations script --idempotent --output script.sql --project src/Infrastructure --startup-project src/Api
+dotnet ef migrations script --idempotent --output script.sql --project src/EcfDgii.Client.Infrastructure --startup-project src/EcfDgii.Client.Api
 ```
 
 ---
@@ -589,9 +623,9 @@ EXPOSE 8080
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY . .
-RUN dotnet restore "./src/Api/Api.csproj"
-WORKDIR "/src/src/Api"
-RUN dotnet publish "./Api.csproj" -c Release -o /app/publish
+RUN dotnet restore "./src/EcfDgii.Client.Api/EcfDgii.Client.Api.csproj"
+WORKDIR "/src/src/EcfDgii.Client.Api"
+RUN dotnet publish "./EcfDgii.Client.Api.csproj" -c Release -o /app/publish
 
 FROM base AS final
 WORKDIR /app
@@ -668,7 +702,7 @@ Execute the xUnit test runner from the root folder:
 
 ```bash
 # Run unit & integration tests
-dotnet test e-CF.sln
+dotnet test EcfDgii.Client.slnx
 ```
 
 ### Health Checks Endpoint

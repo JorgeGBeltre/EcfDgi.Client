@@ -6,21 +6,21 @@ EXPOSE 8081
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
-COPY ["src/Api/Api.csproj", "src/Api/"]
-COPY ["src/Infrastructure/Infrastructure.csproj", "src/Infrastructure/"]
-COPY ["src/Domain/Domain.csproj", "src/Domain/"]
-COPY ["src/Shared/Shared.csproj", "src/Shared/"]
-COPY ["src/Application/Application.csproj", "src/Application/"]
-RUN dotnet restore "./src/Api/Api.csproj"
+COPY ["src/EcfDgii.Client.Api/EcfDgii.Client.Api.csproj", "src/EcfDgii.Client.Api/"]
+COPY ["src/EcfDgii.Client.Infrastructure/EcfDgii.Client.Infrastructure.csproj", "src/EcfDgii.Client.Infrastructure/"]
+COPY ["src/EcfDgii.Client.Domain/EcfDgii.Client.Domain.csproj", "src/EcfDgii.Client.Domain/"]
+COPY ["src/EcfDgii.Client.Shared/EcfDgii.Client.Shared.csproj", "src/EcfDgii.Client.Shared/"]
+COPY ["src/EcfDgii.Client.Application/EcfDgii.Client.Application.csproj", "src/EcfDgii.Client.Application/"]
+RUN dotnet restore "./src/EcfDgii.Client.Api/EcfDgii.Client.Api.csproj"
 COPY . .
-WORKDIR "/src/src/Api"
-RUN dotnet build "./Api.csproj" -c $BUILD_CONFIGURATION -o /app/build
+WORKDIR "/src/src/EcfDgii.Client.Api"
+RUN dotnet build "./EcfDgii.Client.Api.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./Api.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "./EcfDgii.Client.Api.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "Api.dll"]
+ENTRYPOINT ["dotnet", "EcfDgii.Client.Api.dll"]
