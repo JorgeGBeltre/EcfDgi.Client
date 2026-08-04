@@ -157,5 +157,101 @@ namespace EcfDgii.Client.UnitTests.Security
 
             Assert.Equal("test-token-value", token);
         }
+
+        [Fact]
+        public void EcfSchemaValidator_ShouldValidateCorrectAnecfXml()
+        {
+            // Arrange
+            var anecfXml = @"<?xml version=""1.0"" encoding=""utf-8""?>
+<ANECF>
+  <Encabezado>
+    <Version>1.0</Version>
+    <RncEmisor>101672919</RncEmisor>
+    <CantidadeNCFAnulados>1</CantidadeNCFAnulados>
+    <FechaHoraAnulacioneNCF>10-10-2020 09:00:00</FechaHoraAnulacioneNCF>
+  </Encabezado>
+  <DetalleAnulacion>
+    <Anulacion>
+      <NoLinea>1</NoLinea>
+      <TipoeCF>31</TipoeCF>
+      <TablaRangoSecuenciasAnuladaseNCF>
+        <Secuencias>
+          <SecuenciaeNCFDesde>E310000000001</SecuenciaeNCFDesde>
+          <SecuenciaeNCFHasta>E310000000001</SecuenciaeNCFHasta>
+        </Secuencias>
+      </TablaRangoSecuenciasAnuladaseNCF>
+      <CantidadeNCFAnulados>1</CantidadeNCFAnulados>
+    </Anulacion>
+  </DetalleAnulacion>
+  <Signature xmlns=""http://www.w3.org/2000/09/xmldsig#"">dummy</Signature>
+</ANECF>";
+
+            var validator = new EcfSchemaValidator();
+            
+            var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
+            string? xsdDir = null;
+            while (currentDir != null)
+            {
+                var checkDir = Path.Combine(currentDir.FullName, "Documentación Técnica (XSD)");
+                if (Directory.Exists(checkDir))
+                {
+                    xsdDir = checkDir;
+                    break;
+                }
+                currentDir = currentDir.Parent;
+            }
+
+            Assert.NotNull(xsdDir);
+            var xsdPath = Path.Combine(xsdDir, "ANECF v.1.0.xsd");
+
+            // Act
+            var result = validator.Validate(anecfXml, xsdPath);
+
+            // Assert
+            Assert.True(result.IsValid, string.Join("; ", result.Errors));
+        }
+
+        [Fact]
+        public void EcfSchemaValidator_ShouldValidateCorrectAcecfXml()
+        {
+            // Arrange
+            var acecfXml = @"<?xml version=""1.0"" encoding=""utf-8""?>
+<ACECF>
+  <DetalleAprobacionComercial>
+    <Version>1.0</Version>
+    <RNCEmisor>101672919</RNCEmisor>
+    <eNCF>E310000000001</eNCF>
+    <FechaEmision>10-10-2020</FechaEmision>
+    <MontoTotal>100.50</MontoTotal>
+    <RNCComprador>101889063</RNCComprador>
+    <Estado>1</Estado>
+    <FechaHoraAprobacionComercial>10-10-2020 09:00:00</FechaHoraAprobacionComercial>
+  </DetalleAprobacionComercial>
+</ACECF>";
+
+            var validator = new EcfSchemaValidator();
+            
+            var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
+            string? xsdDir = null;
+            while (currentDir != null)
+            {
+                var checkDir = Path.Combine(currentDir.FullName, "Documentación Técnica (XSD)");
+                if (Directory.Exists(checkDir))
+                {
+                    xsdDir = checkDir;
+                    break;
+                }
+                currentDir = currentDir.Parent;
+            }
+
+            Assert.NotNull(xsdDir);
+            var xsdPath = Path.Combine(xsdDir, "ACECF v.1.0.xsd");
+
+            // Act
+            var result = validator.Validate(acecfXml, xsdPath);
+
+            // Assert
+            Assert.True(result.IsValid, string.Join("; ", result.Errors));
+        }
     }
 }

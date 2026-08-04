@@ -191,7 +191,42 @@ namespace EcfDgii.Client
         public Task<string> VerificarEstadoAmbienteAsync(AmbienteEnum ambiente, CancellationToken ct = default) =>
             _transport.VerificarEstadoAmbienteAsync(ambiente, ct);
 
-        public Task<AnulacionResponse> AnularRangosAsync(string xmlContent, CancellationToken ct = default) =>
-            _transport.AnularRangosAsync(xmlContent, ct);
+        public async Task<AprobacionComercialResponse> SendAprobacionComercialAsync(string xmlContent, string fileName, CancellationToken ct = default)
+        {
+            if (_options.ValidateSchemasLocal && !string.IsNullOrEmpty(_options.XsdDirectoryPath))
+            {
+                var xsdFileName = GetXsdFileName(xmlContent);
+                if (!string.IsNullOrEmpty(xsdFileName))
+                {
+                    var xsdPath = System.IO.Path.Combine(_options.XsdDirectoryPath, xsdFileName);
+                    var xsdResult = _schemaValidator.Validate(xmlContent, xsdPath);
+                    if (!xsdResult.IsValid)
+                    {
+                        throw new EcfValidationException(xsdResult.Errors);
+                    }
+                }
+            }
+
+            return await _transport.SendAprobacionComercialAsync(xmlContent, fileName, ct);
+        }
+
+        public async Task<AnulacionResponse> AnularRangosAsync(string xmlContent, CancellationToken ct = default)
+        {
+            if (_options.ValidateSchemasLocal && !string.IsNullOrEmpty(_options.XsdDirectoryPath))
+            {
+                var xsdFileName = GetXsdFileName(xmlContent);
+                if (!string.IsNullOrEmpty(xsdFileName))
+                {
+                    var xsdPath = System.IO.Path.Combine(_options.XsdDirectoryPath, xsdFileName);
+                    var xsdResult = _schemaValidator.Validate(xmlContent, xsdPath);
+                    if (!xsdResult.IsValid)
+                    {
+                        throw new EcfValidationException(xsdResult.Errors);
+                    }
+                }
+            }
+
+            return await _transport.AnularRangosAsync(xmlContent, ct);
+        }
     }
 }

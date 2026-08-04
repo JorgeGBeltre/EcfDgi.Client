@@ -9,6 +9,7 @@ namespace EcfDgii.Client.Domain.Interfaces
     {
         Task<EcfRecepcionResponse> SendEcfAsync(string xmlContent, string fileName, CancellationToken ct = default);
         Task<RfceRecepcionResponse> SendRfceAsync(Rfce rfce, CancellationToken ct = default);
+        Task<AprobacionComercialResponse> SendAprobacionComercialAsync(string xmlContent, string fileName, CancellationToken ct = default);
         Task<ConsultaResultadoResponse> ConsultarResultadoAsync(string trackId, CancellationToken ct = default);
         Task<ConsultaEstadoResponse> ConsultarEstadoAsync(string rncEmisor, string eNcf, string? rncComprador = null, string? codigoSeguridad = null, CancellationToken ct = default);
         Task<List<TrackIdDetalle>> ConsultarTrackIdsAsync(string rncEmisor, string eNcf, CancellationToken ct = default);
