@@ -30,7 +30,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\EcfDgii.Client.Api\EcfDgii.Client.Api.csproj" />
+    <ProjectReference Include="..\..\EcfDgii.Client.Api\EcfDgii.Client.Api.csproj" />
   </ItemGroup>
 
 </Project>

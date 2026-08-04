@@ -36,10 +36,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\EcfDgii.Client.Api\EcfDgii.Client.Api.csproj" />
-    <ProjectReference Include="..\..\src\EcfDgii.Client.Application\EcfDgii.Client.Application.csproj" />
-    <ProjectReference Include="..\..\src\EcfDgii.Client.Domain\EcfDgii.Client.Domain.csproj" />
-    <ProjectReference Include="..\..\src\EcfDgii.Client.Infrastructure\EcfDgii.Client.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\EcfDgii.Client.Api\EcfDgii.Client.Api.csproj" />
+    <ProjectReference Include="..\..\EcfDgii.Client.Application\EcfDgii.Client.Application.csproj" />
+    <ProjectReference Include="..\..\EcfDgii.Client.Domain\EcfDgii.Client.Domain.csproj" />
+    <ProjectReference Include="..\..\EcfDgii.Client.Infrastructure\EcfDgii.Client.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>
