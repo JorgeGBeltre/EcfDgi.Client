@@ -16,6 +16,10 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             builder.Property(e => e.Id)
                 .HasColumnName("id");
 
+            builder.Property(e => e.Ncf)
+                .HasColumnName("ncf")
+                .HasMaxLength(20);
+
             builder.Property(e => e.ENcf)
                 .HasColumnName("e_ncf")
                 .HasMaxLength(20)

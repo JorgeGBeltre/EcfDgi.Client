@@ -70,6 +70,7 @@ namespace EcfDgii.Client.Api.Controllers
                 TenantId = tenantId,
                 SourceTxnId = dto.SourceReference.TxnId,
                 DocumentKind = dto.DocumentKind ?? "Invoice",
+                Ncf = dto.Ncf,
                 ENcf = eNcf,
                 RncEmisor = dto.Header?.RncEmisor ?? "101010101",
                 RncComprador = dto.Header?.RncComprador,
@@ -134,6 +135,7 @@ namespace EcfDgii.Client.Api.Controllers
             return Ok(new
             {
                 documentId = doc.Id,
+                ncf = doc.Ncf,
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,

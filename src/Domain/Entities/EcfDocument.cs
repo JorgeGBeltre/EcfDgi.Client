@@ -5,6 +5,7 @@ namespace EcfDgii.Client.Domain.Entities
 {
     public class EcfDocument : AuditableEntity
     {
+        public string? Ncf { get; set; }
         public string ENcf { get; set; } = string.Empty;
         public string RncEmisor { get; set; } = string.Empty;
         public string? RncComprador { get; set; }

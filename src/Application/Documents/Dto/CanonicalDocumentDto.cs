@@ -42,6 +42,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
 
     public class CanonicalDocumentDto
     {
+        public string? Ncf { get; set; }
         public SourceReferenceDto SourceReference { get; set; } = new SourceReferenceDto();
         public string DocumentKind { get; set; } = "Invoice"; // Invoice, CreditNote, DebitNote, Bill
         public string TipoComprobante { get; set; } = "E31"; // Default Factura de Crédito Fiscal
