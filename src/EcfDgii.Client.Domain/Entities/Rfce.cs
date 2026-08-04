@@ -84,30 +84,59 @@ namespace EcfDgii.Client.Domain.Entities
     public class RfceTotales
     {
         public decimal? MontoGravadoTotal { get; set; }
+        [XmlIgnore] public bool MontoGravadoTotalSpecified => MontoGravadoTotal.HasValue;
+
         public decimal? MontoGravadoI1 { get; set; }
+        [XmlIgnore] public bool MontoGravadoI1Specified => MontoGravadoI1.HasValue;
+
         public decimal? MontoGravadoI2 { get; set; }
+        [XmlIgnore] public bool MontoGravadoI2Specified => MontoGravadoI2.HasValue;
+
         public decimal? MontoGravadoI3 { get; set; }
+        [XmlIgnore] public bool MontoGravadoI3Specified => MontoGravadoI3.HasValue;
+
         public decimal? MontoExento { get; set; }
+        [XmlIgnore] public bool MontoExentoSpecified => MontoExento.HasValue;
+
         public decimal? TotalITBIS { get; set; }
+        [XmlIgnore] public bool TotalITBISSpecified => TotalITBIS.HasValue;
+
         public decimal? TotalITBIS1 { get; set; }
+        [XmlIgnore] public bool TotalITBIS1Specified => TotalITBIS1.HasValue;
+
         public decimal? TotalITBIS2 { get; set; }
+        [XmlIgnore] public bool TotalITBIS2Specified => TotalITBIS2.HasValue;
+
         public decimal? TotalITBIS3 { get; set; }
+        [XmlIgnore] public bool TotalITBIS3Specified => TotalITBIS3.HasValue;
+
         public decimal? MontoImpuestoAdicional { get; set; }
+        [XmlIgnore] public bool MontoImpuestoAdicionalSpecified => MontoImpuestoAdicional.HasValue;
 
         [XmlArray("ImpuestosAdicionales")]
         [XmlArrayItem("ImpuestoAdicional")]
         public List<ImpuestoAdicionalItem> ImpuestosAdicionales { get; set; } = new List<ImpuestoAdicionalItem>();
 
         public decimal MontoTotal { get; set; }
+
         public decimal? MontoNoFacturable { get; set; }
+        [XmlIgnore] public bool MontoNoFacturableSpecified => MontoNoFacturable.HasValue;
+
         public decimal? MontoPeriodo { get; set; }
+        [XmlIgnore] public bool MontoPeriodoSpecified => MontoPeriodo.HasValue;
     }
 
     public class ImpuestoAdicionalItem
     {
         public string? TipoImpuesto { get; set; }
+
         public decimal? MontoImpuestoSelectivoConsumoEspecifico { get; set; }
+        [XmlIgnore] public bool MontoImpuestoSelectivoConsumoEspecificoSpecified => MontoImpuestoSelectivoConsumoEspecifico.HasValue;
+
         public decimal? MontoImpuestoSelectivoConsumoAdvalorem { get; set; }
+        [XmlIgnore] public bool MontoImpuestoSelectivoConsumoAdvaloremSpecified => MontoImpuestoSelectivoConsumoAdvalorem.HasValue;
+
         public decimal? OtrosImpuestosAdicionales { get; set; }
+        [XmlIgnore] public bool OtrosImpuestosAdicionalesSpecified => OtrosImpuestosAdicionales.HasValue;
     }
 }

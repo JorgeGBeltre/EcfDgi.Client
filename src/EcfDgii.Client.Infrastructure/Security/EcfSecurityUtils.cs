@@ -38,13 +38,13 @@ namespace EcfDgii.Client.Infrastructure.Security
             $"&fechaemision={Encode(req.FechaEmision)}" +
             $"&montototal={Encode(req.MontoTotal.ToString("F2", CultureInfo.InvariantCulture))}" +
             $"&fechafirma={Encode(req.FechaFirma)}" +
-            $"&codigoseuridad={Encode(req.CodigoSeguridad)}";
+            $"&codigoseguridad={Encode(req.CodigoSeguridad)}";
 
         public static string BuildTimbreFcUrl(string baseUrl, TimbreFcRequest req) =>
             $"{baseUrl}?rncemisor={Encode(req.RncEmisor)}" +
             $"&encf={Encode(req.ENcf)}" +
             $"&montototal={Encode(req.MontoTotal.ToString("F2", CultureInfo.InvariantCulture))}" +
-            $"&codigoseuridad={Encode(req.CodigoSeguridad)}";
+            $"&codigoseguridad={Encode(req.CodigoSeguridad)}";
 
         private static string Encode(string value) =>
             Uri.EscapeDataString(value ?? string.Empty);

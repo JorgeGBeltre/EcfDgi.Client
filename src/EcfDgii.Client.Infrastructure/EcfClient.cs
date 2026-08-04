@@ -22,6 +22,7 @@ namespace EcfDgii.Client
         private readonly IEcfSequenceProvider _sequenceProvider;
         private readonly EcfClientOptions _options;
         private readonly IEcfXmlSigner _signer;
+        private readonly IEcfSchemaValidator _schemaValidator;
 
         private const decimal RfceThreshold = 250_000.00m;
 
@@ -29,13 +30,15 @@ namespace EcfDgii.Client
             EcfClientOptions? options = null, 
             IEcfTransport? transport = null, 
             IEcfSequenceProvider? sequenceProvider = null,
-            IEcfXmlSigner? signer = null)
+            IEcfXmlSigner? signer = null,
+            IEcfSchemaValidator? schemaValidator = null)
         {
             _options = options ?? new EcfClientOptions();
             _validator = new EcfValidator();
             _serializer = new EcfXmlSerializer();
             _sequenceProvider = sequenceProvider ?? new MemorySequenceProvider();
             _signer = signer ?? new EcfXmlSigner(_options.CertificatePath ?? "", _options.CertificatePassword ?? "");
+            _schemaValidator = schemaValidator ?? new EcfSchemaValidator();
 
             if (transport != null)
             {
@@ -70,6 +73,20 @@ namespace EcfDgii.Client
 
         public async Task<EcfRecepcionResponse> SendEcfAsync(string xmlContent, string fileName, CancellationToken ct = default)
         {
+            if (_options.ValidateSchemasLocal && !string.IsNullOrEmpty(_options.XsdDirectoryPath))
+            {
+                var xsdFileName = GetXsdFileName(xmlContent);
+                if (!string.IsNullOrEmpty(xsdFileName))
+                {
+                    var xsdPath = System.IO.Path.Combine(_options.XsdDirectoryPath, xsdFileName);
+                    var xsdResult = _schemaValidator.Validate(xmlContent, xsdPath);
+                    if (!xsdResult.IsValid)
+                    {
+                        throw new EcfValidationException(xsdResult.Errors);
+                    }
+                }
+            }
+
             return await _transport.SendEcfAsync(xmlContent, fileName, ct);
         }
 
@@ -81,6 +98,17 @@ namespace EcfDgii.Client
 
             var xml = _serializer.Serialize(rfce);
             var signedXml = _signer.SignXml(xml, rfce.Encabezado.Emisor.RncEmisor);
+
+            if (_options.ValidateSchemasLocal && !string.IsNullOrEmpty(_options.XsdDirectoryPath))
+            {
+                var xsdPath = System.IO.Path.Combine(_options.XsdDirectoryPath, "RFCE 32 v.1.0.xsd");
+                var xsdResult = _schemaValidator.Validate(signedXml, xsdPath);
+                if (!xsdResult.IsValid)
+                {
+                    throw new EcfValidationException(xsdResult.Errors);
+                }
+            }
+
             var fileName = _serializer.GetFileName(rfce.Encabezado.Emisor.RncEmisor, rfce.Encabezado.IdDoc.ENcf);
 
             var response = await _transport.SendRfceAsync(signedXml, fileName, ct);
@@ -93,6 +121,44 @@ namespace EcfDgii.Client
             }
 
             return response;
+        }
+
+        private string GetXsdFileName(string xmlContent)
+        {
+            try
+            {
+                var doc = new System.Xml.XmlDocument();
+                doc.LoadXml(xmlContent);
+                var rootName = doc.DocumentElement?.LocalName;
+
+                if (rootName == "RFCE")
+                    return "RFCE 32 v.1.0.xsd";
+                if (rootName == "ACECF")
+                    return "ACECF v.1.0.xsd";
+                if (rootName == "ARECF")
+                    return "ARECF v1.0.xsd";
+                if (rootName == "ANECF" || rootName == "Anulacion")
+                    return "ANECF v.1.0.xsd";
+                if (rootName == "SemillaModel")
+                    return "Semilla v.1.0.xsd";
+
+                if (rootName == "ECF")
+                {
+                    var nsmgr = new System.Xml.XmlNamespaceManager(doc.NameTable);
+                    var node = doc.SelectSingleNode("//Encabezado/IdDoc/TipoeCF", nsmgr);
+                    if (node != null)
+                    {
+                        var tipo = node.InnerText.Trim();
+                        return $"e-CF {tipo} v.1.0.xsd";
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback en caso de que ocurra algún error al parsear el XML
+            }
+
+            return string.Empty;
         }
 
         public Task<ConsultaResultadoResponse> ConsultarResultadoAsync(string trackId, CancellationToken ct = default) =>

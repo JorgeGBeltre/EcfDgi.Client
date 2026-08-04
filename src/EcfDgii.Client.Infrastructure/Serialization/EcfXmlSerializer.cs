@@ -24,7 +24,8 @@ namespace EcfDgii.Client.Infrastructure.Serialization
 
             var serializer = new XmlSerializer(typeof(T));
             using var sw = new StringWriterWithEncoding(Encoding.UTF8);
-            using (var writer = XmlWriter.Create(sw, XmlSettings))
+            using (var baseWriter = XmlWriter.Create(sw, XmlSettings))
+            using (var writer = new EcfDecimalXmlWriter(baseWriter))
             {
                 var ns = new XmlSerializerNamespaces();
                 ns.Add("", "");

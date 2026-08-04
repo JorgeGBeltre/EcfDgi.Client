@@ -78,7 +78,8 @@ namespace EcfDgii.Client.Infrastructure.Security
 
         public bool ValidateCertificateSn(string rncOCedula)
         {
-            if (_certificate.Subject.Contains("101889063"))
+            // Permitir bypass de pruebas únicamente si se trata del certificado dummy autofirmado
+            if (_certificate.Subject.Contains("101889063") && _certificate.Subject == _certificate.Issuer)
                 return true;
 
             return _certificate.Subject.Contains(rncOCedula);
