@@ -232,6 +232,12 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync();
             Assert.Equal("Uncertain", stored.State);
             Assert.Equal("E310000000002", stored.ENcf);
+            // ReconcileUncertainAsync's "prefer TrackId when we have one" branch is unreachable today
+            // only because SignAndSendAsync never sets TrackId before an Uncertain transition. This
+            // pins that assumption down: if someone later makes SendEcfAsync's exception path capture
+            // a partial TrackId, this test forces a decision instead of leaving the preference silently
+            // unimplemented for a case that's now actually reachable.
+            Assert.Null(stored.TrackId);
 
             // Retry: must reconcile with DGII before blindly resending. DGII confirms it never got it.
             ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101889063", "E310000000002", null, null, It.IsAny<CancellationToken>()))
