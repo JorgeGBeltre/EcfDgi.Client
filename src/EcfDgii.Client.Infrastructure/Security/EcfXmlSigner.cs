@@ -79,10 +79,22 @@ namespace EcfDgii.Client.Infrastructure.Security
         public bool ValidateCertificateSn(string rncOCedula)
         {
             // Permitir bypass de pruebas únicamente si se trata del certificado dummy autofirmado
-            if (_certificate.Subject.Contains("101889063") && _certificate.Subject == _certificate.Issuer)
+            if (_certificate.Subject.Contains("101889063") && IsCertificateSelfSigned(_certificate))
                 return true;
 
             return _certificate.Subject.Contains(rncOCedula);
+        }
+
+        private static bool IsCertificateSelfSigned(X509Certificate2 cert)
+        {
+            var s = cert.SubjectName.RawData;
+            var i = cert.IssuerName.RawData;
+            if (s.Length != i.Length) return false;
+            for (int j = 0; j < s.Length; j++)
+            {
+                if (s[j] != i[j]) return false;
+            }
+            return true;
         }
     }
 }

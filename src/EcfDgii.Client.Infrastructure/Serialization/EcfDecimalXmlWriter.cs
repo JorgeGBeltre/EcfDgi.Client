@@ -115,8 +115,8 @@ namespace EcfDgii.Client.Infrastructure.Serialization
                         return;
                     }
                 }
+                _innerWriter.WriteRaw(data);
             }
-            _innerWriter.WriteRaw(data);
         }
 
         public override void WriteStartAttribute(string? prefix, string localName, string? ns) => _innerWriter.WriteStartAttribute(prefix, localName, ns);
