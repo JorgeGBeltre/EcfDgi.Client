@@ -11,6 +11,7 @@ namespace EcfDgii.Client.Domain.Entities
         public string? RncComprador { get; set; }
         public string TenantId { get; set; } = "default-tenant";
         public string SourceTxnId { get; set; } = string.Empty;
+        public string EditSequence { get; set; } = string.Empty;
         public string DocumentKind { get; set; } = "Invoice";
         public string? TrackId { get; set; }
         public string State { get; set; } = "Received"; // Received, SequenceAllocated, Signed, SentToDgii, AcceptedByDgii, RejectedByDgii, Uncertain

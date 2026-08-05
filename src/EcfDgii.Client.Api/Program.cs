@@ -180,14 +180,19 @@ try
 
     app.MapHealthChecks("/health");
 
-    // Automatically apply migrations at startup for local/development environments
+    // Automatically apply migrations at startup for local/development environments.
+    // EnsureCreated() was used here previously: it only creates the schema when the database
+    // doesn't exist yet and never alters an existing one, so a redeployment against a database
+    // created by an earlier model version silently kept running with a stale, incomplete schema
+    // instead of failing loudly. Migrate() applies any pending migrations (including on first run,
+    // where it creates the schema from the migration history instead of the live model).
     if (app.Environment.IsDevelopment())
     {
         using var scope = app.Services.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         if (context.Database.IsRelational())
         {
-            context.Database.EnsureCreated();
+            context.Database.Migrate();
         }
     }
 
