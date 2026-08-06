@@ -1,4 +1,7 @@
 using System;
+using System.IO;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
@@ -164,6 +167,44 @@ try
             {
                 throw new InvalidOperationException($"CRITICAL SECURITY FAIL-FAST: WorkerKey '{sec["KeyId"]}' is configured with insecure default secret in Non-Development environment.");
             }
+        }
+    }
+
+    // Fail-fast check for a missing/unloadable/expired DGII signing certificate in Non-Development
+    // environments. Without this, EcfXmlSigner (EcfDgii.Client.Infrastructure/Security/EcfXmlSigner.cs)
+    // silently falls back to a dummy self-signed certificate when CertificatePath is missing or
+    // doesn't exist — the app starts clean, looks healthy, and signs every e-CF with a certificate
+    // DGII will reject. That fallback exists so local Development doesn't need a real DGII
+    // certificate; every other environment must have one, loadable, and currently valid.
+    if (!app.Environment.IsDevelopment())
+    {
+        var certSection = app.Configuration.GetSection("EcfClientOptions");
+        var certPath = certSection["CertificatePath"];
+        var certPassword = certSection["CertificatePassword"];
+
+        if (string.IsNullOrWhiteSpace(certPath) || !File.Exists(certPath))
+        {
+            throw new InvalidOperationException(
+                $"CRITICAL SECURITY FAIL-FAST: EcfClientOptions:CertificatePath ('{certPath}') does not exist. " +
+                "A real DGII signing certificate is required outside Development.");
+        }
+
+        try
+        {
+            using var cert = new X509Certificate2(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            var now = DateTime.Now; // X509Certificate2.NotBefore/NotAfter are local time
+            if (now < cert.NotBefore || now > cert.NotAfter)
+            {
+                throw new InvalidOperationException(
+                    $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate at '{certPath}' is not currently valid " +
+                    $"(valid {cert.NotBefore:u} to {cert.NotAfter:u}, now {now:u}).");
+            }
+        }
+        catch (CryptographicException ex)
+        {
+            throw new InvalidOperationException(
+                $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate at '{certPath}' could not be loaded " +
+                "(wrong password or corrupt file).", ex);
         }
     }
 
