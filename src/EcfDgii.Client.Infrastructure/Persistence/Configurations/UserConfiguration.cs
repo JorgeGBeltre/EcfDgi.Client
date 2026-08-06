@@ -72,14 +72,20 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .IsUnique()
                 .HasDatabaseName("uq_users_email");
 
-            // Seed initial Admin User
-            // Password: "AdminPassword123!" (prehashed using BCrypt/standard)
+            // Seed initial Admin User.
+            // The password this hash used to correspond to ("AdminPassword123!") was printed in
+            // plaintext in this file's own history and in the README — anyone with either is
+            // effectively public. This migration rotates the hash (see
+            // 2026*_RotateSeededAdminPassword.cs); the new plaintext password is not committed
+            // anywhere — it was communicated out of band when this rotation was made. Whoever holds
+            // it should log in and change it immediately, ideally through a real first-login
+            // forced-password-change flow rather than another committed seed.
             builder.HasData(new User
             {
                 Id = Guid.Parse("9f3c7e09-e85d-452f-9877-c93d90fcb32d"),
                 Username = "admin",
                 Email = "admin@ecfdgii.client.com",
-                PasswordHash = "$2a$11$yHgpsPOsooH4yxAXvMiRXO.mA22AwAaRY.eb69RmF3v1JZBmu3T56", // AdminPassword123!
+                PasswordHash = "$2a$11$TrZocoksYo3ZzpTKy5XdZuw6LBumk7obuD5Viyzo/dTsdAA3ikkDW",
                 Role = "Admin",
                 CreatedAt = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
                 CreatedBy = "System",

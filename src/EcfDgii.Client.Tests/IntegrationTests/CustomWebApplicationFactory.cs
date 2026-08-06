@@ -24,6 +24,14 @@ namespace EcfDgii.Client.IntegrationTests
             builder.UseSetting("ConnectionStrings:DefaultConnection", "InMemory");
             builder.UseSetting("ConnectionStrings:Redis", "");
 
+            // Pin these explicitly rather than let Development pick up whatever's in the local
+            // developer's User Secrets (loaded automatically in Development). Tests that compute
+            // their own HMAC signature against a known WorkerSecretKey (HmacAuthenticationRoundTripTests)
+            // need the server to validate against that exact same value, not whatever this machine
+            // happens to have configured for real local development.
+            builder.UseSetting("WorkerSecretKey", "WorkerSecretKey");
+            builder.UseSetting("JwtSettings:Secret", "DevOnly_NotForProduction_JwtSigningSecret_MinimumThirtyTwoBytes!");
+
             builder.ConfigureServices(services =>
             {
                 // Remove existing IEcfClient registration and inject mock

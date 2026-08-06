@@ -58,6 +58,11 @@ namespace EcfDgii.Client.IntegrationTests
                 builder.UseSetting("EcfEmisor:Rnc", "101889063");
                 builder.UseSetting("EcfClientOptions:CertificatePath", certPath);
                 builder.UseSetting("EcfClientOptions:CertificatePassword", certPassword);
+                // Not what this test class is about, but non-Development now also fails fast on
+                // these — a real value keeps the "successful start" cases isolated to the
+                // certificate check they're actually testing.
+                builder.UseSetting("WorkerSecretKey", "a-real-rotated-worker-secret-1234567890");
+                builder.UseSetting("JwtSettings:Secret", "a-real-jwt-secret-that-is-long-enough-1234567890");
 
                 builder.ConfigureServices(services =>
                 {

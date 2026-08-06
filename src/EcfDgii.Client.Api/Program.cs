@@ -69,7 +69,14 @@ try
     // Configure JWT Authentication
     var jwtSettingsSection = builder.Configuration.GetSection("JwtSettings");
     var jwtSettings = jwtSettingsSection.Get<JwtSettings>();
-    var key = Encoding.ASCII.GetBytes(jwtSettings?.Secret ?? "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!");
+    // string.IsNullOrWhiteSpace, not ?? — appsettings.json now ships "Secret": "" (an explicit
+    // empty string, not absent/null) so the check has something to fail loudly against outside
+    // Development. ?? only substitutes on null, so an empty string silently produced a zero-length
+    // HMAC key here instead of falling back to the default.
+    var jwtSecretForKey = string.IsNullOrWhiteSpace(jwtSettings?.Secret)
+        ? "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!"
+        : jwtSettings.Secret;
+    var key = Encoding.ASCII.GetBytes(jwtSecretForKey);
 
     builder.Services.AddAuthentication(options =>
     {
@@ -156,17 +163,33 @@ try
 
     var app = builder.Build();
 
-    // Fail-fast check for default worker secrets in Non-Development environments (Point #10)
+    // Fail-fast check for default worker secrets in Non-Development environments (Point #10).
+    // This originally read a "WorkerKeys" array section ({KeyId, Secret} children) that nothing
+    // ever populates — ConfigurationWorkerKeyResolver (the code that actually authenticates
+    // workers) reads a flat "WorkerSecretKey" key or WORKER_SECRET_KEY env var instead. The two
+    // never agreed, so this check was a silent no-op in every environment. Now checks the same key
+    // the resolver does.
     if (!app.Environment.IsDevelopment())
     {
-        var workerSecrets = app.Configuration.GetSection("WorkerKeys").GetChildren();
-        foreach (var sec in workerSecrets)
+        var workerSecret = app.Configuration["WORKER_SECRET_KEY"] ?? app.Configuration["WorkerSecretKey"];
+        if (string.IsNullOrWhiteSpace(workerSecret) || workerSecret == "WorkerSecretKey" || workerSecret.Contains("Default", StringComparison.OrdinalIgnoreCase))
         {
-            var secret = sec["Secret"];
-            if (string.IsNullOrWhiteSpace(secret) || secret == "WorkerSecretKey" || secret.Contains("Default", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException($"CRITICAL SECURITY FAIL-FAST: WorkerKey '{sec["KeyId"]}' is configured with insecure default secret in Non-Development environment.");
-            }
+            throw new InvalidOperationException(
+                "CRITICAL SECURITY FAIL-FAST: WorkerSecretKey is missing or configured with the insecure default value in a Non-Development environment.");
+        }
+    }
+
+    // Fail-fast check for a missing/default JWT signing secret in Non-Development environments.
+    // Without this, a missing JwtSettings:Secret silently falls back to the hardcoded string a few
+    // lines above ("DefaultSecretKeyForTesting_..."), visible to anyone with this source — anyone
+    // could mint a valid admin JWT for a deployment that never set a real secret.
+    if (!app.Environment.IsDevelopment())
+    {
+        var configuredJwtSecret = jwtSettings?.Secret;
+        if (string.IsNullOrWhiteSpace(configuredJwtSecret) || configuredJwtSecret == "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!")
+        {
+            throw new InvalidOperationException(
+                "CRITICAL SECURITY FAIL-FAST: JwtSettings:Secret is missing or configured with the insecure default value in a Non-Development environment.");
         }
     }
 
