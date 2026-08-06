@@ -146,6 +146,110 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo31_WithIsoFechaEmision_AsErpConnectorActuallySendsIt_IsNormalizedAndValidAgainstDgiiXsd()
+        {
+            // Every other test in this file leaves Header.FechaEmision null, which falls through to
+            // BuildXmlFromCanonical's own dd-MM-yyyy default — so the whole suite was green while the
+            // ONE format a real caller actually sends was never exercised. ERPConnector's
+            // ApiSubmitStage builds this field as IssueDate.ToString("yyyy-MM-dd") (ISO 8601), which
+            // does not match DGII's FechaValidationType pattern (dd-MM-yyyy) at all.
+            //
+            // ISO is the right thing for a jurisdiction-neutral connector to send; converting it into
+            // DGII's format is this service's job, not the connector's.
+            var (controller, db, _, _) = MakeRealController("E310000000802");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-ISO", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                    FechaEmision = "2026-08-06",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+
+            // Not just "schema-valid": the same calendar day, day-first. A month/day swap (08-06-2026)
+            // would also satisfy the XSD pattern while filing the document under the wrong date.
+            Assert.Contains("<FechaEmision>06-08-2026</FechaEmision>", stored.SignedXmlContent!);
+
+            var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_WithFechaEmisionAlreadyInDgiiFormat_PassesThroughUnchanged()
+        {
+            // Regression guard, not a driver — this already passed before NormalizeFechaDgii existed.
+            // It exists to pin the one "improvement" that would silently corrupt data: relaxing the
+            // normalizer to a lenient DateTime.TryParse. Under InvariantCulture that reads 06-08-2026
+            // month-first as 8 June and re-emits 08-06-2026 — still schema-valid, wrong calendar day.
+            var (controller, db, _, _) = MakeRealController("E310000000803");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-DDMM", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                    FechaEmision = "06-08-2026",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<FechaEmision>06-08-2026</FechaEmision>", stored.SignedXmlContent!);
+        }
+
+        [Fact]
+        public async Task Tipo34_WithIsoFechaNcfModificado_IsNormalizedAndValidAgainstDgiiXsd()
+        {
+            // FechaNCFModificado is the same FechaValidationType as FechaEmision (e-CF 34 XSD line
+            // 414), reached by the same "caller-supplied string written into the XML verbatim" path —
+            // the identical defect, one field over. No live caller populates it today (ApiSubmitStage
+            // sends only CorrectsENcf/CodigoModificacion/RazonModificacion), so this was latent rather
+            // than broken in production, and it stays latent only until credit notes are wired up.
+            var (controller, db, _, _) = MakeRealController("E340000000802");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-34-ISO", EditSequence = "1" },
+                TipoComprobante = "E34",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 50, MontoItbis = 9, MontoTotal = 59 },
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "E310000000801",
+                    CodigoModificacion = 3,
+                    RazonModificacion = "error en precio",
+                    FechaNcfModificado = "2026-08-06",
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<FechaNCFModificado>06-08-2026</FechaNCFModificado>", stored.SignedXmlContent!);
+
+            var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 34 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo34_GeneratedXml_IsValidAgainstDgiiXsd()
         {
             var (controller, db, _, _) = MakeRealController("E340000000801");

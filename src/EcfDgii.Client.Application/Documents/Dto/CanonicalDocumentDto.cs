@@ -15,6 +15,11 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string RazonSocialEmisor { get; set; } = string.Empty;
         public string RncComprador { get; set; } = string.Empty;
         public string RazonSocialComprador { get; set; } = string.Empty;
+        /// <summary>
+        /// ISO 8601 (yyyy-MM-dd) — the canonical, jurisdiction-neutral form callers should send.
+        /// DocumentsController.NormalizeFechaDgii converts it into DGII's dd-MM-yyyy before it reaches
+        /// the XML; a value already in dd-MM-yyyy is accepted and passed through unchanged.
+        /// </summary>
         public string FechaEmision { get; set; } = string.Empty;
     }
 
@@ -59,7 +64,8 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string? RazonModificacion { get; set; }
 
         /// <summary>
-        /// DGII: FechaNCFModificado (dd-MM-yyyy). Per the spec, condicional to the e-CF being a
+        /// DGII: FechaNCFModificado. Send ISO 8601 (yyyy-MM-dd) like every other date on this DTO —
+        /// NormalizeFechaDgii converts it. Per the spec, condicional to the e-CF being a
         /// contingency-paper-sequence replacement — NOT required for a normal electronic-to-electronic
         /// Nota de Crédito. Left null in that (the common) case.
         /// </summary>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -44,6 +45,9 @@ namespace EcfDgii.Client.Api.Controllers
         // we'd resend something DGII already has. This is deliberately conservative; DGII doesn't
         // publish a guaranteed bound, so err on the side of waiting rather than double-submitting.
         private static readonly TimeSpan MinimumUncertainAgeBeforeReconciliation = TimeSpan.FromMinutes(2);
+
+        // DGII's FechaValidationType — see NormalizeFechaDgii.
+        private const string DgiiDateFormat = "dd-MM-yyyy";
 
         private readonly ApplicationDbContext _db;
         private readonly IEcfSequenceManager _sequenceManager;
@@ -513,9 +517,7 @@ namespace EcfDgii.Client.Api.Controllers
             var razonSocialEmisor = EscapeXml(emisorRazonSocial);
             sb.AppendLine($"      <RazonSocialEmisor>{razonSocialEmisor}</RazonSocialEmisor>");
             sb.AppendLine("      <DireccionEmisor>Distrito Nacional, SD</DireccionEmisor>");
-            var fechaEmision = string.IsNullOrWhiteSpace(dto.Header?.FechaEmision) 
-                ? DateTime.Today.ToString("dd-MM-yyyy") 
-                : dto.Header.FechaEmision;
+            var fechaEmision = NormalizeFechaDgii(dto.Header?.FechaEmision);
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
 
@@ -612,9 +614,7 @@ namespace EcfDgii.Client.Api.Controllers
                 // documents disagree, and the XSD is authoritative for what DGII's server will accept.
                 // Defaults to today when the caller doesn't have the referenced document's real date;
                 // known simplification, not a faithful "fecha del NCF modificado" in that case.
-                var fechaNcfModificado = string.IsNullOrWhiteSpace(refs.FechaNcfModificado)
-                    ? DateTime.Today.ToString("dd-MM-yyyy")
-                    : refs.FechaNcfModificado;
+                var fechaNcfModificado = NormalizeFechaDgii(refs.FechaNcfModificado);
                 sb.AppendLine($"    <FechaNCFModificado>{fechaNcfModificado}</FechaNCFModificado>");
                 if (refs.CodigoModificacion is { } codigo)
                 {
@@ -631,6 +631,35 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"  <FechaHoraFirma>{fechaHoraFirma}</FechaHoraFirma>");
             sb.AppendLine("</ECF>");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Renders a date in the ONLY format DGII's schemas accept: dd-MM-yyyy (FechaValidationType,
+        /// pattern "(3[01]|[12][0-9]|0?[1-9])-(1[012]|0?[1-9])-((19|20)\d{2})" in the real XSDs).
+        ///
+        /// The canonical DTO carries dates in ISO 8601 (yyyy-MM-dd) — that is what ERPConnector's
+        /// ApiSubmitStage sends, and it is the correct thing for a jurisdiction-neutral connector to
+        /// send: dd-MM-yyyy is a DGII convention, so translating into it belongs on THIS side of the
+        /// HTTP contract. Before this existed the ISO value was written into the XML verbatim, failed
+        /// the local XSD gate, and came back as a 400 the connector recorded as a terminal rejection.
+        ///
+        /// Deliberately NOT a lenient DateTime.TryParse: under InvariantCulture "06-08-2026" parses
+        /// month-first as 8 June, so a value already in DGII's format would come back out as a
+        /// different calendar day. Only the exact ISO shape is converted; anything already valid (or
+        /// unrecognized) passes through untouched, leaving the XSD gate as the backstop it already is.
+        /// </summary>
+        private static string NormalizeFechaDgii(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return DateTime.Today.ToString(DgiiDateFormat, CultureInfo.InvariantCulture);
+            }
+
+            var trimmed = value.Trim();
+
+            return DateTime.TryParseExact(trimmed, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var iso)
+                ? iso.ToString(DgiiDateFormat, CultureInfo.InvariantCulture)
+                : trimmed;
         }
 
         /// <summary>
