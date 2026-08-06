@@ -49,6 +49,16 @@ namespace EcfDgii.Client.Api.Controllers
         // DGII's FechaValidationType — see NormalizeFechaDgii.
         private const string DgiiDateFormat = "dd-MM-yyyy";
 
+        // DGII defines exactly three ITBIS buckets, keyed by rate: I1 = 18%, I2 = 16%, I3 = 0%
+        // ("gravado a tasa cero", which is NOT the same as exento). A rate outside this map cannot be
+        // declared truthfully in an e-CF, so it is rejected rather than folded into the nearest slot.
+        private static readonly IReadOnlyDictionary<int, int> DgiiItbisSlots = new Dictionary<int, int>
+        {
+            [18] = 1,
+            [16] = 2,
+            [0] = 3,
+        };
+
         private readonly ApplicationDbContext _db;
         private readonly IEcfSequenceManager _sequenceManager;
         private readonly IEcfClient _ecfClient;
@@ -135,6 +145,26 @@ namespace EcfDgii.Client.Api.Controllers
                 if (dto.Retention is null)
                 {
                     return BadRequest(new { error = "Retention is required for TipoComprobante E41." });
+                }
+            }
+
+            // Checked here, with the other pre-allocation guards: a rate DGII has no bucket for can
+            // never produce a truthful document, so it must not cost an eNCF to find that out.
+            if (dto.Totals?.TaxBuckets is { Count: > 0 } declaredBuckets)
+            {
+                var unmappable = declaredBuckets
+                    .Select(b => b.Rate)
+                    .Where(rate => !DgiiItbisSlots.ContainsKey(rate))
+                    .Distinct()
+                    .ToList();
+
+                if (unmappable.Count > 0)
+                {
+                    return BadRequest(new
+                    {
+                        error = $"Tasa(s) de ITBIS sin bucket DGII: {string.Join(", ", unmappable)}. " +
+                                $"Solo se admiten {string.Join(", ", DgiiItbisSlots.Keys)} (I1/I2/I3).",
+                    });
                 }
             }
 
@@ -551,17 +581,61 @@ namespace EcfDgii.Client.Api.Controllers
                 if (gravado > 0)
                 {
                     sb.AppendLine($"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
-                    // I1 is DGII's 18% bucket. Everything taxed is declared here, which is only right
-                    // while every taxed line really is at 18% — see the I2/I3 note in the repo's
-                    // open-items list before enabling reduced/zero-rated tax codes for real.
-                    sb.AppendLine($"      <MontoGravadoI1>{gravado:F2}</MontoGravadoI1>");
+                }
+
+                // Slot 1..3 = DGII's 18% / 16% / 0% ITBIS buckets. A caller that sends no buckets
+                // predates them: everything taxed goes to I1 and no ITBIS rate elements are emitted,
+                // exactly as before — a version-skewed pair must not produce a different document.
+                var slotBase = new decimal?[4];
+                var slotRate = new int?[4];
+                var slotTax = new decimal?[4];
+
+                if (dto.Totals.TaxBuckets is { Count: > 0 } buckets)
+                {
+                    foreach (var bucket in buckets)
+                    {
+                        // Rates were validated against the slot map before any sequence was allocated
+                        // (see SubmitCanonicalDocument), so every one of them maps here.
+                        var slot = DgiiItbisSlots[bucket.Rate];
+                        slotBase[slot] = (slotBase[slot] ?? 0m) + bucket.Base;
+                        slotTax[slot] = (slotTax[slot] ?? 0m) + bucket.Tax;
+                        slotRate[slot] = bucket.Rate;
+                    }
+                }
+                else if (gravado > 0)
+                {
+                    slotBase[1] = gravado;
+                    slotTax[1] = itbis;
+                }
+
+                for (var slot = 1; slot <= 3; slot++)
+                {
+                    if (slotBase[slot] is { } montoGravado)
+                    {
+                        sb.AppendLine($"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
+                    }
                 }
                 if (exento > 0)
                 {
                     sb.AppendLine($"      <MontoExento>{exento:F2}</MontoExento>");
                 }
+                // ITBIS1/2/3 declare the RATE of each bucket (Integer2ValidationType — a 1-2 digit
+                // integer, not an amount); TotalITBIS1/2/3 further down carry the amounts.
+                for (var slot = 1; slot <= 3; slot++)
+                {
+                    if (slotRate[slot] is { } rate)
+                    {
+                        sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
+                    }
+                }
                 sb.AppendLine($"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
-                sb.AppendLine($"      <TotalITBIS1>{itbis:F2}</TotalITBIS1>");
+                for (var slot = 1; slot <= 3; slot++)
+                {
+                    if (slotTax[slot] is { } montoItbis)
+                    {
+                        sb.AppendLine($"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
+                    }
+                }
                 sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
             }
             else

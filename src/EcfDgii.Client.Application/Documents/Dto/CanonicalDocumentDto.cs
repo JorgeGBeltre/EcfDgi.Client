@@ -51,8 +51,32 @@ namespace EcfDgii.Client.Application.Documents.Dto
         /// what ITBIS was owed on, which is what happened while this field didn't exist.</summary>
         public decimal? MontoExento { get; set; }
 
+        /// <summary>
+        /// One entry per distinct ITBIS rate on the taxed lines. Null or empty means the caller
+        /// predates rate buckets, in which case the whole taxed base is declared in DGII's 18% slot
+        /// exactly as it was before — the pre-bucket behaviour, not a silently emptier document.
+        /// </summary>
+        public List<CanonicalTaxBucketDto>? TaxBuckets { get; set; }
+
         public decimal MontoItbis { get; set; }
         public decimal MontoTotal { get; set; }
+    }
+
+    /// <summary>
+    /// A neutral (rate, base, tax) triple. Callers send the real rate; assigning it to DGII's
+    /// I1/I2/I3 slots is this service's job, since which rate occupies which slot is a DGII
+    /// convention and not something a jurisdiction-neutral connector should encode.
+    /// </summary>
+    public class CanonicalTaxBucketDto
+    {
+        /// <summary>ITBIS rate as a whole percentage: 18, 16 or 0.</summary>
+        public int Rate { get; set; }
+
+        /// <summary>The base taxed at this rate.</summary>
+        public decimal Base { get; set; }
+
+        /// <summary>The ITBIS charged on that base.</summary>
+        public decimal Tax { get; set; }
     }
 
     /// <summary>

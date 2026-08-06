@@ -224,6 +224,90 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo31_WithMultipleTaxRates_DeclaresEachInItsOwnDgiiBucket()
+        {
+            // 18% → I1, 16% → I2, 0% → I3. Before this, every taxed peso went into I1 regardless of
+            // its real rate, and ITBIS1/2/3 (the rate declarations themselves) were never emitted at
+            // all — so a 16%-rated line was filed as if 18% had been charged on it.
+            var (controller, db, _, _) = MakeRealController("E310000000806");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-TASAS", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 400m,
+                    MontoGravadoTotal = 350m,
+                    MontoExento = 50m,
+                    MontoItbis = 50m,
+                    MontoTotal = 450m,
+                    TaxBuckets =
+                    [
+                        new CanonicalTaxBucketDto { Rate = 18, Base = 100m, Tax = 18m },
+                        new CanonicalTaxBucketDto { Rate = 16, Base = 200m, Tax = 32m },
+                        new CanonicalTaxBucketDto { Rate = 0, Base = 50m, Tax = 0m },
+                    ],
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync()).SignedXmlContent!;
+
+            Assert.Contains("<MontoGravadoTotal>350.00</MontoGravadoTotal>", xml);
+            Assert.Contains("<MontoGravadoI1>100.00</MontoGravadoI1>", xml);
+            Assert.Contains("<MontoGravadoI2>200.00</MontoGravadoI2>", xml);
+            Assert.Contains("<MontoGravadoI3>50.00</MontoGravadoI3>", xml);
+            Assert.Contains("<MontoExento>50.00</MontoExento>", xml);
+            Assert.Contains("<ITBIS1>18</ITBIS1>", xml);
+            Assert.Contains("<ITBIS2>16</ITBIS2>", xml);
+            Assert.Contains("<ITBIS3>0</ITBIS3>", xml);
+            Assert.Contains("<TotalITBIS>50.00</TotalITBIS>", xml);
+            Assert.Contains("<TotalITBIS1>18.00</TotalITBIS1>", xml);
+            Assert.Contains("<TotalITBIS2>32.00</TotalITBIS2>", xml);
+            Assert.Contains("<TotalITBIS3>0.00</TotalITBIS3>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_WithARateDgiiHasNoBucketFor_IsRejectedInsteadOfFiledUnderTheNearestOne()
+        {
+            // DGII has exactly three ITBIS slots (18/16/0). A rate that isn't one of them cannot be
+            // declared truthfully, and quietly folding it into I1 would misstate the tax charged —
+            // the same class of silent-wrongness as the exempt-as-taxed bug. Fail loudly instead.
+            var (controller, db, _, _) = MakeRealController("E310000000807");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-TASA-RARA", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 100m, MontoGravadoTotal = 100m, MontoItbis = 10m, MontoTotal = 110m,
+                    TaxBuckets = [new CanonicalTaxBucketDto { Rate = 10, Base = 100m, Tax = 10m }],
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+            // Rejected before a sequence is spent, like every other type-specific guard here.
+            Assert.False(await db.EcfDocuments.AnyAsync());
+        }
+
+        [Fact]
         public async Task Tipo31_WithOnlyLegacyMontoSubtotal_KeepsPreSplitBehaviour()
         {
             // Version-skew guard: EcfDgi.Client and ERPConnector deploy independently (container on the
