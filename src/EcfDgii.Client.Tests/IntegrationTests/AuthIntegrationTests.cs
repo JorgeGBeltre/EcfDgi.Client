@@ -39,8 +39,10 @@ namespace EcfDgii.Client.IntegrationTests
         public async Task Login_SeedAdmin_ReturnsToken()
         {
             // Arrange
-            // Note: The UserConfiguration seeds user "admin" with password "AdminPassword123!"
-            var command = new LoginUserCommand("admin", "AdminPassword123!");
+            // Note: UserConfiguration seeds user "admin" with this password — rotated away from the
+            // old, long-exposed "AdminPassword123!". Still a placeholder meant to be changed before
+            // any real deployment; kept here only so this test can exercise the real login flow.
+            var command = new LoginUserCommand("admin", "rsxDE3slRF3ArrJabCxI!Aa1");
 
             // Act
             var response = await _client.PostAsJsonAsync("api/auth/login", command);

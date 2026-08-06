@@ -73,9 +73,7 @@ This release marks a complete architectural migration from a legacy single Class
 >
 > **Mandatory Authentication:** All endpoints (except `/api/auth/register` and `/api/auth/login`) require a valid JWT bearer token.
 >
-> **Default Admin Credentials:** A default admin user is seeded during migrations. Plaintext credentials:
-> - **Username:** `admin`
-> - **Password:** `AdminPassword123!`
+> **Default Admin Credentials:** A default admin user (`admin`) is seeded during migrations with a placeholder password. It is **not printed here** — a plaintext admin password in a public README is exactly how the previous one (`AdminPassword123!`) ended up effectively public. The current seed password was communicated out of band when it was last rotated (see `UserConfiguration.cs` and migration `RotateSeededAdminPasswordHash`). **Change it immediately after first login in any real deployment** — this seed exists to bootstrap local development, not as a standing production credential.
 
 ---
 

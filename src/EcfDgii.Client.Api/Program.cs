@@ -1,4 +1,7 @@
 using System;
+using System.IO;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
@@ -66,7 +69,14 @@ try
     // Configure JWT Authentication
     var jwtSettingsSection = builder.Configuration.GetSection("JwtSettings");
     var jwtSettings = jwtSettingsSection.Get<JwtSettings>();
-    var key = Encoding.ASCII.GetBytes(jwtSettings?.Secret ?? "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!");
+    // string.IsNullOrWhiteSpace, not ?? — appsettings.json now ships "Secret": "" (an explicit
+    // empty string, not absent/null) so the check has something to fail loudly against outside
+    // Development. ?? only substitutes on null, so an empty string silently produced a zero-length
+    // HMAC key here instead of falling back to the default.
+    var jwtSecretForKey = string.IsNullOrWhiteSpace(jwtSettings?.Secret)
+        ? "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!"
+        : jwtSettings.Secret;
+    var key = Encoding.ASCII.GetBytes(jwtSecretForKey);
 
     builder.Services.AddAuthentication(options =>
     {
@@ -153,17 +163,91 @@ try
 
     var app = builder.Build();
 
-    // Fail-fast check for default worker secrets in Non-Development environments (Point #10)
+    // Fail-fast check for default worker secrets in Non-Development environments (Point #10).
+    // This originally read a "WorkerKeys" array section ({KeyId, Secret} children) that nothing
+    // ever populates — ConfigurationWorkerKeyResolver (the code that actually authenticates
+    // workers) reads a flat "WorkerSecretKey" key or WORKER_SECRET_KEY env var instead. The two
+    // never agreed, so this check was a silent no-op in every environment. Now checks the same key
+    // the resolver does.
     if (!app.Environment.IsDevelopment())
     {
-        var workerSecrets = app.Configuration.GetSection("WorkerKeys").GetChildren();
-        foreach (var sec in workerSecrets)
+        var workerSecret = app.Configuration["WORKER_SECRET_KEY"] ?? app.Configuration["WorkerSecretKey"];
+        if (string.IsNullOrWhiteSpace(workerSecret) || workerSecret == "WorkerSecretKey" || workerSecret.Contains("Default", StringComparison.OrdinalIgnoreCase))
         {
-            var secret = sec["Secret"];
-            if (string.IsNullOrWhiteSpace(secret) || secret == "WorkerSecretKey" || secret.Contains("Default", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "CRITICAL SECURITY FAIL-FAST: WorkerSecretKey is missing or configured with the insecure default value in a Non-Development environment.");
+        }
+    }
+
+    // Fail-fast check for a missing/default JWT signing secret in Non-Development environments.
+    // Without this, a missing JwtSettings:Secret silently falls back to the hardcoded string a few
+    // lines above ("DefaultSecretKeyForTesting_..."), visible to anyone with this source — anyone
+    // could mint a valid admin JWT for a deployment that never set a real secret.
+    if (!app.Environment.IsDevelopment())
+    {
+        var configuredJwtSecret = jwtSettings?.Secret;
+        if (string.IsNullOrWhiteSpace(configuredJwtSecret) || configuredJwtSecret == "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!")
+        {
+            throw new InvalidOperationException(
+                "CRITICAL SECURITY FAIL-FAST: JwtSettings:Secret is missing or configured with the insecure default value in a Non-Development environment.");
+        }
+    }
+
+    // Fail-fast check for a missing/unloadable/expired DGII signing certificate in Non-Development
+    // environments. Without this, EcfXmlSigner (EcfDgii.Client.Infrastructure/Security/EcfXmlSigner.cs)
+    // silently falls back to a dummy self-signed certificate when CertificatePath is missing or
+    // doesn't exist — the app starts clean, looks healthy, and signs every e-CF with a certificate
+    // DGII will reject. That fallback exists so local Development doesn't need a real DGII
+    // certificate; every other environment must have one, loadable, and currently valid.
+    if (!app.Environment.IsDevelopment())
+    {
+        var certSection = app.Configuration.GetSection("EcfClientOptions");
+        var certPath = certSection["CertificatePath"];
+        var certPassword = certSection["CertificatePassword"];
+
+        if (string.IsNullOrWhiteSpace(certPath) || !File.Exists(certPath))
+        {
+            throw new InvalidOperationException(
+                $"CRITICAL SECURITY FAIL-FAST: EcfClientOptions:CertificatePath ('{certPath}') does not exist. " +
+                "A real DGII signing certificate is required outside Development.");
+        }
+
+        try
+        {
+            using var cert = new X509Certificate2(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            var now = DateTime.Now; // X509Certificate2.NotBefore/NotAfter are local time
+            if (now < cert.NotBefore || now > cert.NotAfter)
             {
-                throw new InvalidOperationException($"CRITICAL SECURITY FAIL-FAST: WorkerKey '{sec["KeyId"]}' is configured with insecure default secret in Non-Development environment.");
+                throw new InvalidOperationException(
+                    $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate at '{certPath}' is not currently valid " +
+                    $"(valid {cert.NotBefore:u} to {cert.NotAfter:u}, now {now:u}).");
             }
+
+            // Renewing with a CA takes days, not minutes — a warning that arrives on expiry day is
+            // too late to act on. No durable manual-review journal exists in this repo (that's an
+            // ERPConnector concept, tied to invoice envelopes, not applicable here), so this is
+            // Serilog-only; route it to wherever this API's alerting already watches its logs.
+            var daysRemaining = (cert.NotAfter - now).TotalDays;
+            switch (CertificateExpiryPolicy.Classify(now, cert.NotAfter))
+            {
+                case CertificateExpiryPolicy.ExpiryUrgency.Critical:
+                    Log.Error(
+                        "DGII signing certificate at {CertPath} expires in {Days:F0} day(s) ({NotAfter:u}). " +
+                        "Renewal with a certificate authority takes days — start now.",
+                        certPath, daysRemaining, cert.NotAfter);
+                    break;
+                case CertificateExpiryPolicy.ExpiryUrgency.Warning:
+                    Log.Warning(
+                        "DGII signing certificate at {CertPath} expires in {Days:F0} day(s) ({NotAfter:u}).",
+                        certPath, daysRemaining, cert.NotAfter);
+                    break;
+            }
+        }
+        catch (CryptographicException ex)
+        {
+            throw new InvalidOperationException(
+                $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate at '{certPath}' could not be loaded " +
+                "(wrong password or corrupt file).", ex);
         }
     }
 

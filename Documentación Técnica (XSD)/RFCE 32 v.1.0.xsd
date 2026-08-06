@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="RFCE">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Encabezado" minOccurs="1" maxOccurs="1">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="Version" type="VersionType"/>
+              <xs:element name="IdDoc" minOccurs="1" maxOccurs="1">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="TipoeCF" type="TipoeCFType"/>
+                    <xs:element name="eNCF" type="eNCFType"/>
+                    <xs:element name="TipoIngresos" type="TipoIngresosType"/>
+                    <xs:element name="TipoPago" type="TipoPagoType"/>
+                    <xs:element name="TablaFormasPago" minOccurs="0">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="FormaDePago" minOccurs="0" maxOccurs="7">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="FormaPago" type="FormaPagoType" minOccurs="0"/>
+                                <xs:element name="MontoPago" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+              <xs:element name="Emisor" minOccurs="1" maxOccurs="1">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="RNCEmisor" type="RNCType"/>
+                    <xs:element name="RazonSocialEmisor" type="AlfaNum150RType"/>
+                    <xs:element name="FechaEmision" type="FechaType"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+              <xs:element name="Comprador">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="RNCComprador" type="RNCType" minOccurs="0"/>
+                    <xs:element name="IdentificadorExtranjero" type="AlfaNum20Type" minOccurs="0"/>
+                    <xs:element name="RazonSocialComprador" type="AlfaNum150Type" minOccurs="0"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+              <xs:element name="Totales" minOccurs="1" maxOccurs="1">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="MontoGravadoTotal" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="MontoGravadoI1" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="MontoGravadoI2" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="MontoGravadoI3" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="MontoExento" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="TotalITBIS" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="TotalITBIS1" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="TotalITBIS2" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="TotalITBIS3" type="Decimal18D2MayorIgual0Type" minOccurs="0"/>
+                    <xs:element name="MontoImpuestoAdicional" type="Decimal18D2Mayor0Type" minOccurs="0"/>
+                    <xs:element name="ImpuestosAdicionales" minOccurs="0">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="ImpuestoAdicional" minOccurs="0" maxOccurs="20">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="TipoImpuesto" type="ImpuestosAdicionalesType" minOccurs="0"/>
+                                <xs:element name="MontoImpuestoSelectivoConsumoEspecifico" type="Decimal18D2Mayor0Type" minOccurs="0"/>
+                                <xs:element name="MontoImpuestoSelectivoConsumoAdvalorem" type="Decimal18D2Mayor0Type" minOccurs="0"/>
+                                <xs:element name="OtrosImpuestosAdicionales" type="Decimal18D2Mayor0Type" minOccurs="0"/>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element name="MontoTotal" type="Decimal18D2MayorIgual0Type"/>
+                    <xs:element name="MontoNoFacturable" type="Decimal18D2NegativoType" minOccurs="0"/>
+                    <xs:element name="MontoPeriodo" type="Decimal18D2NegativoType" minOccurs="0"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+              <xs:element name="CodigoSeguridadeCF" type="CodigoSeguridadeCFType" minOccurs="1" maxOccurs="1"></xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:any processContents="skip"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Definiciones de Tipos de datos -->
+
+  <xs:simpleType name="VersionType">
+    <xs:restriction base="xs:decimal">
+      <xs:enumeration value="1.0"/>
+      <xs:pattern value="[1]{1}.[0]{1}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TipoeCFType">
+    <xs:restriction base="xs:integer">
+      <xs:enumeration value="32"/>
+      <!-- Factura de Consumo Electrónica -->
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="eNCFType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="([a-z0-9A-Z]{13,13})*"/>
+      <xs:minLength value="13" />
+      <xs:maxLength value="13" />
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="FechaType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\s*(3[01]|[12][$0-9]|0?[1-9])\-(1[012]|0?[1-9])\-((?:19|20)\d{2})\s*" />
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TipoIngresosType">
+    <xs:restriction base="xs:integer">
+      <xs:enumeration value="01"/>
+      <!-- Ingresos por operaciones (No financieros) -->
+      <xs:enumeration value="02"/>
+      <!-- Ingresos Financieros -->
+      <xs:enumeration value="03"/>
+      <!-- Ingresos Extraordinarios -->
+      <xs:enumeration value="04"/>
+      <!-- Ingresos por Arrendamientos -->
+      <xs:enumeration value="05"/>
+      <!-- Ingresos por Venta de Activo Depreciable -->
+      <xs:enumeration value="06"/>
+      <!-- Otros Ingresos -->
+      <xs:pattern value='[0]{1}[1-6]{1}'/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TipoPagoType">
+    <xs:restriction base="xs:integer">
+      <xs:enumeration value="1"/>
+      <!-- Contado -->
+      <xs:enumeration value="2"/>
+      <!-- Crédito -->
+      <xs:enumeration value="3"/>
+      <!-- Gratuito -->
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="FormaPagoType">
+    <xs:restriction base="xs:integer">
+      <xs:enumeration value="1"/>
+      <!-- Efectivo -->
+      <xs:enumeration value="2"/>
+      <!-- Cheque/Transferencia/Depósito -->
+      <xs:enumeration value="3"/>
+      <!-- Tarjeta de Débito/Crédito -->
+      <xs:enumeration value="4"/>
+      <!-- Venta a Crédito -->
+      <xs:enumeration value="5"/>
+      <!-- Bonos o Certificados de regalo -->
+      <xs:enumeration value="6"/>
+      <!-- Permuta -->
+      <xs:enumeration value="7"/>
+      <!-- Nota de crédito -->
+      <xs:enumeration value="8"/>
+      <!-- Otras Formas de pago -->
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Decimal18D2MayorIgual0Type">
+    <xs:restriction base="xs:decimal">
+      <xs:pattern value='[0-9]{1,16}(?:.[0-9]{2})?'/>
+      <xs:totalDigits value="18" />
+      <xs:fractionDigits value="2" />
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="RNCType">
+    <xs:restriction base="xs:integer">
+      <xs:pattern value='[0-9]{11}|[0-9]{9}'/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="AlfaNum150RType">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1"/>
+      <xs:maxLength value="150"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="AlfaNum150Type">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="150"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="AlfaNum20Type">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="20"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Interger6Type">
+    <xs:restriction base="xs:integer">
+      <xs:totalDigits value="6"/>
+      <xs:pattern value='[0-9]{1,6}'/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Decimal18D2Mayor0Type">
+    <xs:restriction base="xs:decimal">
+      <xs:minInclusive value="0.01"/>
+      <xs:pattern value="[0-9]{1,16}(?:.[0-9]{2})?"/>
+      <xs:totalDigits value="18" />
+      <xs:fractionDigits value="2" />
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Decimal18D2NegativoType">
+    <xs:restriction base="xs:decimal">
+      <xs:pattern value='[+-]?[0-9]{1,16}(?:.[0-9]{2})?'/>
+      <xs:totalDigits value="18" />
+      <xs:fractionDigits value="2" />
+    </xs:restriction>
+  </xs:simpleType>
+  
+
+  <xs:simpleType name="CodigoSeguridadeCFType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value=".{6}"/>
+      <!--Hash generado en factura de consumo original-->
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name ="ImpuestosAdicionalesType" final="restriction">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="001" />
+      <!-- Propina Legal -->
+      <xs:enumeration value="002" />
+      <!-- Contribución al Desarrollo de las Telecomunicaciones -->
+      <xs:enumeration value="003" />
+      <!-- Impuesto Selectivo al Consumo: Servicios Seguros en general -->
+      <xs:enumeration value="004" />
+      <!-- Impuesto Selectivo al Consumo: Servicios de Telecomunicaciones -->
+      <xs:enumeration value="005" />
+      <!-- Impuesto Selectivo al Consumo: Expedición de la primera placa -->
+      <xs:enumeration value="006" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Cerveza -->
+      <xs:enumeration value="007" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Vinos de uva -->
+      <xs:enumeration value="008" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Vermut y demás vinos de uvas frescas -->
+      <xs:enumeration value="009" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Demás bebidas fermentadas -->
+      <xs:enumeration value="010" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Alcohol Etílico sin desnaturalizar (Mayor o igual a 80%) -->
+      <xs:enumeration value="011" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Alcohol Etílico sin desnaturalizar (inferior a 80%) -->
+      <xs:enumeration value="012" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Aguardientes de uva -->
+      <xs:enumeration value="013" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Whisky -->
+      <xs:enumeration value="014" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Ron y demás aguardientes de caña -->
+      <xs:enumeration value="015" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Gin y Ginebra -->
+      <xs:enumeration value="016" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Vodka -->
+      <xs:enumeration value="017" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Licores -->
+      <xs:enumeration value="018" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Los demás (Bebidas y Alcoholes) -->
+      <xs:enumeration value="019" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Cigarrillos que contengan tabaco cajetilla 20 unidades -->
+      <xs:enumeration value="020" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Los demás Cigarrillos que contengan 20 unidades -->
+      <xs:enumeration value="021" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Cigarrillos que contengan 10 unidades -->
+      <xs:enumeration value="022" />
+      <!-- Impuesto Selectivo al Consumo (Tasa Específico): Los demás Cigarrillos que contengan 10 unidades -->
+      <xs:enumeration value="023" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Cerveza -->
+      <xs:enumeration value="024" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Vinos de uva -->
+      <xs:enumeration value="025" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Vermut y demás vinos de uvas frescas -->
+      <xs:enumeration value="026" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Demás bebidas fermentadas -->
+      <xs:enumeration value="027" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Alcohol Etílico sin desnaturalizar (Mayor o igual a 80%) -->
+      <xs:enumeration value="028" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Alcohol Etílico sin desnaturalizar (inferior a 80%) -->
+      <xs:enumeration value="029" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Aguardientes de uva -->
+      <xs:enumeration value="030" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Whisky -->
+      <xs:enumeration value="031" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Ron y demás aguardientes de caña -->
+      <xs:enumeration value="032" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Gin y Ginebra -->
+      <xs:enumeration value="033" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Vodka -->
+      <xs:enumeration value="034" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Licores -->
+      <xs:enumeration value="035" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Los demás (Bebidas y Alcoholes) -->
+      <xs:enumeration value="036" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Cigarrillos que contengan tabaco cajetilla 20 unidades -->
+      <xs:enumeration value="037" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Los demás Cigarrillos que contengan 20 unidades -->
+      <xs:enumeration value="038" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Cigarrillos que contengan 10 unidades -->
+      <xs:enumeration value="039" />
+      <!-- Impuesto Selectivo al Consumo (Tasa AdValorem): Los demás Cigarrillos que contengan 10 unidades -->
+    </xs:restriction>
+  </xs:simpleType>
+
+</xs:schema>

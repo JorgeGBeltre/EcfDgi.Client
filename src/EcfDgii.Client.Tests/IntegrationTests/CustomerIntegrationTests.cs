@@ -51,7 +51,7 @@ namespace EcfDgii.Client.IntegrationTests
         public async Task CreateCustomer_WithAuth_CreatesAndReturns()
         {
             // Arrange
-            await AuthenticateAsync("admin", "AdminPassword123!");
+            await AuthenticateAsync("admin", "rsxDE3slRF3ArrJabCxI!Aa1"); // rotated seed password, see UserConfiguration.cs
             var command = new CreateCustomerCommand("Integrator Client", "int@client.com", "101672919");
 
             // Act
