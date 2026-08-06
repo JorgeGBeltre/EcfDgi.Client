@@ -14,6 +14,9 @@ namespace EcfDgii.Client.Infrastructure.Security
     {
         private readonly X509Certificate2 _certificate;
 
+        /// <inheritdoc />
+        public bool UsesFallbackCertificate { get; }
+
         public EcfXmlSigner(string pfxPath, string pfxPassword)
         {
             if (string.IsNullOrWhiteSpace(pfxPath) || !File.Exists(pfxPath))
@@ -21,6 +24,9 @@ namespace EcfDgii.Client.Infrastructure.Security
                 using var rsa = RSA.Create(2048);
                 var req = new CertificateRequest("CN=101889063, O=WILLY CHIC DOMINICANA SRL, C=DO", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
                 _certificate = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
+                // Recorded, not just tolerated: this instance cannot produce a document DGII will
+                // accept, and every caller downstream needs to be able to say so out loud.
+                UsesFallbackCertificate = true;
             }
             else
             {

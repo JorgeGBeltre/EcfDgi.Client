@@ -49,6 +49,16 @@ namespace EcfDgii.Client.Api.Controllers
         // DGII's FechaValidationType — see NormalizeFechaDgii.
         private const string DgiiDateFormat = "dd-MM-yyyy";
 
+        // DGII defines exactly three ITBIS buckets, keyed by rate: I1 = 18%, I2 = 16%, I3 = 0%
+        // ("gravado a tasa cero", which is NOT the same as exento). A rate outside this map cannot be
+        // declared truthfully in an e-CF, so it is rejected rather than folded into the nearest slot.
+        private static readonly IReadOnlyDictionary<int, int> DgiiItbisSlots = new Dictionary<int, int>
+        {
+            [18] = 1,
+            [16] = 2,
+            [0] = 3,
+        };
+
         private readonly ApplicationDbContext _db;
         private readonly IEcfSequenceManager _sequenceManager;
         private readonly IEcfClient _ecfClient;
@@ -138,6 +148,26 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
+            // Checked here, with the other pre-allocation guards: a rate DGII has no bucket for can
+            // never produce a truthful document, so it must not cost an eNCF to find that out.
+            if (dto.Totals?.TaxBuckets is { Count: > 0 } declaredBuckets)
+            {
+                var unmappable = declaredBuckets
+                    .Select(b => b.Rate)
+                    .Where(rate => !DgiiItbisSlots.ContainsKey(rate))
+                    .Distinct()
+                    .ToList();
+
+                if (unmappable.Count > 0)
+                {
+                    return BadRequest(new
+                    {
+                        error = $"Tasa(s) de ITBIS sin bucket DGII: {string.Join(", ", unmappable)}. " +
+                                $"Solo se admiten {string.Join(", ", DgiiItbisSlots.Keys)} (I1/I2/I3).",
+                    });
+                }
+            }
+
             var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
             var editSequence = dto.SourceReference.EditSequence ?? string.Empty;
 
@@ -223,7 +253,7 @@ namespace EcfDgii.Client.Api.Controllers
                 return await ReconcileUncertainAsync(existingDoc, dto, editSequence);
             }
 
-            // Terminal / known-transmitted states (Signed, SentToDgii, RejectedByDgii, ...).
+            // Terminal / known-transmitted states (AwaitingTransmission, Signed, RejectedByDgii, ...).
             if (!string.Equals(existingDoc.EditSequence, editSequence, StringComparison.Ordinal))
             {
                 // The source invoice changed after an e-CF was already issued for it. Silently
@@ -321,7 +351,7 @@ namespace EcfDgii.Client.Api.Controllers
             if (status != null && !IsNotFoundByDgii(status))
             {
                 // DGII already has it: reconcile local state and do not transmit a duplicate.
-                doc.State = "SentToDgii";
+                doc.State = "Signed";
                 await _db.SaveChangesAsync();
                 return Accepted(new
                 {
@@ -358,7 +388,11 @@ namespace EcfDgii.Client.Api.Controllers
 
                 doc.SignedXmlContent = signedXml;
                 doc.SecurityCode = secCode;
-                doc.State = "Signed";
+                // NOT "Signed": a locally-applied signature proves nothing until DGII accepts it —
+                // that is what "Signed" now means (see below). This is the transient in between, and
+                // it deliberately stays OUT of NeverTransmittedStates: if the process dies here we
+                // cannot tell whether the DGII call had already gone out.
+                doc.State = "AwaitingTransmission";
             }
             catch (Exception ex)
             {
@@ -399,6 +433,29 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
+            // No DGII-issued credential: EcfXmlSigner self-generated one so local work can proceed,
+            // but the result can never be a valid e-CF. Say that plainly instead of transmitting and
+            // letting the failure come back as "Uncertain" — which means "we don't know whether DGII
+            // received it" and would be a lie here: we know exactly why this cannot succeed.
+            // The signed XML is kept so it can still be inspected.
+            if (_signer.UsesFallbackCertificate)
+            {
+                doc.State = "Unsigned";
+                await _db.SaveChangesAsync();
+                _logger.LogError(
+                    "e-CF {ENcf} (TxnId {TxnId}) NO se transmitió: no hay certificado digital real configurado " +
+                    "(se usó uno autogenerado). Estado 'Unsigned'.",
+                    doc.ENcf, doc.SourceTxnId);
+                return Accepted(new
+                {
+                    documentId = doc.Id,
+                    eNcf = doc.ENcf,
+                    state = doc.State,
+                    trackId = doc.TrackId,
+                    securityCode = doc.SecurityCode
+                });
+            }
+
             await _db.SaveChangesAsync();
 
             try
@@ -408,7 +465,10 @@ namespace EcfDgii.Client.Api.Controllers
                 if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
                 {
                     doc.TrackId = response.TrackId;
-                    doc.State = "SentToDgii";
+                    // DGII received it and issued a TrackId — the signature is confirmed real. This is
+                    // the counterpart to "Unsigned": those two states are the signature-validity axis,
+                    // and only DGII's acceptance moves a document across it.
+                    doc.State = "Signed";
                     doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                 }
                 else
@@ -551,17 +611,61 @@ namespace EcfDgii.Client.Api.Controllers
                 if (gravado > 0)
                 {
                     sb.AppendLine($"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
-                    // I1 is DGII's 18% bucket. Everything taxed is declared here, which is only right
-                    // while every taxed line really is at 18% — see the I2/I3 note in the repo's
-                    // open-items list before enabling reduced/zero-rated tax codes for real.
-                    sb.AppendLine($"      <MontoGravadoI1>{gravado:F2}</MontoGravadoI1>");
+                }
+
+                // Slot 1..3 = DGII's 18% / 16% / 0% ITBIS buckets. A caller that sends no buckets
+                // predates them: everything taxed goes to I1 and no ITBIS rate elements are emitted,
+                // exactly as before — a version-skewed pair must not produce a different document.
+                var slotBase = new decimal?[4];
+                var slotRate = new int?[4];
+                var slotTax = new decimal?[4];
+
+                if (dto.Totals.TaxBuckets is { Count: > 0 } buckets)
+                {
+                    foreach (var bucket in buckets)
+                    {
+                        // Rates were validated against the slot map before any sequence was allocated
+                        // (see SubmitCanonicalDocument), so every one of them maps here.
+                        var slot = DgiiItbisSlots[bucket.Rate];
+                        slotBase[slot] = (slotBase[slot] ?? 0m) + bucket.Base;
+                        slotTax[slot] = (slotTax[slot] ?? 0m) + bucket.Tax;
+                        slotRate[slot] = bucket.Rate;
+                    }
+                }
+                else if (gravado > 0)
+                {
+                    slotBase[1] = gravado;
+                    slotTax[1] = itbis;
+                }
+
+                for (var slot = 1; slot <= 3; slot++)
+                {
+                    if (slotBase[slot] is { } montoGravado)
+                    {
+                        sb.AppendLine($"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
+                    }
                 }
                 if (exento > 0)
                 {
                     sb.AppendLine($"      <MontoExento>{exento:F2}</MontoExento>");
                 }
+                // ITBIS1/2/3 declare the RATE of each bucket (Integer2ValidationType — a 1-2 digit
+                // integer, not an amount); TotalITBIS1/2/3 further down carry the amounts.
+                for (var slot = 1; slot <= 3; slot++)
+                {
+                    if (slotRate[slot] is { } rate)
+                    {
+                        sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
+                    }
+                }
                 sb.AppendLine($"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
-                sb.AppendLine($"      <TotalITBIS1>{itbis:F2}</TotalITBIS1>");
+                for (var slot = 1; slot <= 3; slot++)
+                {
+                    if (slotTax[slot] is { } montoItbis)
+                    {
+                        sb.AppendLine($"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
+                    }
+                }
                 sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
             }
             else

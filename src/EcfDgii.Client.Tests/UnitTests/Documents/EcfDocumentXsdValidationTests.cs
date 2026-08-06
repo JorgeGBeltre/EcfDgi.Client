@@ -69,7 +69,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
         private static (DocumentsController Controller, ApplicationDbContext Db, Mock<IEcfXmlSignerSpy> SignerSpy, Mock<IEcfClient> EcfClientMock) MakeRealController(
-            string nextEncf, bool enableXsdGate = true)
+            string nextEncf, bool enableXsdGate = true, bool useFallbackCertificate = false)
         {
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
@@ -88,7 +88,12 @@ namespace EcfDgii.Client.UnitTests.Documents
             using var ephemeralCert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var certBytes = ephemeralCert.Export(X509ContentType.Pfx, "test-pass");
             var cert = new X509Certificate2(certBytes, "test-pass", X509KeyStorageFlags.Exportable);
-            var realSigner = new EcfXmlSigner(cert); // real signer — ValidateCertificateSn's self-signed-cert bypass covers this
+            // useFallbackCertificate exercises the no-certificate-configured path: EcfXmlSigner
+            // silently self-generates one, which is precisely the condition the Unsigned state exists
+            // to make visible.
+            var realSigner = useFallbackCertificate
+                ? new EcfXmlSigner(pfxPath: "", pfxPassword: "")
+                : new EcfXmlSigner(cert); // real signer — ValidateCertificateSn's self-signed-cert bypass covers this
 
             // Spies on the real signer so a test can assert the pre-signature XSD gate short-circuits
             // BEFORE ever calling it — a structurally-broken document must never reach signing/DGII.
@@ -96,6 +101,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             signerSpyMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
                 .Returns((string xml, string rnc) => realSigner.SignXml(xml, rnc));
             signerSpyMock.Setup(s => s.ValidateCertificateSn(It.IsAny<string>())).Returns(true);
+            signerSpyMock.Setup(s => s.UsesFallbackCertificate).Returns(() => realSigner.UsesFallbackCertificate);
 
             var clockMock = new Mock<IClock>();
             clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddDays(1));
@@ -221,6 +227,90 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 31 v.1.0.xsd"));
             Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_WithMultipleTaxRates_DeclaresEachInItsOwnDgiiBucket()
+        {
+            // 18% → I1, 16% → I2, 0% → I3. Before this, every taxed peso went into I1 regardless of
+            // its real rate, and ITBIS1/2/3 (the rate declarations themselves) were never emitted at
+            // all — so a 16%-rated line was filed as if 18% had been charged on it.
+            var (controller, db, _, _) = MakeRealController("E310000000806");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-TASAS", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 400m,
+                    MontoGravadoTotal = 350m,
+                    MontoExento = 50m,
+                    MontoItbis = 50m,
+                    MontoTotal = 450m,
+                    TaxBuckets =
+                    [
+                        new CanonicalTaxBucketDto { Rate = 18, Base = 100m, Tax = 18m },
+                        new CanonicalTaxBucketDto { Rate = 16, Base = 200m, Tax = 32m },
+                        new CanonicalTaxBucketDto { Rate = 0, Base = 50m, Tax = 0m },
+                    ],
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync()).SignedXmlContent!;
+
+            Assert.Contains("<MontoGravadoTotal>350.00</MontoGravadoTotal>", xml);
+            Assert.Contains("<MontoGravadoI1>100.00</MontoGravadoI1>", xml);
+            Assert.Contains("<MontoGravadoI2>200.00</MontoGravadoI2>", xml);
+            Assert.Contains("<MontoGravadoI3>50.00</MontoGravadoI3>", xml);
+            Assert.Contains("<MontoExento>50.00</MontoExento>", xml);
+            Assert.Contains("<ITBIS1>18</ITBIS1>", xml);
+            Assert.Contains("<ITBIS2>16</ITBIS2>", xml);
+            Assert.Contains("<ITBIS3>0</ITBIS3>", xml);
+            Assert.Contains("<TotalITBIS>50.00</TotalITBIS>", xml);
+            Assert.Contains("<TotalITBIS1>18.00</TotalITBIS1>", xml);
+            Assert.Contains("<TotalITBIS2>32.00</TotalITBIS2>", xml);
+            Assert.Contains("<TotalITBIS3>0.00</TotalITBIS3>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_WithARateDgiiHasNoBucketFor_IsRejectedInsteadOfFiledUnderTheNearestOne()
+        {
+            // DGII has exactly three ITBIS slots (18/16/0). A rate that isn't one of them cannot be
+            // declared truthfully, and quietly folding it into I1 would misstate the tax charged —
+            // the same class of silent-wrongness as the exempt-as-taxed bug. Fail loudly instead.
+            var (controller, db, _, _) = MakeRealController("E310000000807");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-TASA-RARA", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 100m, MontoGravadoTotal = 100m, MontoItbis = 10m, MontoTotal = 110m,
+                    TaxBuckets = [new CanonicalTaxBucketDto { Rate = 10, Base = 100m, Tax = 10m }],
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+            // Rejected before a sequence is spent, like every other type-specific guard here.
+            Assert.False(await db.EcfDocuments.AnyAsync());
         }
 
         [Fact]
@@ -376,6 +466,67 @@ namespace EcfDgii.Client.UnitTests.Documents
             var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 41 v.1.0.xsd"));
 
             Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task WithoutARealCertificate_DocumentIsMarkedUnsigned_AndNeverSentToDgii()
+        {
+            // EcfXmlSigner silently self-generates a certificate when none is configured, so a
+            // document signed with it was indistinguishable from a properly signed one: state
+            // "Signed", then the DGII call fails and it lands on "Uncertain" — which says "we don't
+            // know if DGII got it" when the truth is "this could never have been valid".
+            //
+            // Unsigned states the real condition: no DGII-issued credential, so nothing was
+            // transmitted. The XML is still built and signed so it can be inspected in a test
+            // environment; only the transmission is skipped.
+            var (controller, db, signerSpy, ecfClientMock) = MakeRealController("E310000000808", useFallbackCertificate: true);
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-SIN-CERT", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Equal("Unsigned", stored.State);
+            Assert.False(string.IsNullOrEmpty(stored.SignedXmlContent)); // still inspectable
+            signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+            ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task WithARealCertificate_DocumentIsStillTransmitted()
+        {
+            // Guard for the other side of the branch: a real credential must behave exactly as before.
+            var (controller, db, _, ecfClientMock) = MakeRealController("E310000000809");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-CON-CERT", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+            };
+
+            await controller.SubmitCanonicalDocument(dto);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            // DGII returned a TrackId: the signature is confirmed real, which is what "Signed" means
+            // here — the counterpart to "Unsigned". Local signing alone does not earn this state.
+            Assert.Equal("Signed", stored.State);
+            ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]

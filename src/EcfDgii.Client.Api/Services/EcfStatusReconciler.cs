@@ -77,7 +77,11 @@ namespace EcfDgii.Client.Api.Services
             var pollDueCutoff = now - options.PollingInterval;
 
             var due = await db.EcfDocuments
-                .Where(d => d.State == "SentToDgii"
+                // "Signed" = DGII acknowledged receipt with a TrackId. "SentToDgii" is the previous
+                // name for the same state and is still matched so rows written before the rename are
+                // not silently stranded outside every polling pass — the one outcome worse than a
+                // wrong state name is a fiscal record nothing ever looks at again.
+                .Where(d => (d.State == "Signed" || d.State == "SentToDgii")
                          && d.SentToDgiiAt != null
                          && d.SentToDgiiAt <= minAgeCutoff
                          && (d.LastStatusCheckAt == null || d.LastStatusCheckAt <= pollDueCutoff))
