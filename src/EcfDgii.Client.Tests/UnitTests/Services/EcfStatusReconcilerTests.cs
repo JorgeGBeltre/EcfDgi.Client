@@ -35,7 +35,7 @@ namespace EcfDgii.Client.UnitTests.Services
                 .UseInMemoryDatabase(Guid.NewGuid().ToString())
                 .Options);
 
-        private static EcfDocument MakeSentDocument(DateTime sentAt, DateTime? lastCheck = null, string state = "SentToDgii") =>
+        private static EcfDocument MakeSentDocument(DateTime sentAt, DateTime? lastCheck = null, string state = "Signed") =>
             new()
             {
                 RncEmisor = "101889063",
@@ -79,7 +79,7 @@ namespace EcfDgii.Client.UnitTests.Services
 
             ecfClientMock.Verify(c => c.ConsultarEstadoAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-            Assert.Equal("SentToDgii", db.EcfDocuments.Single().State);
+            Assert.Equal("Signed",db.EcfDocuments.Single().State);
         }
 
         [Fact]
@@ -142,7 +142,7 @@ namespace EcfDgii.Client.UnitTests.Services
         }
 
         [Fact]
-        public async Task ReconcileAsync_DgiiSaysNoEncontrado_StaysSentToDgii_ButBumpsAttempts_ForNextPass()
+        public async Task ReconcileAsync_DgiiSaysNoEncontrado_StaysSigned_ButBumpsAttempts_ForNextPass()
         {
             using var db = NewDb();
             var doc = MakeSentDocument(sentAt: FixedNow.AddHours(-1));
@@ -157,7 +157,7 @@ namespace EcfDgii.Client.UnitTests.Services
             await MakeReconciler(db, ecfClientMock).ReconcileAsync(CancellationToken.None);
 
             var updated = db.EcfDocuments.Single();
-            Assert.Equal("SentToDgii", updated.State);
+            Assert.Equal("Signed",updated.State);
             Assert.Equal(1, updated.StatusCheckAttempts);
             Assert.Equal(FixedNow, updated.LastStatusCheckAt);
         }
@@ -209,13 +209,34 @@ namespace EcfDgii.Client.UnitTests.Services
             await MakeReconciler(db, ecfClientMock).ReconcileAsync(CancellationToken.None);
 
             var updated = db.EcfDocuments.Single();
-            Assert.Equal("SentToDgii", updated.State);
+            Assert.Equal("Signed",updated.State);
             Assert.Equal(1, updated.StatusCheckAttempts);
             Assert.Equal(FixedNow, updated.LastStatusCheckAt);
         }
 
         [Fact]
-        public async Task ReconcileAsync_IgnoresDocumentsNotInSentToDgiiState()
+        public async Task ReconcileAsync_StillPicksUpRowsWrittenUnderTheOldSentToDgiiName()
+        {
+            // "SentToDgii" was renamed to "Signed" when Signed became the confirmed-by-DGII state.
+            // Rows persisted before that rename must keep being polled: a document DGII already has,
+            // that no pass ever looks at again, is the worst possible outcome of a naming change —
+            // it would sit unverified forever with nothing to reveal it.
+            using var db = NewDb();
+            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "SentToDgii"));
+            await db.SaveChangesAsync();
+
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync(
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaEstadoResponse { Estado = "Aceptado" });
+
+            await MakeReconciler(db, ecfClientMock).ReconcileAsync(CancellationToken.None);
+
+            Assert.Equal("AcceptedByDgii", db.EcfDocuments.Single().State);
+        }
+
+        [Fact]
+        public async Task ReconcileAsync_IgnoresDocumentsInStatesItDoesNotOwn()
         {
             using var db = NewDb();
             db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "RejectedByDgii"));

@@ -69,7 +69,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
         private static (DocumentsController Controller, ApplicationDbContext Db, Mock<IEcfXmlSignerSpy> SignerSpy, Mock<IEcfClient> EcfClientMock) MakeRealController(
-            string nextEncf, bool enableXsdGate = true)
+            string nextEncf, bool enableXsdGate = true, bool useFallbackCertificate = false)
         {
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
@@ -88,7 +88,12 @@ namespace EcfDgii.Client.UnitTests.Documents
             using var ephemeralCert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var certBytes = ephemeralCert.Export(X509ContentType.Pfx, "test-pass");
             var cert = new X509Certificate2(certBytes, "test-pass", X509KeyStorageFlags.Exportable);
-            var realSigner = new EcfXmlSigner(cert); // real signer — ValidateCertificateSn's self-signed-cert bypass covers this
+            // useFallbackCertificate exercises the no-certificate-configured path: EcfXmlSigner
+            // silently self-generates one, which is precisely the condition the Unsigned state exists
+            // to make visible.
+            var realSigner = useFallbackCertificate
+                ? new EcfXmlSigner(pfxPath: "", pfxPassword: "")
+                : new EcfXmlSigner(cert); // real signer — ValidateCertificateSn's self-signed-cert bypass covers this
 
             // Spies on the real signer so a test can assert the pre-signature XSD gate short-circuits
             // BEFORE ever calling it — a structurally-broken document must never reach signing/DGII.
@@ -96,6 +101,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             signerSpyMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
                 .Returns((string xml, string rnc) => realSigner.SignXml(xml, rnc));
             signerSpyMock.Setup(s => s.ValidateCertificateSn(It.IsAny<string>())).Returns(true);
+            signerSpyMock.Setup(s => s.UsesFallbackCertificate).Returns(() => realSigner.UsesFallbackCertificate);
 
             var clockMock = new Mock<IClock>();
             clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddDays(1));
@@ -460,6 +466,67 @@ namespace EcfDgii.Client.UnitTests.Documents
             var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 41 v.1.0.xsd"));
 
             Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task WithoutARealCertificate_DocumentIsMarkedUnsigned_AndNeverSentToDgii()
+        {
+            // EcfXmlSigner silently self-generates a certificate when none is configured, so a
+            // document signed with it was indistinguishable from a properly signed one: state
+            // "Signed", then the DGII call fails and it lands on "Uncertain" — which says "we don't
+            // know if DGII got it" when the truth is "this could never have been valid".
+            //
+            // Unsigned states the real condition: no DGII-issued credential, so nothing was
+            // transmitted. The XML is still built and signed so it can be inspected in a test
+            // environment; only the transmission is skipped.
+            var (controller, db, signerSpy, ecfClientMock) = MakeRealController("E310000000808", useFallbackCertificate: true);
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-SIN-CERT", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Equal("Unsigned", stored.State);
+            Assert.False(string.IsNullOrEmpty(stored.SignedXmlContent)); // still inspectable
+            signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+            ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task WithARealCertificate_DocumentIsStillTransmitted()
+        {
+            // Guard for the other side of the branch: a real credential must behave exactly as before.
+            var (controller, db, _, ecfClientMock) = MakeRealController("E310000000809");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-CON-CERT", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+            };
+
+            await controller.SubmitCanonicalDocument(dto);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            // DGII returned a TrackId: the signature is confirmed real, which is what "Signed" means
+            // here — the counterpart to "Unsigned". Local signing alone does not earn this state.
+            Assert.Equal("Signed", stored.State);
+            ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]

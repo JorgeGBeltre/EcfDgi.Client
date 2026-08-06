@@ -412,7 +412,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var accepted = Assert.IsType<AcceptedResult>(secondResult);
             var afterRetry = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("SentToDgii", afterRetry.State);
+            Assert.Equal("Signed",afterRetry.State);
             Assert.Equal("E310000000001", afterRetry.ENcf);
 
             // The eNCF must never be allocated twice for the same TxnId.
@@ -460,7 +460,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             await controller2.SubmitCanonicalDocument(MakeDto("TXN-2", "1"));
 
             var afterRetry = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("SentToDgii", afterRetry.State);
+            Assert.Equal("Signed",afterRetry.State);
             Assert.Equal("TRACK-2", afterRetry.TrackId);
             Assert.Equal("E310000000002", afterRetry.ENcf);
 
@@ -581,7 +581,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             Assert.IsType<AcceptedResult>(result);
             var afterRetry = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("SentToDgii", afterRetry.State);
+            Assert.Equal("Signed",afterRetry.State);
             Assert.Equal("E310000000009", afterRetry.ENcf);
 
             // SendEcfAsync was invoked exactly once — during the first (failed) attempt.
@@ -624,7 +624,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             // Must actually sign and send — not silently report the never-transmitted document as done.
             Assert.IsType<AcceptedResult>(result);
             var afterRetry = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("SentToDgii", afterRetry.State);
+            Assert.Equal("Signed",afterRetry.State);
             Assert.Equal("TRACK-5", afterRetry.TrackId);
             Assert.Equal("E310000000005", afterRetry.ENcf);
 
@@ -667,7 +667,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             Assert.IsType<AcceptedResult>(result);
             var afterRetry = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("SentToDgii", afterRetry.State);
+            Assert.Equal("Signed",afterRetry.State);
             Assert.Equal("E310000000006", afterRetry.ENcf);
             Assert.Equal("2", afterRetry.EditSequence);
             Assert.Equal(236, afterRetry.TotalAmount);
@@ -703,7 +703,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             // Must not silently reuse the stale document as if nothing changed.
             var stored = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("SentToDgii", stored.State);
+            Assert.Equal("Signed",stored.State);
         }
 
         [Fact]
@@ -762,7 +762,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 RncEmisor = "101889063",
                 TrackId = "TRACK-WINNER",
                 XmlContent = "<ECF/>",
-                State = "SentToDgii"
+                State = "Signed"
             };
 
             var db = new ThrowOnceOnInsertDbContext(

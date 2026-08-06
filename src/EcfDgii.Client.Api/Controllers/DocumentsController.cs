@@ -253,7 +253,7 @@ namespace EcfDgii.Client.Api.Controllers
                 return await ReconcileUncertainAsync(existingDoc, dto, editSequence);
             }
 
-            // Terminal / known-transmitted states (Signed, SentToDgii, RejectedByDgii, ...).
+            // Terminal / known-transmitted states (AwaitingTransmission, Signed, RejectedByDgii, ...).
             if (!string.Equals(existingDoc.EditSequence, editSequence, StringComparison.Ordinal))
             {
                 // The source invoice changed after an e-CF was already issued for it. Silently
@@ -351,7 +351,7 @@ namespace EcfDgii.Client.Api.Controllers
             if (status != null && !IsNotFoundByDgii(status))
             {
                 // DGII already has it: reconcile local state and do not transmit a duplicate.
-                doc.State = "SentToDgii";
+                doc.State = "Signed";
                 await _db.SaveChangesAsync();
                 return Accepted(new
                 {
@@ -388,7 +388,11 @@ namespace EcfDgii.Client.Api.Controllers
 
                 doc.SignedXmlContent = signedXml;
                 doc.SecurityCode = secCode;
-                doc.State = "Signed";
+                // NOT "Signed": a locally-applied signature proves nothing until DGII accepts it —
+                // that is what "Signed" now means (see below). This is the transient in between, and
+                // it deliberately stays OUT of NeverTransmittedStates: if the process dies here we
+                // cannot tell whether the DGII call had already gone out.
+                doc.State = "AwaitingTransmission";
             }
             catch (Exception ex)
             {
@@ -429,6 +433,29 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
+            // No DGII-issued credential: EcfXmlSigner self-generated one so local work can proceed,
+            // but the result can never be a valid e-CF. Say that plainly instead of transmitting and
+            // letting the failure come back as "Uncertain" — which means "we don't know whether DGII
+            // received it" and would be a lie here: we know exactly why this cannot succeed.
+            // The signed XML is kept so it can still be inspected.
+            if (_signer.UsesFallbackCertificate)
+            {
+                doc.State = "Unsigned";
+                await _db.SaveChangesAsync();
+                _logger.LogError(
+                    "e-CF {ENcf} (TxnId {TxnId}) NO se transmitió: no hay certificado digital real configurado " +
+                    "(se usó uno autogenerado). Estado 'Unsigned'.",
+                    doc.ENcf, doc.SourceTxnId);
+                return Accepted(new
+                {
+                    documentId = doc.Id,
+                    eNcf = doc.ENcf,
+                    state = doc.State,
+                    trackId = doc.TrackId,
+                    securityCode = doc.SecurityCode
+                });
+            }
+
             await _db.SaveChangesAsync();
 
             try
@@ -438,7 +465,10 @@ namespace EcfDgii.Client.Api.Controllers
                 if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
                 {
                     doc.TrackId = response.TrackId;
-                    doc.State = "SentToDgii";
+                    // DGII received it and issued a TrackId — the signature is confirmed real. This is
+                    // the counterpart to "Unsigned": those two states are the signature-validity axis,
+                    // and only DGII's acceptance moves a document across it.
+                    doc.State = "Signed";
                     doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                 }
                 else

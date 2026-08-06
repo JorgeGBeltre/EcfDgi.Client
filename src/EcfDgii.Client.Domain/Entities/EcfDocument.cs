@@ -14,7 +14,11 @@ namespace EcfDgii.Client.Domain.Entities
         public string EditSequence { get; set; } = string.Empty;
         public string DocumentKind { get; set; } = "Invoice";
         public string? TrackId { get; set; }
-        // Received, SequenceAllocated, Signed, SentToDgii, AcceptedByDgii, RejectedByDgii, Uncertain,
+        // Signature-validity axis: Unsigned (no real certificate — nothing transmitted) vs Signed
+        // (DGII acknowledged receipt with a TrackId). AwaitingTransmission is the transient between
+        // local signing and that acknowledgement. "SentToDgii" was the previous name for Signed and
+        // may still exist in rows written before the rename.
+        // Received, SequenceAllocated, AwaitingTransmission, Signed, AcceptedByDgii, RejectedByDgii, Uncertain, Unsigned,
         // RequiresManualReview (status-polling window exhausted without a definitive DGII answer —
         // see EcfStatusReconciler; distinct from RejectedByDgii, which means DGII DID answer, and no).
         public string State { get; set; } = "Received";
