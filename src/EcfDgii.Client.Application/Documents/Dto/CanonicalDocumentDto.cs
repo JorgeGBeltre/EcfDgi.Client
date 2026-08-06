@@ -34,7 +34,23 @@ namespace EcfDgii.Client.Application.Documents.Dto
 
     public class CanonicalTotalsDto
     {
+        /// <summary>
+        /// LEGACY: the whole base, taxed and exempt lumped together. Kept because an already-deployed
+        /// ERPConnector still sends only this, and a version-skewed pair must degrade to the old
+        /// behavior rather than to something worse. Prefer MontoGravadoTotal + MontoExento.
+        /// </summary>
         public decimal MontoSubtotal { get; set; }
+
+        /// <summary>
+        /// DGII: MontoGravadoTotal — the base subject to ITBIS, EXCLUDING exempt amounts. Null means
+        /// the caller predates the split, in which case MontoSubtotal is used as before.
+        /// </summary>
+        public decimal? MontoGravadoTotal { get; set; }
+
+        /// <summary>DGII: MontoExento — the exempt base. Declaring it inside the taxed base overstates
+        /// what ITBIS was owed on, which is what happened while this field didn't exist.</summary>
+        public decimal? MontoExento { get; set; }
+
         public decimal MontoItbis { get; set; }
         public decimal MontoTotal { get; set; }
     }

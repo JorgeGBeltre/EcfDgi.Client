@@ -535,14 +535,30 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    <Totales>");
             if (dto.Totals != null)
             {
-                var subtotal = dto.Totals.MontoSubtotal;
                 var total = dto.Totals.MontoTotal;
                 var itbis = dto.Totals.MontoItbis;
-                
-                if (subtotal > 0)
+
+                // Exempt amounts are their own DGII bucket, not part of the taxed base. Falling back
+                // to MontoSubtotal (taxed + exempt lumped together) preserves the pre-split behaviour
+                // for a caller that hasn't been updated yet — see CanonicalTotalsDto.
+                var gravado = dto.Totals.MontoGravadoTotal ?? dto.Totals.MontoSubtotal;
+                var exento = dto.Totals.MontoExento ?? 0m;
+
+                // Element ORDER here is the XSD's Totales xs:sequence, which is not negotiable:
+                // MontoGravadoTotal, I1, I2, I3, MontoExento, ITBIS1-3, TotalITBIS, TotalITBIS1-3,
+                // ..., MontoTotal. Everything except MontoTotal is minOccurs="0", so omitting the
+                // buckets this codebase doesn't populate is valid — misplacing one is not.
+                if (gravado > 0)
                 {
-                    sb.AppendLine($"      <MontoGravadoTotal>{subtotal:F2}</MontoGravadoTotal>");
-                    sb.AppendLine($"      <MontoGravadoI1>{subtotal:F2}</MontoGravadoI1>");
+                    sb.AppendLine($"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
+                    // I1 is DGII's 18% bucket. Everything taxed is declared here, which is only right
+                    // while every taxed line really is at 18% — see the I2/I3 note in the repo's
+                    // open-items list before enabling reduced/zero-rated tax codes for real.
+                    sb.AppendLine($"      <MontoGravadoI1>{gravado:F2}</MontoGravadoI1>");
+                }
+                if (exento > 0)
+                {
+                    sb.AppendLine($"      <MontoExento>{exento:F2}</MontoExento>");
                 }
                 sb.AppendLine($"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
                 sb.AppendLine($"      <TotalITBIS1>{itbis:F2}</TotalITBIS1>");

@@ -184,6 +184,74 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo31_WithExemptLines_DeclaresThemAsMontoExento_NotAsTaxedBase()
+        {
+            // The XSD has a MontoExento element and this builder never emitted it: every exempt peso
+            // was folded into MontoGravadoTotal/MontoGravadoI1, declaring a taxed base larger than the
+            // one ITBIS was actually owed on. Schema-valid the whole time — a semantic misstatement no
+            // structural check can catch, which is exactly why it needs its own test.
+            var (controller, db, _, _) = MakeRealController("E310000000804");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-EXENTO", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 150m,        // legacy field: taxed + exempt
+                    MontoGravadoTotal = 100m,
+                    MontoExento = 50m,
+                    MontoItbis = 18m,
+                    MontoTotal = 168m,
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+
+            Assert.Contains("<MontoGravadoTotal>100.00</MontoGravadoTotal>", stored.SignedXmlContent!);
+            Assert.Contains("<MontoGravadoI1>100.00</MontoGravadoI1>", stored.SignedXmlContent!);
+            Assert.Contains("<MontoExento>50.00</MontoExento>", stored.SignedXmlContent!);
+
+            var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_WithOnlyLegacyMontoSubtotal_KeepsPreSplitBehaviour()
+        {
+            // Version-skew guard: EcfDgi.Client and ERPConnector deploy independently (container on the
+            // Pi vs. Windows service). An older connector sends only MontoSubtotal — that must still
+            // produce exactly what it produced before the split existed, never a silently smaller
+            // taxed base.
+            var (controller, db, _, _) = MakeRealController("E310000000805");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31-LEGACY", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 150m, MontoItbis = 18m, MontoTotal = 168m },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<MontoGravadoTotal>150.00</MontoGravadoTotal>", stored.SignedXmlContent!);
+            Assert.DoesNotContain("<MontoExento>", stored.SignedXmlContent!);
+        }
+
+        [Fact]
         public async Task Tipo31_WithFechaEmisionAlreadyInDgiiFormat_PassesThroughUnchanged()
         {
             // Regression guard, not a driver — this already passed before NormalizeFechaDgii existed.
