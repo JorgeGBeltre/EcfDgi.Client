@@ -318,6 +318,7 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     doc.TrackId = response.TrackId;
                     doc.State = "SentToDgii";
+                    doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                 }
                 else
                 {

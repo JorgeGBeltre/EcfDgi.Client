@@ -90,6 +90,17 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             builder.Property(e => e.ReceiptDate)
                 .HasColumnName("receipt_date");
 
+            builder.Property(e => e.SentToDgiiAt)
+                .HasColumnName("sent_to_dgii_at");
+
+            builder.Property(e => e.LastStatusCheckAt)
+                .HasColumnName("last_status_check_at");
+
+            builder.Property(e => e.StatusCheckAttempts)
+                .HasColumnName("status_check_attempts")
+                .IsRequired()
+                .HasDefaultValue(0);
+
             // Auditing Columns
             builder.Property(e => e.CreatedAt)
                 .HasColumnName("created_at")
@@ -136,6 +147,10 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
 
             builder.HasIndex(e => e.State)
                 .HasDatabaseName("ix_ecf_documents_state");
+
+            // Drives EcfStatusReconciler's "documents due for a status re-check" query.
+            builder.HasIndex(e => new { e.State, e.LastStatusCheckAt })
+                .HasDatabaseName("ix_ecf_documents_state_last_status_check_at");
         }
     }
 }
