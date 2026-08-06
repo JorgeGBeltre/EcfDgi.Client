@@ -1,0 +1,23 @@
+# Never let a locally-dropped certificate, secret, or VCS history end up baked into an image layer
+# — COPY . . in the Dockerfile sends the whole build context, and a layer is immutable once built
+# even if a later layer deletes the file.
+*.pfx
+*.p12
+*.pem
+*.key
+
+.git
+.gitignore
+
+**/bin
+**/obj
+**/.vs
+
+**/appsettings.Development.json
+**/appsettings.*.local.json
+**/secrets.json
+.env
+.env.*
+
+Logs
+data
