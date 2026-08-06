@@ -1,0 +1,134 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="ANECF">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Encabezado" maxOccurs="1">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="Version" type="versionType" maxOccurs="1"/>
+              <xs:element name="RncEmisor" type="RNCValidation" maxOccurs="1"/>
+              <xs:element name="CantidadeNCFAnulados" type="Num10Validation" maxOccurs="1"/>
+              <xs:element name="FechaHoraAnulacioneNCF" type="DateAndTimeValidation" maxOccurs="1"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="DetalleAnulacion" maxOccurs="1">
+           <xs:complexType>
+            <xs:sequence>              
+              <xs:element name="Anulacion" minOccurs="1" maxOccurs="10">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="NoLinea" type="Num2Validation" minOccurs="1" maxOccurs="10"/>
+                    <xs:element name="TipoeCF" type="CFType" maxOccurs="1"/>
+                    <xs:element name="TablaRangoSecuenciasAnuladaseNCF" maxOccurs="1">
+                      <xs:complexType>
+                        <xs:sequence>
+                          <xs:element name="Secuencias" minOccurs="1" maxOccurs="10000">
+                            <xs:complexType>
+                              <xs:sequence>
+                                <xs:element name="SecuenciaeNCFDesde" type="AlfaNum13Validation" maxOccurs="1"/>
+                                <xs:element name="SecuenciaeNCFHasta" type="AlfaNum13Validation" maxOccurs="1"/>
+                              </xs:sequence>
+                            </xs:complexType>
+                          </xs:element>
+                        </xs:sequence>
+                      </xs:complexType>
+                    </xs:element>
+                    <xs:element name="CantidadeNCFAnulados" type="Num10Validation" maxOccurs="1"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+              
+            </xs:sequence>
+          </xs:complexType>                   
+       </xs:element>
+        <xs:any minOccurs="1" maxOccurs="1" processContents="skip" />
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Definiciones de Tipos de datos -->
+  <xs:simpleType name="versionType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="1.0"/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="CFType">
+    <xs:restriction base="xs:integer" >
+      <xs:enumeration value="31"/>
+      <xs:enumeration value="32"/>
+      <xs:enumeration value="33"/>
+      <xs:enumeration value="34"/>
+      <xs:enumeration value="41"/>
+      <xs:enumeration value="43"/>
+      <xs:enumeration value="44"/>
+      <xs:enumeration value="45"/>
+      <xs:enumeration value="46"/>
+      <xs:enumeration value="47"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="SerieType">
+    <xs:restriction base="xs:string" >
+      <xs:enumeration value="B"/>
+      <xs:enumeration value="C"/>
+      <xs:enumeration value="D"/>
+      <xs:enumeration value="F"/>
+      <xs:enumeration value="G"/>
+      <xs:enumeration value="H"/>
+      <xs:enumeration value="I"/>
+      <xs:enumeration value="J"/>
+      <xs:enumeration value="K"/>
+      <xs:enumeration value="L"/>
+      <xs:enumeration value="M"/>
+      <xs:enumeration value="N"/>
+      <xs:enumeration value="O"/>
+      <xs:enumeration value="P"/>
+      <xs:enumeration value="Q"/>
+      <xs:enumeration value="P"/>
+      <xs:enumeration value="R"/>
+      <xs:enumeration value="S"/>
+      <xs:enumeration value="T"/>
+      <xs:enumeration value="U"/>
+      <xs:enumeration value="V"/>
+      <xs:enumeration value="W"/>
+      <xs:enumeration value="X"/>
+      <xs:enumeration value="Y"/>
+      <xs:enumeration value="Z"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="RNCValidation">
+    <xs:restriction base="xs:integer" >
+      <xs:pattern value="(\d{11,11})|(\d{9,9})"></xs:pattern>
+    </xs:restriction>
+  </xs:simpleType>
+  
+   <xs:simpleType name="AlfaNum13Validation">
+    <xs:restriction base="xs:string" >
+      <xs:minLength value="13"/>
+      <xs:maxLength value="13"/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="Num10Validation">
+    <xs:restriction base="xs:integer" >
+      <xs:pattern value="(\d{1,10})"></xs:pattern>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="Num2Validation">
+    <xs:restriction base="xs:integer" >     
+      <xs:pattern value="\d{1,2}"></xs:pattern>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="DateAndTimeValidation">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="(3[01]|[12][0-9]|0[1-9])-(1[0-2]|0[1-9])-[0-9]{4} (2[0-3]|[01]?[0-9]):([0-5]?[0-9]):([0-5]?[0-9])"></xs:pattern>
+    </xs:restriction>
+  </xs:simpleType>
+
+</xs:schema> 

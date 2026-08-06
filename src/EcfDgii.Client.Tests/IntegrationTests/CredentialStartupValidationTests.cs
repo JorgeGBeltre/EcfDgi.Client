@@ -52,6 +52,7 @@ namespace EcfDgii.Client.IntegrationTests
                 builder.UseSetting("EcfClientOptions:CertificatePath", _validCertPath);
                 builder.UseSetting("EcfClientOptions:CertificatePassword", CertPassword);
                 builder.UseSetting("WorkerSecretKey", workerSecretKey);
+                builder.UseSetting("WORKER_SECRET_KEY", workerSecretKey);
                 builder.UseSetting("JwtSettings:Secret", jwtSecret);
 
                 builder.ConfigureServices(services =>
