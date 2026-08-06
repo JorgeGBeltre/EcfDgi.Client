@@ -35,4 +35,15 @@
     <ProjectReference Include="..\EcfDgii.Client.Shared\EcfDgii.Client.Shared.csproj" />
   </ItemGroup>
 
+  <!-- DGII's real XSDs, copied next to the published app so EcfClientOptions:XsdDirectoryPath can
+       default to a path anchored at AppContext.BaseDirectory (works both locally and inside the
+       Docker image) instead of requiring every deployment to separately locate the source repo's
+       "Documentación Técnica (XSD)" folder, which won't exist on a deployed host at all. -->
+  <ItemGroup>
+    <None Include="..\..\Documentación Técnica (XSD)\*.xsd">
+      <Link>XSD\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

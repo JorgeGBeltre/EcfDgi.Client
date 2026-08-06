@@ -49,6 +49,7 @@ namespace EcfDgii.Client.IntegrationTests
                 builder.UseSetting("ConnectionStrings:DefaultConnection", "InMemory");
                 builder.UseSetting("ConnectionStrings:Redis", "");
                 builder.UseSetting("EcfEmisor:Rnc", "101889063");
+                builder.UseSetting("EcfClientOptions:RncEmisor", "101889063");
                 builder.UseSetting("EcfClientOptions:CertificatePath", _validCertPath);
                 builder.UseSetting("EcfClientOptions:CertificatePassword", CertPassword);
                 builder.UseSetting("WorkerSecretKey", workerSecretKey);

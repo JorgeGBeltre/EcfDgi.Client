@@ -56,6 +56,7 @@ namespace EcfDgii.Client.IntegrationTests
                 builder.UseSetting("ConnectionStrings:DefaultConnection", "InMemory");
                 builder.UseSetting("ConnectionStrings:Redis", "");
                 builder.UseSetting("EcfEmisor:Rnc", "101889063");
+                builder.UseSetting("EcfClientOptions:RncEmisor", "101889063");
                 builder.UseSetting("EcfClientOptions:CertificatePath", certPath);
                 builder.UseSetting("EcfClientOptions:CertificatePassword", certPassword);
                 // Not what this test class is about, but non-Development now also fails fast on

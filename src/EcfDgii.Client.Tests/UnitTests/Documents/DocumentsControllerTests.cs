@@ -8,6 +8,7 @@ using EcfDgii.Client.Domain.Entities;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Infrastructure.Persistence;
+using EcfDgii.Client.Infrastructure.Serialization;
 using EcfDgii.Client.Shared.Common;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
@@ -122,11 +123,15 @@ namespace EcfDgii.Client.UnitTests.Documents
                 clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddDays(1));
             }
 
-            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063" });
+            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063", RazonSocial = "Willy Chic Dominicana SRL" });
+            // XSD gate opt-in, off by default here — these tests predate it and exercise other
+            // concerns; EcfDocumentXsdValidationTests.cs exercises the gate itself directly.
+            var ecfClientOptions = Options.Create(new EcfClientOptions { ValidateSchemasLocal = false });
 
             var controller = new DocumentsController(
                 db, sequenceManagerMock.Object, ecfClientMock.Object, signerMock.Object,
-                NullLogger<DocumentsController>.Instance, clockMock.Object, emisorOptions)
+                NullLogger<DocumentsController>.Instance, clockMock.Object, emisorOptions,
+                new EcfSchemaValidator(), ecfClientOptions)
             {
                 ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
             };
@@ -165,6 +170,212 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync();
             Assert.Equal("101889063", stored.RncEmisor); // configured RNC won, not the DTO's
             signerMock.Verify(s => s.SignXml(It.IsAny<string>(), "101889063"), Times.Once);
+        }
+
+        [Fact]
+        public async Task NewDocument_UsesConfiguredEmisorRazonSocial_RegardlessOfWhatDtoSends()
+        {
+            // Same reasoning as the RNC test above, and the same gap: the RNC override was built
+            // three rounds ago, but RazonSocialEmisor was never given the same treatment — a caller
+            // (or a bug on the ERPConnector side) could put an arbitrary razón social under this
+            // instance's own enforced RNC in the signed XML.
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E310000000602");
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-602" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
+                // Pass the pre-signature XML through (so we can inspect the RazonSocialEmisor it
+                // carries) while still injecting a real ds:SignatureValue node — CalcularCodigoSeguridad
+                // requires one to exist, same as FakeSignedXml above does for the other tests.
+                .Returns((string xml, string rnc) => xml.Replace(
+                    "</ECF>",
+                    "<ds:Signature xmlns:ds='http://www.w3.org/2000/09/xmldsig#'>" +
+                    "<ds:SignatureValue>ZmFrZS1zaWduYXR1cmU=</ds:SignatureValue></ds:Signature></ECF>"));
+
+            var dto = MakeDto("TXN-WRONGRAZON", "1");
+            dto.Header.RazonSocialEmisor = "Empresa Impostora SRL"; // deliberately not the configured instance value
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            await controller.SubmitCanonicalDocument(dto);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<RazonSocialEmisor>Willy Chic Dominicana SRL</RazonSocialEmisor>", stored.SignedXmlContent);
+            Assert.DoesNotContain("Empresa Impostora", stored.SignedXmlContent);
+        }
+
+        // --- Tipo 34 (Nota de Crédito) ---
+
+        [Fact]
+        public async Task NewDocument_Tipo34_MissingCorrectsENcf_ReturnsBadRequest_BeforeAllocatingASequence()
+        {
+            // DGII: NCFModificado is obligatorio (1) for tipo 34 — per
+            // "Formato Comprobante Fiscal Electrónico (e-CF) V1.0 (1).md" lines 1105-1136.
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var dto = MakeDto("TXN-NC-1", "1");
+            dto.TipoComprobante = "E34";
+            dto.References = new CanonicalReferencesDto(); // CorrectsENcf/CodigoModificacion left unset
+
+            var controller = MakeController(db, sequenceManagerMock, new Mock<IEcfClient>(), new Mock<IEcfXmlSigner>());
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+            sequenceManagerMock.Verify(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task NewDocument_Tipo34_MissingCodigoModificacion_ReturnsBadRequest()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var dto = MakeDto("TXN-NC-2", "1");
+            dto.TipoComprobante = "E34";
+            dto.References = new CanonicalReferencesDto { CorrectsENcf = "E310000000001" };
+
+            var controller = MakeController(db, sequenceManagerMock, new Mock<IEcfClient>(), new Mock<IEcfXmlSigner>());
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task NewDocument_Tipo34_WithValidReferences_EmitsInformacionReferenciaBlock()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), "E34", It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E340000000001");
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-NC" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>())).Returns(FakeSignedXml);
+
+            var dto = MakeDto("TXN-NC-3", "1");
+            dto.TipoComprobante = "E34";
+            dto.References = new CanonicalReferencesDto
+            {
+                CorrectsENcf = "E310000000001",
+                CodigoModificacion = 3, // Corrige montos
+                RazonModificacion = "error en precio",
+            };
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<AcceptedResult>(result);
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<TipoeCF>34</TipoeCF>", stored.XmlContent);
+            Assert.Contains("<NCFModificado>E310000000001</NCFModificado>", stored.XmlContent);
+            Assert.Contains("<CodigoModificacion>3</CodigoModificacion>", stored.XmlContent);
+            Assert.Contains("<RazonModificacion>error en precio</RazonModificacion>", stored.XmlContent);
+        }
+
+        // --- Tipo 41 (Comprobante de Compras) ---
+
+        [Fact]
+        public async Task NewDocument_Tipo41_MissingRncComprador_ReturnsBadRequest()
+        {
+            // DGII: RNCComprador is obligatorio (1) for tipo 41 (the informal vendor's RNC/Cédula) —
+            // unlike 31/32/33/34 where it's condicional.
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var dto = MakeDto("TXN-COMPRA-1", "1");
+            dto.TipoComprobante = "E41";
+            dto.Header.RncComprador = "";
+            dto.Retention = new CanonicalRetentionDto { MontoItbisRetenido = 18m };
+
+            var controller = MakeController(db, sequenceManagerMock, new Mock<IEcfClient>(), new Mock<IEcfXmlSigner>());
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task NewDocument_Tipo41_MissingRetention_ReturnsBadRequest()
+        {
+            // DGII: Retención area is obligatorio (1) only for tipo 41 (and 47) — the buyer withholds
+            // ITBIS/ISR on behalf of the informal seller completing the e-CF on its behalf.
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var dto = MakeDto("TXN-COMPRA-2", "1");
+            dto.TipoComprobante = "E41";
+            dto.Retention = null;
+
+            var controller = MakeController(db, sequenceManagerMock, new Mock<IEcfClient>(), new Mock<IEcfXmlSigner>());
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task NewDocument_Tipo41_EmisorStaysConfiguredIdentity_ComprarorIsTheVendor_RetencionEmitted_NoTipoIngresos()
+        {
+            // Per the spec, <Emisor><RNCEmisor> must be a DGII-authorized Facturador Electrónico — an
+            // informal vendor can never satisfy that, so Emisor stays Willy Chic's own configured
+            // identity; the vendor's identity goes in <Comprador>, not a field-swap. TipoIngresos is
+            // "No corresponde" (0) for tipo 41 — must be omitted, not emitted as "1" like every other type.
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), "E41", It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E410000000001");
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-COMPRA" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>())).Returns(FakeSignedXml);
+
+            var dto = MakeDto("TXN-COMPRA-3", "1");
+            dto.TipoComprobante = "E41";
+            dto.Header.RncComprador = "130000005"; // the informal vendor
+            dto.Header.RazonSocialComprador = "Proveedor Informal SRL";
+            dto.Retention = new CanonicalRetentionDto
+            {
+                IndicadorAgenteRetencionoPercepcion = 1,
+                MontoItbisRetenido = 18m,
+                MontoIsrRetenido = null,
+            };
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<AcceptedResult>(result);
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Equal("101889063", stored.RncEmisor); // Emisor stayed Willy Chic, not the vendor
+            Assert.Contains("<RNCEmisor>101889063</RNCEmisor>", stored.XmlContent);
+            Assert.Contains("<RNCComprador>130000005</RNCComprador>", stored.XmlContent); // vendor as Comprador
+            Assert.DoesNotContain("<TipoIngresos>", stored.XmlContent);
+            Assert.Contains("<IndicadorAgenteRetencionoPercepcion>1</IndicadorAgenteRetencionoPercepcion>", stored.XmlContent);
+            Assert.Contains("<MontoITBISRetenido>18.00</MontoITBISRetenido>", stored.XmlContent);
+            Assert.DoesNotContain("<MontoISRRetenido>", stored.XmlContent); // null, conditional field omitted
+        }
+
+        [Fact]
+        public async Task NewDocument_Tipo31_StillEmitsTipoIngresos_AndNoRetencionBlock()
+        {
+            // Regression guard: the tipo-41 branching above must not change behavior for a normal
+            // factura (tipo 31), the only path exercised by every other test in this file.
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E310000000701");
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-701" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>())).Returns(FakeSignedXml);
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            await controller.SubmitCanonicalDocument(MakeDto("TXN-701", "1"));
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<TipoIngresos>01</TipoIngresos>", stored.XmlContent); // zero-padded per DGII's TipoIngresosValidationType
+            Assert.DoesNotContain("<Retencion>", stored.XmlContent);
+            Assert.DoesNotContain("<InformacionReferencia>", stored.XmlContent);
         }
 
         [Fact]

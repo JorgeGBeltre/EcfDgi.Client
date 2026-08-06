@@ -33,4 +33,16 @@
     <ProjectReference Include="..\..\EcfDgii.Client.Api\EcfDgii.Client.Api.csproj" />
   </ItemGroup>
 
+  <!-- WebApplicationFactory<Program> runs with THIS project's AppContext.BaseDirectory, not the Api
+       project's own build output — DependencyInjection.cs's XsdDirectoryPath default (anchored to
+       AppContext.BaseDirectory) would silently resolve to a folder with no XSDs here otherwise,
+       making any future integration test that submits a real document falsely fail schema
+       validation on a missing-file error, not a real structural one. -->
+  <ItemGroup>
+    <None Include="..\..\..\Documentación Técnica (XSD)\*.xsd">
+      <Link>XSD\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

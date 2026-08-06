@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -9,6 +11,7 @@ using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Infrastructure.Security;
+using EcfDgii.Client.Infrastructure.Serialization;
 using EcfDgii.Client.Shared.Common;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -43,6 +46,9 @@ namespace EcfDgii.Client.Api.Controllers
         // publish a guaranteed bound, so err on the side of waiting rather than double-submitting.
         private static readonly TimeSpan MinimumUncertainAgeBeforeReconciliation = TimeSpan.FromMinutes(2);
 
+        // DGII's FechaValidationType — see NormalizeFechaDgii.
+        private const string DgiiDateFormat = "dd-MM-yyyy";
+
         private readonly ApplicationDbContext _db;
         private readonly IEcfSequenceManager _sequenceManager;
         private readonly IEcfClient _ecfClient;
@@ -50,6 +56,9 @@ namespace EcfDgii.Client.Api.Controllers
         private readonly ILogger<DocumentsController> _logger;
         private readonly IClock _clock;
         private readonly string _emisorRnc;
+        private readonly string _emisorRazonSocial;
+        private readonly IEcfSchemaValidator _schemaValidator;
+        private readonly EcfClientOptions _ecfClientOptions;
 
         public DocumentsController(
             ApplicationDbContext db,
@@ -58,7 +67,9 @@ namespace EcfDgii.Client.Api.Controllers
             IEcfXmlSigner signer,
             ILogger<DocumentsController> logger,
             IClock clock,
-            IOptions<EcfEmisorOptions> emisorOptions)
+            IOptions<EcfEmisorOptions> emisorOptions,
+            IEcfSchemaValidator schemaValidator,
+            IOptions<EcfClientOptions> ecfClientOptions)
         {
             _db = db;
             _sequenceManager = sequenceManager;
@@ -69,6 +80,9 @@ namespace EcfDgii.Client.Api.Controllers
             // Validated present and well-formed at startup (see Program.cs ValidateOnStart); safe
             // to trust unconditionally here.
             _emisorRnc = emisorOptions.Value.Rnc;
+            _emisorRazonSocial = emisorOptions.Value.RazonSocial;
+            _schemaValidator = schemaValidator;
+            _ecfClientOptions = ecfClientOptions.Value;
         }
 
         [HttpPost]
@@ -77,6 +91,51 @@ namespace EcfDgii.Client.Api.Controllers
             if (dto == null || dto.SourceReference == null || string.IsNullOrWhiteSpace(dto.SourceReference.TxnId))
             {
                 return BadRequest(new { error = "SourceReference.TxnId is required." });
+            }
+
+            // Type-specific required fields per DGII's "Formato Comprobante Fiscal Electrónico (e-CF)
+            // V1.0" spec — checked before allocating a sequence, since a document missing these can
+            // never be validly built regardless of what eNCF it gets.
+            if (string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase))
+            {
+                // Tipo 34 (Nota de Crédito): InformacionReferencia is obligatorio (1). NCFModificado
+                // and CodigoModificacion are its two obligatorio sub-fields (lines 1113, 1126).
+                if (string.IsNullOrWhiteSpace(dto.References?.CorrectsENcf))
+                {
+                    return BadRequest(new { error = "References.CorrectsENcf (NCFModificado) is required for TipoComprobante E34." });
+                }
+                if (dto.References?.CodigoModificacion is null)
+                {
+                    return BadRequest(new { error = "References.CodigoModificacion is required for TipoComprobante E34." });
+                }
+
+                // DGII enforces MontoTotal(NC) ≤ MontoTotal(e-CF modificado) — a SEMANTIC rule the XSD
+                // cannot express (xs:sequence/xs:restriction only check structure and simple-type
+                // constraints, not cross-document business rules) and this codebase does not verify:
+                // doing so needs a DB lookup of dto.References.CorrectsENcf's own stored total, not
+                // implemented here. A document violating this passes schema validation cleanly and is
+                // rejected only when DGII itself receives it. Logged explicitly so this is a known,
+                // documented limit — not a surprise discovered in Certificación.
+                _logger.LogWarning(
+                    "e-CF {ENcf} tipo 34 (Nota de Crédito) para NCFModificado {NcfModificado}: el tope " +
+                    "'MontoTotal ≤ MontoTotal del e-CF modificado' NO se verifica localmente antes de " +
+                    "enviar a DGII — solo el servidor de DGII lo valida.",
+                    dto.SourceReference.TxnId, dto.References.CorrectsENcf);
+            }
+            else if (string.Equals(dto.TipoComprobante, "E41", StringComparison.OrdinalIgnoreCase))
+            {
+                // Tipo 41 (Comprobante de Compras): RNCComprador is obligatorio (1) here (vs.
+                // condicional for 31/32/33/34) — it's the informal vendor's identity. Retención is
+                // obligatorio (1) only for 41 (and 47) — the buyer withholds ITBIS/ISR on the
+                // informal seller's behalf.
+                if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                {
+                    return BadRequest(new { error = "Header.RncComprador is required for TipoComprobante E41 (the informal vendor's RNC/Cédula)." });
+                }
+                if (dto.Retention is null)
+                {
+                    return BadRequest(new { error = "Retention is required for TipoComprobante E41." });
+                }
             }
 
             var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
@@ -197,10 +256,11 @@ namespace EcfDgii.Client.Api.Controllers
         /// eNCF is already fixed. Used both for a brand-new document and for retrying a document
         /// that never actually reached DGII, where the incoming content may have been edited since.
         ///
-        /// RncEmisor deliberately comes from this instance's configured EcfEmisorOptions, not from
-        /// dto.Header.RncEmisor: it's the identity this API signs and transmits under, and a wrong
-        /// or missing value from the caller must never produce a validly-signed e-CF under someone
-        /// else's RNC. See EcfEmisorOptions for why this is instance-level rather than per-request.
+        /// RncEmisor AND RazonSocialEmisor deliberately come from this instance's configured
+        /// EcfEmisorOptions, not from dto.Header: both are the identity this API signs and transmits
+        /// under, and a wrong or missing value from the caller must never produce a validly-signed
+        /// e-CF under someone else's RNC or a fabricated legal name. See EcfEmisorOptions for why
+        /// this is instance-level rather than per-request.
         /// </summary>
         private void ApplyCanonicalContent(EcfDocument doc, CanonicalDocumentDto dto, string editSequence)
         {
@@ -211,7 +271,7 @@ namespace EcfDgii.Client.Api.Controllers
             doc.RncComprador = dto.Header?.RncComprador;
             doc.TotalAmount = dto.Totals?.MontoTotal ?? 0;
             doc.ItbisAmount = dto.Totals?.MontoItbis ?? 0;
-            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, _emisorRnc);
+            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, _emisorRnc, _emisorRazonSocial);
             doc.State = "SequenceAllocated";
         }
 
@@ -308,6 +368,37 @@ namespace EcfDgii.Client.Api.Controllers
                 return BadRequest(new { error = $"Error al firmar digitalmente el XML de e-CF: {ex.Message}" });
             }
 
+            // Local XSD gate — opt-in (ValidateSchemasLocal + XsdDirectoryPath configured, same
+            // switches EcfClient.SendEcfAsync's own pre-existing check reads, but exercised HERE too
+            // so an invalid document never even reaches the DGII round-trip). Deliberately validates
+            // the SIGNED xml, not the pre-signature one: the real DGII XSDs end every e-CF's sequence
+            // with a required `xs:any` slot for the ds:Signature XMLDSig injects — a pre-signature
+            // document is structurally incomplete by design and would always fail this check for a
+            // reason that has nothing to do with the actual content. Signing is a cheap, local
+            // operation; only the DGII round-trip is worth avoiding for a document that can't pass.
+            if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
+            {
+                var xsdFileName = EcfXsdFileNameResolver.Resolve(signedXml);
+                if (!string.IsNullOrEmpty(xsdFileName))
+                {
+                    var xsdPath = Path.Combine(_ecfClientOptions.XsdDirectoryPath, xsdFileName);
+                    var xsdResult = _schemaValidator.Validate(signedXml, xsdPath);
+                    if (!xsdResult.IsValid)
+                    {
+                        doc.State = "SchemaInvalid";
+                        await _db.SaveChangesAsync();
+                        _logger.LogError(
+                            "e-CF {ENcf} (TxnId {TxnId}) falló validación XSD local (firmado, antes de enviar a DGII): {Errors}",
+                            doc.ENcf, doc.SourceTxnId, string.Join(" | ", xsdResult.Errors));
+                        return BadRequest(new
+                        {
+                            error = "El XML firmado no es válido contra el esquema DGII (validación local, antes de enviar a DGII).",
+                            details = xsdResult.Errors,
+                        });
+                    }
+                }
+            }
+
             await _db.SaveChangesAsync();
 
             try
@@ -366,7 +457,7 @@ namespace EcfDgii.Client.Api.Controllers
             });
         }
 
-        private static string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc)
+        private static string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial)
         {
             var sb = new StringBuilder();
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
@@ -383,23 +474,50 @@ namespace EcfDgii.Client.Api.Controllers
             
             sb.AppendLine($"      <TipoeCF>{tipoEcf}</TipoeCF>");
             sb.AppendLine($"      <eNCF>{eNcf}</eNCF>");
-            
-            var fechaVencimiento = DateTime.Today.AddYears(1).ToString("dd-MM-yyyy");
-            sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
-            sb.AppendLine("      <TipoIngresos>1</TipoIngresos>");
+
+            // Verified against the real DGII XSDs (checked into this repo under "Documentación
+            // Técnica (XSD)") — the field-level obligatoriedad tables in the prose spec do NOT
+            // capture this: FechaVencimientoSecuencia and IndicadorNotaCredito are MUTUALLY
+            // EXCLUSIVE in IdDoc's xs:sequence, not both-optional-fields. Tipo 34's IdDoc has no
+            // FechaVencimientoSecuencia element at all; every other type this codebase emits (31/41)
+            // has no IndicadorNotaCredito element at all.
+            if (tipoEcf == "34")
+            {
+                // IndicadorNotaCreditoType: 0 = fecha de emisión <= 30 días calendario del e-CF
+                // afectado (ITBIS rebate right preserved), 1 = > 30 días (no rebate right). Computing
+                // the real value needs the referenced document's emission date, which this method
+                // doesn't have access to (no DB lookup here) — defaults to 0 (the common case: a
+                // correction issued promptly). Known simplification, not yet resolved.
+                sb.AppendLine("      <IndicadorNotaCredito>0</IndicadorNotaCredito>");
+            }
+            else
+            {
+                var fechaVencimiento = DateTime.Today.AddYears(1).ToString("dd-MM-yyyy");
+                sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
+            }
+
+            // TipoIngresos doesn't exist as an element at all in tipo 41's IdDoc schema (confirmed by
+            // running the real XSD — the prose spec's "obligatoriedad 0" undersold how absolute this
+            // is). Present (optional) for 31/34.
+            if (tipoEcf != "41")
+            {
+                // DGII's TipoIngresosValidationType (real XSD) is a zero-padded 2-digit enumeration
+                // ("01".."06"), not a bare integer — "1" fails schema validation outright. Pre-existing
+                // bug, found by actually running the XSD (not something the field-level obligatoriedad
+                // tables alone would have caught).
+                sb.AppendLine("      <TipoIngresos>01</TipoIngresos>");
+            }
             sb.AppendLine("      <TipoPago>1</TipoPago>");
             sb.AppendLine("    </IdDoc>");
             
             sb.AppendLine("    <Emisor>");
-            // Deliberately emisorRnc (this instance's configured RNC), not dto.Header?.RncEmisor —
-            // see ApplyCanonicalContent's doc comment.
+            // Deliberately emisorRnc/emisorRazonSocial (this instance's configured identity), never
+            // dto.Header?.RncEmisor/RazonSocialEmisor — see ApplyCanonicalContent's doc comment.
             sb.AppendLine($"      <RNCEmisor>{emisorRnc}</RNCEmisor>");
-            var razonSocialEmisor = EscapeXml(dto.Header?.RazonSocialEmisor ?? "Emisor");
+            var razonSocialEmisor = EscapeXml(emisorRazonSocial);
             sb.AppendLine($"      <RazonSocialEmisor>{razonSocialEmisor}</RazonSocialEmisor>");
             sb.AppendLine("      <DireccionEmisor>Distrito Nacional, SD</DireccionEmisor>");
-            var fechaEmision = string.IsNullOrWhiteSpace(dto.Header?.FechaEmision) 
-                ? DateTime.Today.ToString("dd-MM-yyyy") 
-                : dto.Header.FechaEmision;
+            var fechaEmision = NormalizeFechaDgii(dto.Header?.FechaEmision);
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
 
@@ -417,14 +535,30 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    <Totales>");
             if (dto.Totals != null)
             {
-                var subtotal = dto.Totals.MontoSubtotal;
                 var total = dto.Totals.MontoTotal;
                 var itbis = dto.Totals.MontoItbis;
-                
-                if (subtotal > 0)
+
+                // Exempt amounts are their own DGII bucket, not part of the taxed base. Falling back
+                // to MontoSubtotal (taxed + exempt lumped together) preserves the pre-split behaviour
+                // for a caller that hasn't been updated yet — see CanonicalTotalsDto.
+                var gravado = dto.Totals.MontoGravadoTotal ?? dto.Totals.MontoSubtotal;
+                var exento = dto.Totals.MontoExento ?? 0m;
+
+                // Element ORDER here is the XSD's Totales xs:sequence, which is not negotiable:
+                // MontoGravadoTotal, I1, I2, I3, MontoExento, ITBIS1-3, TotalITBIS, TotalITBIS1-3,
+                // ..., MontoTotal. Everything except MontoTotal is minOccurs="0", so omitting the
+                // buckets this codebase doesn't populate is valid — misplacing one is not.
+                if (gravado > 0)
                 {
-                    sb.AppendLine($"      <MontoGravadoTotal>{subtotal:F2}</MontoGravadoTotal>");
-                    sb.AppendLine($"      <MontoGravadoI1>{subtotal:F2}</MontoGravadoI1>");
+                    sb.AppendLine($"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
+                    // I1 is DGII's 18% bucket. Everything taxed is declared here, which is only right
+                    // while every taxed line really is at 18% — see the I2/I3 note in the repo's
+                    // open-items list before enabling reduced/zero-rated tax codes for real.
+                    sb.AppendLine($"      <MontoGravadoI1>{gravado:F2}</MontoGravadoI1>");
+                }
+                if (exento > 0)
+                {
+                    sb.AppendLine($"      <MontoExento>{exento:F2}</MontoExento>");
                 }
                 sb.AppendLine($"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
                 sb.AppendLine($"      <TotalITBIS1>{itbis:F2}</TotalITBIS1>");
@@ -437,6 +571,15 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    </Totales>");
             sb.AppendLine("  </Encabezado>");
 
+            // Retención (tipo 41 only) is PER LINE ITEM inside DetallesItems/Item — NOT a document-
+            // level section. Confirmed by running the real XSD: initially built as a header-level
+            // block after DetallesItems, which is entirely the wrong structure (the field-level
+            // obligatoriedad tables give no hint of this at all). Applied uniformly from the single
+            // header-level Retention DTO to every item — this codebase doesn't model per-line
+            // withholding, and a single-vendor purchase document plausibly has one retention treatment
+            // across its lines; known simplification if that's ever not true.
+            var retention = tipoEcf == "41" ? dto.Retention : null;
+
             sb.AppendLine("  <DetallesItems>");
             if (dto.Lines != null && dto.Lines.Count > 0)
             {
@@ -445,6 +588,7 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine("    <Item>");
                     sb.AppendLine($"      <NumeroLinea>{line.LineNumber}</NumeroLinea>");
                     sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
+                    AppendRetencion(sb, retention);
                     var itemName = EscapeXml(line.ItemName ?? "Item");
                     sb.AppendLine($"      <NombreItem>{itemName}</NombreItem>");
                     sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
@@ -459,6 +603,7 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("    <Item>");
                 sb.AppendLine("      <NumeroLinea>1</NumeroLinea>");
                 sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
+                AppendRetencion(sb, retention);
                 sb.AppendLine("      <NombreItem>Item General</NombreItem>");
                 sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
                 sb.AppendLine("      <CantidadItem>1.00</CantidadItem>");
@@ -468,11 +613,89 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("    </Item>");
             }
             sb.AppendLine("  </DetallesItems>");
-            
+
+            // "InformacionReferencia" — confirmed by the real XSD to be a top-level sibling AFTER
+            // DetallesItems (not before it, and not nested inside Encabezado — both wrong in the
+            // first version of this code, written from the prose spec's field-level tables alone).
+            if (tipoEcf == "34" && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
+            {
+                sb.AppendLine("  <InformacionReferencia>");
+                sb.AppendLine($"    <NCFModificado>{refs.CorrectsENcf}</NCFModificado>");
+                if (!string.IsNullOrWhiteSpace(refs.RncOtroContribuyente))
+                {
+                    sb.AppendLine($"    <RNCOtroContribuyente>{refs.RncOtroContribuyente}</RNCOtroContribuyente>");
+                }
+                // The real XSD marks FechaNCFModificado minOccurs="1" (structurally required) even
+                // though the prose spec calls it "condicional a...reemplazo de contingencia" — the two
+                // documents disagree, and the XSD is authoritative for what DGII's server will accept.
+                // Defaults to today when the caller doesn't have the referenced document's real date;
+                // known simplification, not a faithful "fecha del NCF modificado" in that case.
+                var fechaNcfModificado = NormalizeFechaDgii(refs.FechaNcfModificado);
+                sb.AppendLine($"    <FechaNCFModificado>{fechaNcfModificado}</FechaNCFModificado>");
+                if (refs.CodigoModificacion is { } codigo)
+                {
+                    sb.AppendLine($"    <CodigoModificacion>{codigo}</CodigoModificacion>");
+                }
+                if (!string.IsNullOrWhiteSpace(refs.RazonModificacion))
+                {
+                    sb.AppendLine($"    <RazonModificacion>{EscapeXml(refs.RazonModificacion)}</RazonModificacion>");
+                }
+                sb.AppendLine("  </InformacionReferencia>");
+            }
+
             var fechaHoraFirma = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
             sb.AppendLine($"  <FechaHoraFirma>{fechaHoraFirma}</FechaHoraFirma>");
             sb.AppendLine("</ECF>");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Renders a date in the ONLY format DGII's schemas accept: dd-MM-yyyy (FechaValidationType,
+        /// pattern "(3[01]|[12][0-9]|0?[1-9])-(1[012]|0?[1-9])-((19|20)\d{2})" in the real XSDs).
+        ///
+        /// The canonical DTO carries dates in ISO 8601 (yyyy-MM-dd) — that is what ERPConnector's
+        /// ApiSubmitStage sends, and it is the correct thing for a jurisdiction-neutral connector to
+        /// send: dd-MM-yyyy is a DGII convention, so translating into it belongs on THIS side of the
+        /// HTTP contract. Before this existed the ISO value was written into the XML verbatim, failed
+        /// the local XSD gate, and came back as a 400 the connector recorded as a terminal rejection.
+        ///
+        /// Deliberately NOT a lenient DateTime.TryParse: under InvariantCulture "06-08-2026" parses
+        /// month-first as 8 June, so a value already in DGII's format would come back out as a
+        /// different calendar day. Only the exact ISO shape is converted; anything already valid (or
+        /// unrecognized) passes through untouched, leaving the XSD gate as the backstop it already is.
+        /// </summary>
+        private static string NormalizeFechaDgii(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return DateTime.Today.ToString(DgiiDateFormat, CultureInfo.InvariantCulture);
+            }
+
+            var trimmed = value.Trim();
+
+            return DateTime.TryParseExact(trimmed, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var iso)
+                ? iso.ToString(DgiiDateFormat, CultureInfo.InvariantCulture)
+                : trimmed;
+        }
+
+        /// <summary>
+        /// Emits a per-Item &lt;Retencion&gt; block (tipo 41 only — see BuildXmlFromCanonical). Real
+        /// XSD sequence inside Item: IndicadorAgenteRetencionoPercepcion (required),
+        /// MontoITBISRetenido (optional), MontoISRRetenido (optional) — verified against the checked-in
+        /// DGII schema, not inferred from the prose spec.
+        /// </summary>
+        private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention)
+        {
+            if (retention is null) return;
+
+            sb.AppendLine("      <Retencion>");
+            sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
+            sb.AppendLine($"        <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
+            if (retention.MontoIsrRetenido is { } montoIsr)
+            {
+                sb.AppendLine($"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+            }
+            sb.AppendLine("      </Retencion>");
         }
 
         private static string EscapeXml(string value)

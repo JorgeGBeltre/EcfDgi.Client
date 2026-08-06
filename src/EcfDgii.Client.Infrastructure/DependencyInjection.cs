@@ -1,3 +1,4 @@
+using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -73,6 +74,20 @@ namespace EcfDgii.Client.Infrastructure
 
             // SDK Options Configuration
             services.Configure<EcfClientOptions>(configuration.GetSection("EcfClientOptions"));
+            // XsdDirectoryPath defaults to a path anchored at AppContext.BaseDirectory (where
+            // EcfDgii.Client.Api.csproj copies the real DGII XSDs alongside the published app) when
+            // config doesn't set one explicitly — this is what actually turns local schema
+            // validation ON by default (EcfClient.SendEcfAsync's check, and DocumentsController's own
+            // pre-DGII gate, both read this same option). Previously this was always empty/unset
+            // anywhere in this repo's config, so the validation code existed but silently never ran.
+            services.PostConfigure<EcfClientOptions>(options =>
+            {
+                if (string.IsNullOrWhiteSpace(options.XsdDirectoryPath))
+                {
+                    options.XsdDirectoryPath = System.IO.Path.Combine(AppContext.BaseDirectory, "XSD");
+                }
+            });
+            services.AddSingleton<IEcfSchemaValidator, EcfSchemaValidator>();
 
             // Register Services
             services.AddScoped<IUnitOfWork, UnitOfWork>();
