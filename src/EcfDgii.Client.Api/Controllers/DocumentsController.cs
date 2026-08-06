@@ -96,6 +96,19 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     return BadRequest(new { error = "References.CodigoModificacion is required for TipoComprobante E34." });
                 }
+
+                // DGII enforces MontoTotal(NC) ≤ MontoTotal(e-CF modificado) — a SEMANTIC rule the XSD
+                // cannot express (xs:sequence/xs:restriction only check structure and simple-type
+                // constraints, not cross-document business rules) and this codebase does not verify:
+                // doing so needs a DB lookup of dto.References.CorrectsENcf's own stored total, not
+                // implemented here. A document violating this passes schema validation cleanly and is
+                // rejected only when DGII itself receives it. Logged explicitly so this is a known,
+                // documented limit — not a surprise discovered in Certificación.
+                _logger.LogWarning(
+                    "e-CF {ENcf} tipo 34 (Nota de Crédito) para NCFModificado {NcfModificado}: el tope " +
+                    "'MontoTotal ≤ MontoTotal del e-CF modificado' NO se verifica localmente antes de " +
+                    "enviar a DGII — solo el servidor de DGII lo valida.",
+                    dto.SourceReference.TxnId, dto.References.CorrectsENcf);
             }
             else if (string.Equals(dto.TipoComprobante, "E41", StringComparison.OrdinalIgnoreCase))
             {
@@ -418,15 +431,38 @@ namespace EcfDgii.Client.Api.Controllers
             
             sb.AppendLine($"      <TipoeCF>{tipoEcf}</TipoeCF>");
             sb.AppendLine($"      <eNCF>{eNcf}</eNCF>");
-            
-            var fechaVencimiento = DateTime.Today.AddYears(1).ToString("dd-MM-yyyy");
-            sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
-            // TipoIngresos is "No corresponde" (obligatoriedad 0) for tipo 41 (Compras) — DGII spec,
-            // "Formato Comprobante Fiscal Electrónico (e-CF) V1.0 (1).md" line 186. Every other type
-            // this codebase emits (31/34) requires it.
+
+            // Verified against the real DGII XSDs (checked into this repo under "Documentación
+            // Técnica (XSD)") — the field-level obligatoriedad tables in the prose spec do NOT
+            // capture this: FechaVencimientoSecuencia and IndicadorNotaCredito are MUTUALLY
+            // EXCLUSIVE in IdDoc's xs:sequence, not both-optional-fields. Tipo 34's IdDoc has no
+            // FechaVencimientoSecuencia element at all; every other type this codebase emits (31/41)
+            // has no IndicadorNotaCredito element at all.
+            if (tipoEcf == "34")
+            {
+                // IndicadorNotaCreditoType: 0 = fecha de emisión <= 30 días calendario del e-CF
+                // afectado (ITBIS rebate right preserved), 1 = > 30 días (no rebate right). Computing
+                // the real value needs the referenced document's emission date, which this method
+                // doesn't have access to (no DB lookup here) — defaults to 0 (the common case: a
+                // correction issued promptly). Known simplification, not yet resolved.
+                sb.AppendLine("      <IndicadorNotaCredito>0</IndicadorNotaCredito>");
+            }
+            else
+            {
+                var fechaVencimiento = DateTime.Today.AddYears(1).ToString("dd-MM-yyyy");
+                sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
+            }
+
+            // TipoIngresos doesn't exist as an element at all in tipo 41's IdDoc schema (confirmed by
+            // running the real XSD — the prose spec's "obligatoriedad 0" undersold how absolute this
+            // is). Present (optional) for 31/34.
             if (tipoEcf != "41")
             {
-                sb.AppendLine("      <TipoIngresos>1</TipoIngresos>");
+                // DGII's TipoIngresosValidationType (real XSD) is a zero-padded 2-digit enumeration
+                // ("01".."06"), not a bare integer — "1" fails schema validation outright. Pre-existing
+                // bug, found by actually running the XSD (not something the field-level obligatoriedad
+                // tables alone would have caught).
+                sb.AppendLine("      <TipoIngresos>01</TipoIngresos>");
             }
             sb.AppendLine("      <TipoPago>1</TipoPago>");
             sb.AppendLine("    </IdDoc>");
@@ -478,35 +514,14 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    </Totales>");
             sb.AppendLine("  </Encabezado>");
 
-            // "F. Información de Referencia" — obligatorio (1) for tipo 34 (Nota de Crédito). Its own
-            // top-level section (sibling to Encabezado/DetallesItems per the spec's section lettering
-            // A-F), not nested inside Encabezado. Exact sibling placement/ordering within the full
-            // e-CF schema is inferred from the field-level obligatoriedad tables, not from an explicit
-            // worked XML example in the spec — confirm against the real DGII XSD (see EcfClientOptions.
-            // XsdDirectoryPath/ValidateSchemasLocal, not yet wired to validate outbound documents)
-            // before trusting this in Certificación.
-            if (tipoEcf == "34" && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
-            {
-                sb.AppendLine("  <InformacionReferencia>");
-                sb.AppendLine($"    <NCFModificado>{refs.CorrectsENcf}</NCFModificado>");
-                if (!string.IsNullOrWhiteSpace(refs.FechaNcfModificado))
-                {
-                    sb.AppendLine($"    <FechaNCFModificado>{refs.FechaNcfModificado}</FechaNCFModificado>");
-                }
-                if (refs.CodigoModificacion is { } codigo)
-                {
-                    sb.AppendLine($"    <CodigoModificacion>{codigo}</CodigoModificacion>");
-                }
-                if (!string.IsNullOrWhiteSpace(refs.RazonModificacion))
-                {
-                    sb.AppendLine($"    <RazonModificacion>{EscapeXml(refs.RazonModificacion)}</RazonModificacion>");
-                }
-                if (!string.IsNullOrWhiteSpace(refs.RncOtroContribuyente))
-                {
-                    sb.AppendLine($"    <RNCOtroContribuyente>{refs.RncOtroContribuyente}</RNCOtroContribuyente>");
-                }
-                sb.AppendLine("  </InformacionReferencia>");
-            }
+            // Retención (tipo 41 only) is PER LINE ITEM inside DetallesItems/Item — NOT a document-
+            // level section. Confirmed by running the real XSD: initially built as a header-level
+            // block after DetallesItems, which is entirely the wrong structure (the field-level
+            // obligatoriedad tables give no hint of this at all). Applied uniformly from the single
+            // header-level Retention DTO to every item — this codebase doesn't model per-line
+            // withholding, and a single-vendor purchase document plausibly has one retention treatment
+            // across its lines; known simplification if that's ever not true.
+            var retention = tipoEcf == "41" ? dto.Retention : null;
 
             sb.AppendLine("  <DetallesItems>");
             if (dto.Lines != null && dto.Lines.Count > 0)
@@ -516,6 +531,7 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine("    <Item>");
                     sb.AppendLine($"      <NumeroLinea>{line.LineNumber}</NumeroLinea>");
                     sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
+                    AppendRetencion(sb, retention);
                     var itemName = EscapeXml(line.ItemName ?? "Item");
                     sb.AppendLine($"      <NombreItem>{itemName}</NombreItem>");
                     sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
@@ -530,6 +546,7 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("    <Item>");
                 sb.AppendLine("      <NumeroLinea>1</NumeroLinea>");
                 sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
+                AppendRetencion(sb, retention);
                 sb.AppendLine("      <NombreItem>Item General</NombreItem>");
                 sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
                 sb.AppendLine("      <CantidadItem>1.00</CantidadItem>");
@@ -540,25 +557,61 @@ namespace EcfDgii.Client.Api.Controllers
             }
             sb.AppendLine("  </DetallesItems>");
 
-            // "Retención" — obligatorio (1) only for tipo 41 (Compras) and 47. Same placement caveat
-            // as InformacionReferencia above: inferred from the obligatoriedad tables, not confirmed
-            // against a worked XML example or the real XSD.
-            if (tipoEcf == "41" && dto.Retention is { } retention)
+            // "InformacionReferencia" — confirmed by the real XSD to be a top-level sibling AFTER
+            // DetallesItems (not before it, and not nested inside Encabezado — both wrong in the
+            // first version of this code, written from the prose spec's field-level tables alone).
+            if (tipoEcf == "34" && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
             {
-                sb.AppendLine("  <Retencion>");
-                sb.AppendLine($"    <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
-                sb.AppendLine($"    <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
-                if (retention.MontoIsrRetenido is { } montoIsr)
+                sb.AppendLine("  <InformacionReferencia>");
+                sb.AppendLine($"    <NCFModificado>{refs.CorrectsENcf}</NCFModificado>");
+                if (!string.IsNullOrWhiteSpace(refs.RncOtroContribuyente))
                 {
-                    sb.AppendLine($"    <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+                    sb.AppendLine($"    <RNCOtroContribuyente>{refs.RncOtroContribuyente}</RNCOtroContribuyente>");
                 }
-                sb.AppendLine("  </Retencion>");
+                // The real XSD marks FechaNCFModificado minOccurs="1" (structurally required) even
+                // though the prose spec calls it "condicional a...reemplazo de contingencia" — the two
+                // documents disagree, and the XSD is authoritative for what DGII's server will accept.
+                // Defaults to today when the caller doesn't have the referenced document's real date;
+                // known simplification, not a faithful "fecha del NCF modificado" in that case.
+                var fechaNcfModificado = string.IsNullOrWhiteSpace(refs.FechaNcfModificado)
+                    ? DateTime.Today.ToString("dd-MM-yyyy")
+                    : refs.FechaNcfModificado;
+                sb.AppendLine($"    <FechaNCFModificado>{fechaNcfModificado}</FechaNCFModificado>");
+                if (refs.CodigoModificacion is { } codigo)
+                {
+                    sb.AppendLine($"    <CodigoModificacion>{codigo}</CodigoModificacion>");
+                }
+                if (!string.IsNullOrWhiteSpace(refs.RazonModificacion))
+                {
+                    sb.AppendLine($"    <RazonModificacion>{EscapeXml(refs.RazonModificacion)}</RazonModificacion>");
+                }
+                sb.AppendLine("  </InformacionReferencia>");
             }
 
             var fechaHoraFirma = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
             sb.AppendLine($"  <FechaHoraFirma>{fechaHoraFirma}</FechaHoraFirma>");
             sb.AppendLine("</ECF>");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Emits a per-Item &lt;Retencion&gt; block (tipo 41 only — see BuildXmlFromCanonical). Real
+        /// XSD sequence inside Item: IndicadorAgenteRetencionoPercepcion (required),
+        /// MontoITBISRetenido (optional), MontoISRRetenido (optional) — verified against the checked-in
+        /// DGII schema, not inferred from the prose spec.
+        /// </summary>
+        private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention)
+        {
+            if (retention is null) return;
+
+            sb.AppendLine("      <Retencion>");
+            sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
+            sb.AppendLine($"        <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
+            if (retention.MontoIsrRetenido is { } montoIsr)
+            {
+                sb.AppendLine($"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+            }
+            sb.AppendLine("      </Retencion>");
         }
 
         private static string EscapeXml(string value)

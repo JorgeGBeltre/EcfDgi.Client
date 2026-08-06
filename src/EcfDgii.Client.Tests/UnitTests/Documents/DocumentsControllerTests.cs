@@ -368,7 +368,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             await controller.SubmitCanonicalDocument(MakeDto("TXN-701", "1"));
 
             var stored = await db.EcfDocuments.SingleAsync();
-            Assert.Contains("<TipoIngresos>1</TipoIngresos>", stored.XmlContent);
+            Assert.Contains("<TipoIngresos>01</TipoIngresos>", stored.XmlContent); // zero-padded per DGII's TipoIngresosValidationType
             Assert.DoesNotContain("<Retencion>", stored.XmlContent);
             Assert.DoesNotContain("<InformacionReferencia>", stored.XmlContent);
         }
