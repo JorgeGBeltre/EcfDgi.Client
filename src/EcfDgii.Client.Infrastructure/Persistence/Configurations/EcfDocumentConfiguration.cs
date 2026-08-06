@@ -71,6 +71,11 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasMaxLength(100)
                 .IsRequired();
 
+            builder.Property(e => e.EditSequence)
+                .HasColumnName("edit_sequence")
+                .HasMaxLength(50)
+                .IsRequired();
+
             builder.Property(e => e.DocumentKind)
                 .HasColumnName("document_kind")
                 .HasMaxLength(50)
@@ -116,6 +121,14 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             builder.HasIndex(e => new { e.RncEmisor, e.ENcf })
                 .IsUnique()
                 .HasDatabaseName("uq_ecf_documents_rnc_emisor_encf");
+
+            // Idempotency relies on the (TenantId, SourceTxnId) lookup in DocumentsController being
+            // authoritative. Without a DB-level constraint, two concurrent submits for the same
+            // TxnId can both pass that lookup before either commits, each allocating its own eNCF.
+            // This index makes the second insert fail instead, so it can be caught and reconciled.
+            builder.HasIndex(e => new { e.TenantId, e.SourceTxnId })
+                .IsUnique()
+                .HasDatabaseName("uq_ecf_documents_tenant_source_txn");
 
             // Other indexes
             builder.HasIndex(e => e.TrackId)

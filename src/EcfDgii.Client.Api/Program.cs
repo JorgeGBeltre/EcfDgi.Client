@@ -23,6 +23,8 @@ using EcfDgii.Client.Api.Middleware;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Api.Infrastructure.Security;
 using EcfDgii.Client.Api.Infrastructure.Idempotency;
+using EcfDgii.Client.Infrastructure.Configuration;
+using EcfDgii.Client.Shared.Common;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -42,6 +44,15 @@ try
     builder.Services.AddMemoryCache();
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
+    builder.Services.AddSingleton<IClock, SystemClock>();
+
+    // Fail loudly at startup if this instance's emisor RNC is missing or malformed, instead of
+    // DocumentsController silently defaulting to a placeholder RNC on every document it signs.
+    builder.Services.AddOptions<EcfEmisorOptions>()
+        .Bind(builder.Configuration.GetSection(EcfEmisorOptions.SectionName))
+        .Validate(o => RncFormat.IsValid(o.Rnc),
+            $"{EcfEmisorOptions.SectionName}:{nameof(EcfEmisorOptions.Rnc)} is required and must be a valid RNC (9 digits) or cédula (11 digits).")
+        .ValidateOnStart();
 
     // Register Security, Anti-Replay, Key Resolution & Durable Idempotency
     builder.Services.AddSingleton<INonceCache, MemoryNonceCache>();
@@ -180,14 +191,19 @@ try
 
     app.MapHealthChecks("/health");
 
-    // Automatically apply migrations at startup for local/development environments
+    // Automatically apply migrations at startup for local/development environments.
+    // EnsureCreated() was used here previously: it only creates the schema when the database
+    // doesn't exist yet and never alters an existing one, so a redeployment against a database
+    // created by an earlier model version silently kept running with a stale, incomplete schema
+    // instead of failing loudly. Migrate() applies any pending migrations (including on first run,
+    // where it creates the schema from the migration history instead of the live model).
     if (app.Environment.IsDevelopment())
     {
         using var scope = app.Services.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         if (context.Database.IsRelational())
         {
-            context.Database.EnsureCreated();
+            context.Database.Migrate();
         }
     }
 
