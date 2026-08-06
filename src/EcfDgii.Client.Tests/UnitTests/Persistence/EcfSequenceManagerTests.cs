@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using EcfDgii.Client.Infrastructure.Persistence;
@@ -65,6 +66,46 @@ namespace EcfDgii.Client.UnitTests.Persistence
             var firstCompra = await manager.GetNextEncfAsync("default-tenant", "E41", CancellationToken.None);
 
             Assert.Equal("E410000000001", firstCompra);
+        }
+
+        [Fact]
+        public async Task GetNextEncfAsync_ExhaustsExactlyAtRangoHasta_NeverIssuingOneNumberPast()
+        {
+            // Sister question to the off-by-one fix above: if the START of a range could be mishandled
+            // silently, the END deserves the same scrutiny — exceeding an authorized range is worse
+            // than wasting its first number. Provision a narrow range directly (bypassing the
+            // auto-provision default of 9,999,999,999) to make exhaustion reachable in a test.
+            var (manager, db) = MakeManager(Guid.NewGuid().ToString());
+            db.Sequences.Add(new EcfDgii.Client.Domain.Entities.EcfSequence
+            {
+                TenantId = "default-tenant",
+                TipoComprobante = "E31",
+                Prefix = "E31",
+                RangoDesde = 1,
+                RangoHasta = 3,
+                SecuenciaActual = 0,
+                IsActive = true,
+            });
+            await db.SaveChangesAsync();
+
+            var first = await manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None);
+            var second = await manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None);
+            var third = await manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None);
+
+            Assert.Equal("E310000000001", first);
+            Assert.Equal("E310000000002", second);
+            Assert.Equal("E310000000003", third); // the last number actually inside the authorized range
+
+            var act = () => manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None);
+            await Assert.ThrowsAsync<InvalidOperationException>(act);
+
+            // Confirms the persisted counter itself never advanced past the authorized limit either —
+            // not just that the formatted string looked right. AsNoTracking(): `db` already tracks
+            // the entity it Added above with its original SecuenciaActual=0 — without this, EF Core's
+            // identity map returns that stale tracked instance instead of the value the manager's own
+            // (separately-scoped) DbContext instances actually persisted.
+            var sequence = await db.Sequences.AsNoTracking().SingleAsync(s => s.TipoComprobante == "E31");
+            Assert.Equal(3, sequence.SecuenciaActual);
         }
 
         [Fact]

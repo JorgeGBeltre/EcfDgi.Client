@@ -8,6 +8,7 @@ using EcfDgii.Client.Domain.Entities;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Infrastructure.Persistence;
+using EcfDgii.Client.Infrastructure.Serialization;
 using EcfDgii.Client.Shared.Common;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
@@ -123,10 +124,14 @@ namespace EcfDgii.Client.UnitTests.Documents
             }
 
             var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063", RazonSocial = "Willy Chic Dominicana SRL" });
+            // XSD gate opt-in, off by default here — these tests predate it and exercise other
+            // concerns; EcfDocumentXsdValidationTests.cs exercises the gate itself directly.
+            var ecfClientOptions = Options.Create(new EcfClientOptions { ValidateSchemasLocal = false });
 
             var controller = new DocumentsController(
                 db, sequenceManagerMock.Object, ecfClientMock.Object, signerMock.Object,
-                NullLogger<DocumentsController>.Instance, clockMock.Object, emisorOptions)
+                NullLogger<DocumentsController>.Instance, clockMock.Object, emisorOptions,
+                new EcfSchemaValidator(), ecfClientOptions)
             {
                 ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
             };

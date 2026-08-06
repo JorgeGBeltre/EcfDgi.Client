@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -35,11 +36,11 @@ namespace EcfDgii.Client.UnitTests.Documents
     /// immediately with a precise line/element error — the only way to convert that inference into a
     /// verified fact without spending a real submission attempt against Certificación.
     ///
-    /// Deliberately does NOT wire EcfClient.ValidateSchemasLocal/XsdDirectoryPath end-to-end (that
-    /// capability already exists in EcfClient.SendEcfAsync but was never configured — its own
-    /// separate finding, see memory) — this test calls EcfSchemaValidator directly against the exact
-    /// XML DocumentsController stores, which is the more direct verification for this round's actual
-    /// question (is the new structure valid?), not a substitute for turning that config on for real.
+    /// This file now ALSO exercises the real pre-signature validation gate DocumentsController runs
+    /// when EcfClientOptions:ValidateSchemasLocal/XsdDirectoryPath are configured (previously that
+    /// capability existed only in EcfClient.SendEcfAsync — post-signature, and silently never
+    /// activated because nothing ever set XsdDirectoryPath). The Tipo31/34/41 tests above additionally
+    /// still directly call EcfSchemaValidator against the stored XML as a second, independent check.
     /// </summary>
     public class EcfDocumentXsdValidationTests
     {
@@ -58,13 +59,17 @@ namespace EcfDgii.Client.UnitTests.Documents
             return dir.FullName;
         }
 
+        private static string XsdDir() =>
+            Path.Combine(FindRepoRoot(), "Documentación Técnica (XSD)");
+
         private static string XsdPath(string fileName) =>
-            Path.Combine(FindRepoRoot(), "Documentación Técnica (XSD)", fileName);
+            Path.Combine(XsdDir(), fileName);
 
         private static ApplicationDbContext NewDb() =>
             new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
-        private static (DocumentsController Controller, ApplicationDbContext Db) MakeRealController(string nextEncf)
+        private static (DocumentsController Controller, ApplicationDbContext Db, Mock<IEcfXmlSignerSpy> SignerSpy, Mock<IEcfClient> EcfClientMock) MakeRealController(
+            string nextEncf, bool enableXsdGate = true)
         {
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
@@ -83,25 +88,42 @@ namespace EcfDgii.Client.UnitTests.Documents
             using var ephemeralCert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var certBytes = ephemeralCert.Export(X509ContentType.Pfx, "test-pass");
             var cert = new X509Certificate2(certBytes, "test-pass", X509KeyStorageFlags.Exportable);
-            var signer = new EcfXmlSigner(cert); // real signer — ValidateCertificateSn's self-signed-cert bypass covers this
+            var realSigner = new EcfXmlSigner(cert); // real signer — ValidateCertificateSn's self-signed-cert bypass covers this
+
+            // Spies on the real signer so a test can assert the pre-signature XSD gate short-circuits
+            // BEFORE ever calling it — a structurally-broken document must never reach signing/DGII.
+            var signerSpyMock = new Mock<IEcfXmlSignerSpy> { CallBase = false };
+            signerSpyMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
+                .Returns((string xml, string rnc) => realSigner.SignXml(xml, rnc));
+            signerSpyMock.Setup(s => s.ValidateCertificateSn(It.IsAny<string>())).Returns(true);
 
             var clockMock = new Mock<IClock>();
             clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddDays(1));
             var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063", RazonSocial = "WILLY CHIC DOMINICANA SRL" });
 
+            var ecfClientOptions = Options.Create(new EcfClientOptions
+            {
+                ValidateSchemasLocal = enableXsdGate,
+                XsdDirectoryPath = enableXsdGate ? XsdDir() : null,
+            });
+
             var controller = new DocumentsController(
-                db, sequenceManagerMock.Object, ecfClientMock.Object, signer,
-                NullLogger<DocumentsController>.Instance, clockMock.Object, emisorOptions)
+                db, sequenceManagerMock.Object, ecfClientMock.Object, signerSpyMock.Object,
+                NullLogger<DocumentsController>.Instance, clockMock.Object, emisorOptions,
+                new EcfSchemaValidator(), ecfClientOptions)
             {
                 ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
             };
-            return (controller, db);
+            return (controller, db, signerSpyMock, ecfClientMock);
         }
+
+        /// <summary>Lets Moq spy on IEcfXmlSigner calls while delegating to a real signer underneath.</summary>
+        public interface IEcfXmlSignerSpy : IEcfXmlSigner;
 
         [Fact]
         public async Task Tipo31_GeneratedXml_IsValidAgainstDgiiXsd()
         {
-            var (controller, db) = MakeRealController("E310000000801");
+            var (controller, db, _, _) = MakeRealController("E310000000801");
             var dto = new CanonicalDocumentDto
             {
                 SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-31", EditSequence = "1" },
@@ -126,7 +148,7 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo34_GeneratedXml_IsValidAgainstDgiiXsd()
         {
-            var (controller, db) = MakeRealController("E340000000801");
+            var (controller, db, _, _) = MakeRealController("E340000000801");
             var dto = new CanonicalDocumentDto
             {
                 SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-34", EditSequence = "1" },
@@ -157,7 +179,7 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo41_GeneratedXml_IsValidAgainstDgiiXsd()
         {
-            var (controller, db) = MakeRealController("E410000000801");
+            var (controller, db, _, _) = MakeRealController("E410000000801");
             var dto = new CanonicalDocumentDto
             {
                 SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-41", EditSequence = "1" },
@@ -182,6 +204,70 @@ namespace EcfDgii.Client.UnitTests.Documents
             var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 41 v.1.0.xsd"));
 
             Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task StructurallyInvalidDocument_IsRejected_BeforeReachingDgii_WhenGateIsEnabled()
+        {
+            // Validates the SIGNED xml (see DocumentsController.SignAndSendAsync's own comment on
+            // why: the real XSDs require a signature slot, so a pre-signature check would always
+            // fail regardless of content) — signing still happens (it's a cheap, local operation),
+            // but the real DGII round-trip must never happen for a document that can't pass schema.
+            var (controller, db, signerSpy, ecfClientMock) = MakeRealController("E410000000900", enableXsdGate: true);
+
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-INVALID", EditSequence = "1" },
+                TipoComprobante = "E41",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000005", RazonSocialComprador = "Proveedor Informal SRL",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+                Retention = new CanonicalRetentionDto
+                {
+                    // 99 is not a valid IndicadorAgenteRetencionoPercepcionType value (1="R"/2="P") —
+                    // a genuinely schema-invalid document that still passes SubmitCanonicalDocument's
+                    // own presence-only guard (which only checks Retention is non-null).
+                    IndicadorAgenteRetencionoPercepcion = 99,
+                    MontoItbisRetenido = 18m,
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Equal("SchemaInvalid", stored.State);
+            signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once); // signing IS cheap/local, still happens
+            ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never); // DGII round-trip must not happen
+        }
+
+        [Fact]
+        public async Task StructurallyInvalidDocument_StillSigned_WhenGateIsDisabled()
+        {
+            // Regression guard: ValidateSchemasLocal/XsdDirectoryPath are opt-in (matches EcfClient's
+            // own pre-existing behavior) — a deployment that hasn't configured them must behave
+            // exactly as before this round, not suddenly start rejecting documents.
+            var (controller, db, signerSpy, _) = MakeRealController("E410000000901", enableXsdGate: false);
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-GATEOFF", EditSequence = "1" },
+                TipoComprobante = "E41",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000005", RazonSocialComprador = "Proveedor Informal SRL",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+                Retention = new CanonicalRetentionDto { IndicadorAgenteRetencionoPercepcion = 99, MontoItbisRetenido = 18m },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+            signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once);
         }
     }
 }

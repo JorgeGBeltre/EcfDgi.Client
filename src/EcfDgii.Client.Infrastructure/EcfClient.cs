@@ -125,40 +125,7 @@ namespace EcfDgii.Client
 
         private string GetXsdFileName(string xmlContent)
         {
-            try
-            {
-                var doc = new System.Xml.XmlDocument();
-                doc.LoadXml(xmlContent);
-                var rootName = doc.DocumentElement?.LocalName;
-
-                if (rootName == "RFCE")
-                    return "RFCE 32 v.1.0.xsd";
-                if (rootName == "ACECF")
-                    return "ACECF v.1.0.xsd";
-                if (rootName == "ARECF")
-                    return "ARECF v1.0.xsd";
-                if (rootName == "ANECF" || rootName == "Anulacion")
-                    return "ANECF v.1.0.xsd";
-                if (rootName == "SemillaModel")
-                    return "Semilla v.1.0.xsd";
-
-                if (rootName == "ECF")
-                {
-                    var nsmgr = new System.Xml.XmlNamespaceManager(doc.NameTable);
-                    var node = doc.SelectSingleNode("//Encabezado/IdDoc/TipoeCF", nsmgr);
-                    if (node != null)
-                    {
-                        var tipo = node.InnerText.Trim();
-                        return $"e-CF {tipo} v.1.0.xsd";
-                    }
-                }
-            }
-            catch
-            {
-                // Fallback en caso de que ocurra algún error al parsear el XML
-            }
-
-            return string.Empty;
+            return EcfXsdFileNameResolver.Resolve(xmlContent);
         }
 
         public Task<ConsultaResultadoResponse> ConsultarResultadoAsync(string trackId, CancellationToken ct = default) =>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -9,6 +10,7 @@ using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Infrastructure.Security;
+using EcfDgii.Client.Infrastructure.Serialization;
 using EcfDgii.Client.Shared.Common;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -51,6 +53,8 @@ namespace EcfDgii.Client.Api.Controllers
         private readonly IClock _clock;
         private readonly string _emisorRnc;
         private readonly string _emisorRazonSocial;
+        private readonly IEcfSchemaValidator _schemaValidator;
+        private readonly EcfClientOptions _ecfClientOptions;
 
         public DocumentsController(
             ApplicationDbContext db,
@@ -59,7 +63,9 @@ namespace EcfDgii.Client.Api.Controllers
             IEcfXmlSigner signer,
             ILogger<DocumentsController> logger,
             IClock clock,
-            IOptions<EcfEmisorOptions> emisorOptions)
+            IOptions<EcfEmisorOptions> emisorOptions,
+            IEcfSchemaValidator schemaValidator,
+            IOptions<EcfClientOptions> ecfClientOptions)
         {
             _db = db;
             _sequenceManager = sequenceManager;
@@ -71,6 +77,8 @@ namespace EcfDgii.Client.Api.Controllers
             // to trust unconditionally here.
             _emisorRnc = emisorOptions.Value.Rnc;
             _emisorRazonSocial = emisorOptions.Value.RazonSocial;
+            _schemaValidator = schemaValidator;
+            _ecfClientOptions = ecfClientOptions.Value;
         }
 
         [HttpPost]
@@ -354,6 +362,37 @@ namespace EcfDgii.Client.Api.Controllers
                 doc.SignedXmlContent = doc.XmlContent;
                 await _db.SaveChangesAsync();
                 return BadRequest(new { error = $"Error al firmar digitalmente el XML de e-CF: {ex.Message}" });
+            }
+
+            // Local XSD gate — opt-in (ValidateSchemasLocal + XsdDirectoryPath configured, same
+            // switches EcfClient.SendEcfAsync's own pre-existing check reads, but exercised HERE too
+            // so an invalid document never even reaches the DGII round-trip). Deliberately validates
+            // the SIGNED xml, not the pre-signature one: the real DGII XSDs end every e-CF's sequence
+            // with a required `xs:any` slot for the ds:Signature XMLDSig injects — a pre-signature
+            // document is structurally incomplete by design and would always fail this check for a
+            // reason that has nothing to do with the actual content. Signing is a cheap, local
+            // operation; only the DGII round-trip is worth avoiding for a document that can't pass.
+            if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
+            {
+                var xsdFileName = EcfXsdFileNameResolver.Resolve(signedXml);
+                if (!string.IsNullOrEmpty(xsdFileName))
+                {
+                    var xsdPath = Path.Combine(_ecfClientOptions.XsdDirectoryPath, xsdFileName);
+                    var xsdResult = _schemaValidator.Validate(signedXml, xsdPath);
+                    if (!xsdResult.IsValid)
+                    {
+                        doc.State = "SchemaInvalid";
+                        await _db.SaveChangesAsync();
+                        _logger.LogError(
+                            "e-CF {ENcf} (TxnId {TxnId}) falló validación XSD local (firmado, antes de enviar a DGII): {Errors}",
+                            doc.ENcf, doc.SourceTxnId, string.Join(" | ", xsdResult.Errors));
+                        return BadRequest(new
+                        {
+                            error = "El XML firmado no es válido contra el esquema DGII (validación local, antes de enviar a DGII).",
+                            details = xsdResult.Errors,
+                        });
+                    }
+                }
             }
 
             await _db.SaveChangesAsync();
