@@ -17,7 +17,7 @@ using EcfDgii.Client.Domain.Interfaces;
 
 namespace EcfDgii.Client.Infrastructure.Dgii
 {
-    public class EcfTokenManager
+    public class EcfTokenManager : IEcfTokenManager
     {
         private readonly HttpClient _httpClient;
         private readonly IEcfXmlSigner _signer;
@@ -47,6 +47,33 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _rncEmisor = rncEmisor ?? throw new ArgumentNullException(nameof(rncEmisor));
             _cacheService = cacheService;
+        }
+
+        /// <summary>
+        /// Discards the cached token (memory and, if configured, Redis) so the next GetTokenAsync
+        /// call is forced to renew — independent of whatever the proactive 5-minute-margin expiry
+        /// check would otherwise decide. Exists for reactive 401 handling: when DGII itself rejects a
+        /// token mid-window (early revocation, clock skew, DGII-side session invalidation), the
+        /// proactive check alone can't detect that — the caller that actually saw the 401 has to say
+        /// "this token is bad" explicitly.
+        /// </summary>
+        public async Task InvalidateAsync(CancellationToken ct = default)
+        {
+            await _renewLock.WaitAsync(ct);
+            try
+            {
+                _cachedToken = null;
+                _tokenExpiry = default;
+            }
+            finally
+            {
+                _renewLock.Release();
+            }
+
+            if (_cacheService != null)
+            {
+                await _cacheService.RemoveAsync($"ecf:tokens:{_rncEmisor}", ct);
+            }
         }
 
         public async Task<string> GetTokenAsync(CancellationToken ct = default)

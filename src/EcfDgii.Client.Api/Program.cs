@@ -49,6 +49,18 @@ try
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
     builder.Services.AddSingleton<IClock, SystemClock>();
 
+    // Closes the ⑤/⑥ DGII post-send status-polling gap: without this, "SentToDgii" was fully
+    // terminal and a document DGII later rejects on verification would sit marked Sent forever.
+    // Values are configurable (EcfStatusPolling section) because MaxPollingWindowHours in particular
+    // is a conservative stand-in, not a confirmed DGII deadline — see EcfStatusPollingOptions.Default.
+    var pollingSection = builder.Configuration.GetSection("EcfStatusPolling");
+    var pollingOptions = new EcfStatusPollingOptions(
+        PollingInterval: TimeSpan.FromMinutes(pollingSection.GetValue("PollingIntervalMinutes", 15)),
+        MinDocumentAge: TimeSpan.FromMinutes(pollingSection.GetValue("MinDocumentAgeMinutes", 2)),
+        MaxPollingWindow: TimeSpan.FromHours(pollingSection.GetValue("MaxPollingWindowHours", 72)));
+    builder.Services.AddSingleton(pollingOptions);
+    builder.Services.AddHostedService<EcfStatusPollingBackgroundService>();
+
     // Fail loudly at startup if this instance's emisor RNC is missing or malformed, instead of
     // DocumentsController silently defaulting to a placeholder RNC on every document it signs.
     builder.Services.AddOptions<EcfEmisorOptions>()
