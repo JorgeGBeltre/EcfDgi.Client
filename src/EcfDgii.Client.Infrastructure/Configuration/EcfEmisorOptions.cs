@@ -16,5 +16,16 @@ namespace EcfDgii.Client.Infrastructure.Configuration
         public const string SectionName = "EcfEmisor";
 
         public string Rnc { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The legal name (razón social) this instance signs e-CF documents under. Same reasoning as
+        /// Rnc above: it's an instance-level fact of who this API IS, not something a caller (a
+        /// connector adapter, or any other future integration) should be able to assert. Before this
+        /// field existed, DocumentsController trusted the incoming DTO's RazonSocialEmisor verbatim —
+        /// the RNC override didn't have a matching RazonSocial override, so a wrong or malicious
+        /// caller-supplied name could land in a validly-signed e-CF under this instance's own
+        /// enforced RNC.
+        /// </summary>
+        public string RazonSocial { get; set; } = string.Empty;
     }
 }

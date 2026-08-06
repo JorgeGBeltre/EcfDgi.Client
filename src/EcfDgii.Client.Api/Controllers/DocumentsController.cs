@@ -50,6 +50,7 @@ namespace EcfDgii.Client.Api.Controllers
         private readonly ILogger<DocumentsController> _logger;
         private readonly IClock _clock;
         private readonly string _emisorRnc;
+        private readonly string _emisorRazonSocial;
 
         public DocumentsController(
             ApplicationDbContext db,
@@ -69,6 +70,7 @@ namespace EcfDgii.Client.Api.Controllers
             // Validated present and well-formed at startup (see Program.cs ValidateOnStart); safe
             // to trust unconditionally here.
             _emisorRnc = emisorOptions.Value.Rnc;
+            _emisorRazonSocial = emisorOptions.Value.RazonSocial;
         }
 
         [HttpPost]
@@ -77,6 +79,38 @@ namespace EcfDgii.Client.Api.Controllers
             if (dto == null || dto.SourceReference == null || string.IsNullOrWhiteSpace(dto.SourceReference.TxnId))
             {
                 return BadRequest(new { error = "SourceReference.TxnId is required." });
+            }
+
+            // Type-specific required fields per DGII's "Formato Comprobante Fiscal Electrónico (e-CF)
+            // V1.0" spec — checked before allocating a sequence, since a document missing these can
+            // never be validly built regardless of what eNCF it gets.
+            if (string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase))
+            {
+                // Tipo 34 (Nota de Crédito): InformacionReferencia is obligatorio (1). NCFModificado
+                // and CodigoModificacion are its two obligatorio sub-fields (lines 1113, 1126).
+                if (string.IsNullOrWhiteSpace(dto.References?.CorrectsENcf))
+                {
+                    return BadRequest(new { error = "References.CorrectsENcf (NCFModificado) is required for TipoComprobante E34." });
+                }
+                if (dto.References?.CodigoModificacion is null)
+                {
+                    return BadRequest(new { error = "References.CodigoModificacion is required for TipoComprobante E34." });
+                }
+            }
+            else if (string.Equals(dto.TipoComprobante, "E41", StringComparison.OrdinalIgnoreCase))
+            {
+                // Tipo 41 (Comprobante de Compras): RNCComprador is obligatorio (1) here (vs.
+                // condicional for 31/32/33/34) — it's the informal vendor's identity. Retención is
+                // obligatorio (1) only for 41 (and 47) — the buyer withholds ITBIS/ISR on the
+                // informal seller's behalf.
+                if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                {
+                    return BadRequest(new { error = "Header.RncComprador is required for TipoComprobante E41 (the informal vendor's RNC/Cédula)." });
+                }
+                if (dto.Retention is null)
+                {
+                    return BadRequest(new { error = "Retention is required for TipoComprobante E41." });
+                }
             }
 
             var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
@@ -197,10 +231,11 @@ namespace EcfDgii.Client.Api.Controllers
         /// eNCF is already fixed. Used both for a brand-new document and for retrying a document
         /// that never actually reached DGII, where the incoming content may have been edited since.
         ///
-        /// RncEmisor deliberately comes from this instance's configured EcfEmisorOptions, not from
-        /// dto.Header.RncEmisor: it's the identity this API signs and transmits under, and a wrong
-        /// or missing value from the caller must never produce a validly-signed e-CF under someone
-        /// else's RNC. See EcfEmisorOptions for why this is instance-level rather than per-request.
+        /// RncEmisor AND RazonSocialEmisor deliberately come from this instance's configured
+        /// EcfEmisorOptions, not from dto.Header: both are the identity this API signs and transmits
+        /// under, and a wrong or missing value from the caller must never produce a validly-signed
+        /// e-CF under someone else's RNC or a fabricated legal name. See EcfEmisorOptions for why
+        /// this is instance-level rather than per-request.
         /// </summary>
         private void ApplyCanonicalContent(EcfDocument doc, CanonicalDocumentDto dto, string editSequence)
         {
@@ -211,7 +246,7 @@ namespace EcfDgii.Client.Api.Controllers
             doc.RncComprador = dto.Header?.RncComprador;
             doc.TotalAmount = dto.Totals?.MontoTotal ?? 0;
             doc.ItbisAmount = dto.Totals?.MontoItbis ?? 0;
-            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, _emisorRnc);
+            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, _emisorRnc, _emisorRazonSocial);
             doc.State = "SequenceAllocated";
         }
 
@@ -366,7 +401,7 @@ namespace EcfDgii.Client.Api.Controllers
             });
         }
 
-        private static string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc)
+        private static string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial)
         {
             var sb = new StringBuilder();
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
@@ -386,15 +421,21 @@ namespace EcfDgii.Client.Api.Controllers
             
             var fechaVencimiento = DateTime.Today.AddYears(1).ToString("dd-MM-yyyy");
             sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
-            sb.AppendLine("      <TipoIngresos>1</TipoIngresos>");
+            // TipoIngresos is "No corresponde" (obligatoriedad 0) for tipo 41 (Compras) — DGII spec,
+            // "Formato Comprobante Fiscal Electrónico (e-CF) V1.0 (1).md" line 186. Every other type
+            // this codebase emits (31/34) requires it.
+            if (tipoEcf != "41")
+            {
+                sb.AppendLine("      <TipoIngresos>1</TipoIngresos>");
+            }
             sb.AppendLine("      <TipoPago>1</TipoPago>");
             sb.AppendLine("    </IdDoc>");
             
             sb.AppendLine("    <Emisor>");
-            // Deliberately emisorRnc (this instance's configured RNC), not dto.Header?.RncEmisor —
-            // see ApplyCanonicalContent's doc comment.
+            // Deliberately emisorRnc/emisorRazonSocial (this instance's configured identity), never
+            // dto.Header?.RncEmisor/RazonSocialEmisor — see ApplyCanonicalContent's doc comment.
             sb.AppendLine($"      <RNCEmisor>{emisorRnc}</RNCEmisor>");
-            var razonSocialEmisor = EscapeXml(dto.Header?.RazonSocialEmisor ?? "Emisor");
+            var razonSocialEmisor = EscapeXml(emisorRazonSocial);
             sb.AppendLine($"      <RazonSocialEmisor>{razonSocialEmisor}</RazonSocialEmisor>");
             sb.AppendLine("      <DireccionEmisor>Distrito Nacional, SD</DireccionEmisor>");
             var fechaEmision = string.IsNullOrWhiteSpace(dto.Header?.FechaEmision) 
@@ -437,6 +478,36 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    </Totales>");
             sb.AppendLine("  </Encabezado>");
 
+            // "F. Información de Referencia" — obligatorio (1) for tipo 34 (Nota de Crédito). Its own
+            // top-level section (sibling to Encabezado/DetallesItems per the spec's section lettering
+            // A-F), not nested inside Encabezado. Exact sibling placement/ordering within the full
+            // e-CF schema is inferred from the field-level obligatoriedad tables, not from an explicit
+            // worked XML example in the spec — confirm against the real DGII XSD (see EcfClientOptions.
+            // XsdDirectoryPath/ValidateSchemasLocal, not yet wired to validate outbound documents)
+            // before trusting this in Certificación.
+            if (tipoEcf == "34" && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
+            {
+                sb.AppendLine("  <InformacionReferencia>");
+                sb.AppendLine($"    <NCFModificado>{refs.CorrectsENcf}</NCFModificado>");
+                if (!string.IsNullOrWhiteSpace(refs.FechaNcfModificado))
+                {
+                    sb.AppendLine($"    <FechaNCFModificado>{refs.FechaNcfModificado}</FechaNCFModificado>");
+                }
+                if (refs.CodigoModificacion is { } codigo)
+                {
+                    sb.AppendLine($"    <CodigoModificacion>{codigo}</CodigoModificacion>");
+                }
+                if (!string.IsNullOrWhiteSpace(refs.RazonModificacion))
+                {
+                    sb.AppendLine($"    <RazonModificacion>{EscapeXml(refs.RazonModificacion)}</RazonModificacion>");
+                }
+                if (!string.IsNullOrWhiteSpace(refs.RncOtroContribuyente))
+                {
+                    sb.AppendLine($"    <RNCOtroContribuyente>{refs.RncOtroContribuyente}</RNCOtroContribuyente>");
+                }
+                sb.AppendLine("  </InformacionReferencia>");
+            }
+
             sb.AppendLine("  <DetallesItems>");
             if (dto.Lines != null && dto.Lines.Count > 0)
             {
@@ -468,7 +539,22 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("    </Item>");
             }
             sb.AppendLine("  </DetallesItems>");
-            
+
+            // "Retención" — obligatorio (1) only for tipo 41 (Compras) and 47. Same placement caveat
+            // as InformacionReferencia above: inferred from the obligatoriedad tables, not confirmed
+            // against a worked XML example or the real XSD.
+            if (tipoEcf == "41" && dto.Retention is { } retention)
+            {
+                sb.AppendLine("  <Retencion>");
+                sb.AppendLine($"    <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
+                sb.AppendLine($"    <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
+                if (retention.MontoIsrRetenido is { } montoIsr)
+                {
+                    sb.AppendLine($"    <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+                }
+                sb.AppendLine("  </Retencion>");
+            }
+
             var fechaHoraFirma = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
             sb.AppendLine($"  <FechaHoraFirma>{fechaHoraFirma}</FechaHoraFirma>");
             sb.AppendLine("</ECF>");

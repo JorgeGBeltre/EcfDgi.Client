@@ -34,10 +34,63 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public decimal MontoTotal { get; set; }
     }
 
+    /// <summary>
+    /// Maps to DGII's "F. Información de Referencia" section — required (obligatoriedad=1) for tipo
+    /// 34 (Nota de Crédito), per "Formato Comprobante Fiscal Electrónico (e-CF) V1.0 (1).md" lines
+    /// 1105-1136. CorrectsENcf is DGII's NCFModificado: the e-NCF this document affects, which "debe
+    /// haber sido remitido previamente a la DGII" — the caller is responsible for only referencing an
+    /// e-NCF that's actually already been sent (this DTO doesn't verify that).
+    /// </summary>
     public class CanonicalReferencesDto
     {
         public string CorrectsTxnId { get; set; } = string.Empty;
+
+        /// <summary>DGII: NCFModificado. Obligatorio for tipo 34.</summary>
         public string CorrectsENcf { get; set; } = string.Empty;
+
+        /// <summary>
+        /// DGII: CodigoModificacion. Obligatorio for tipo 34. 1=Anula el NCF modificado,
+        /// 2=Corrige texto, 3=Corrige montos, 4=Reemplazo NCF emitido en contingencia,
+        /// 5=Referencia Factura de Consumo Electrónica. Codes 1-3 apply only to notas de crédito/débito.
+        /// </summary>
+        public int? CodigoModificacion { get; set; }
+
+        /// <summary>DGII: RazonModificacion. Opcional — free-text reason (e.g. "error en precio").</summary>
+        public string? RazonModificacion { get; set; }
+
+        /// <summary>
+        /// DGII: FechaNCFModificado (dd-MM-yyyy). Per the spec, condicional to the e-CF being a
+        /// contingency-paper-sequence replacement — NOT required for a normal electronic-to-electronic
+        /// Nota de Crédito. Left null in that (the common) case.
+        /// </summary>
+        public string? FechaNcfModificado { get; set; }
+
+        /// <summary>
+        /// DGII: RNCOtroContribuyente. Condicional — only when the emisor's RNC differs from the
+        /// modified document's RNC (dissolution/merger/split). Not applicable to this deployment's
+        /// single-emisor design; left null in practice.
+        /// </summary>
+        public string? RncOtroContribuyente { get; set; }
+    }
+
+    /// <summary>
+    /// Maps to DGII's "Retención" area — obligatorio (1) ONLY for tipo 41 (Comprobante de Compras)
+    /// and 47, per the same spec, line 724: the buyer (Willy Chic, completing the e-CF on behalf of
+    /// an informal/non-electronic-invoicing seller) withholds and reports ITBIS/ISR.
+    /// </summary>
+    public class CanonicalRetentionDto
+    {
+        /// <summary>DGII: IndicadorAgenteRetencionoPercepcion. 1="R" (retenedor), 2="P" (percepción).</summary>
+        public int IndicadorAgenteRetencionoPercepcion { get; set; } = 1;
+
+        /// <summary>DGII: MontoITBISRetenido.</summary>
+        public decimal MontoItbisRetenido { get; set; }
+
+        /// <summary>
+        /// DGII: MontoISRRetenido. Per the spec, condicional to IndicadorBienoServicio=2 (Servicio) on
+        /// the line item(s) — left null when not applicable.
+        /// </summary>
+        public decimal? MontoIsrRetenido { get; set; }
     }
 
     public class CanonicalDocumentDto
@@ -50,5 +103,8 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public List<CanonicalLineDto> Lines { get; set; } = new List<CanonicalLineDto>();
         public CanonicalTotalsDto Totals { get; set; } = new CanonicalTotalsDto();
         public CanonicalReferencesDto References { get; set; } = new CanonicalReferencesDto();
+
+        /// <summary>Required (obligatorio) only for TipoComprobante "E41". Null for every other type.</summary>
+        public CanonicalRetentionDto? Retention { get; set; }
     }
 }

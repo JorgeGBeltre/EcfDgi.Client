@@ -20,7 +20,7 @@ namespace EcfDgii.Client.IntegrationTests
     /// </summary>
     public class EmisorRncStartupValidationTests
     {
-        private static WebApplicationFactory<Program> MakeFactory(string? rnc)
+        private static WebApplicationFactory<Program> MakeFactory(string? rnc, string? razonSocial = "WILLY CHIC DOMINICANA SRL")
         {
             return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
@@ -28,6 +28,7 @@ namespace EcfDgii.Client.IntegrationTests
                 builder.UseSetting("ConnectionStrings:DefaultConnection", "InMemory");
                 builder.UseSetting("ConnectionStrings:Redis", "");
                 builder.UseSetting("EcfEmisor:Rnc", rnc);
+                builder.UseSetting("EcfEmisor:RazonSocial", razonSocial);
 
                 builder.ConfigureServices(services =>
                 {
@@ -77,6 +78,31 @@ namespace EcfDgii.Client.IntegrationTests
             using var scope = factory.Services.CreateScope();
             var options = scope.ServiceProvider.GetRequiredService<IOptions<EcfEmisorOptions>>();
             Assert.Equal("101889063", options.Value.Rnc);
+        }
+
+        [Fact]
+        public void MissingEmisorRazonSocial_PreventsHostFromStarting()
+        {
+            // RazonSocial previously had no validation at all — DocumentsController trusted the
+            // caller-supplied dto.Header.RazonSocialEmisor verbatim, unlike Rnc. This is the fix.
+            using var factory = MakeFactory(rnc: "101889063", razonSocial: "");
+
+            var ex = Record.Exception(() => factory.CreateClient());
+
+            Assert.NotNull(ex);
+            Assert.Contains("RazonSocial", ex!.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void ValidEmisorRazonSocial_HostStartsAndOptionsResolveCorrectly()
+        {
+            using var factory = MakeFactory(rnc: "101889063", razonSocial: "WILLY CHIC DOMINICANA SRL");
+
+            using var client = factory.CreateClient(); // must not throw
+
+            using var scope = factory.Services.CreateScope();
+            var options = scope.ServiceProvider.GetRequiredService<IOptions<EcfEmisorOptions>>();
+            Assert.Equal("WILLY CHIC DOMINICANA SRL", options.Value.RazonSocial);
         }
     }
 }

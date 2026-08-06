@@ -61,12 +61,15 @@ try
     builder.Services.AddSingleton(pollingOptions);
     builder.Services.AddHostedService<EcfStatusPollingBackgroundService>();
 
-    // Fail loudly at startup if this instance's emisor RNC is missing or malformed, instead of
-    // DocumentsController silently defaulting to a placeholder RNC on every document it signs.
+    // Fail loudly at startup if this instance's emisor RNC or razón social is missing/malformed,
+    // instead of DocumentsController silently trusting a caller-supplied value for either (RazonSocial
+    // previously had no override at all — see EcfEmisorOptions's doc comment).
     builder.Services.AddOptions<EcfEmisorOptions>()
         .Bind(builder.Configuration.GetSection(EcfEmisorOptions.SectionName))
         .Validate(o => RncFormat.IsValid(o.Rnc),
             $"{EcfEmisorOptions.SectionName}:{nameof(EcfEmisorOptions.Rnc)} is required and must be a valid RNC (9 digits) or cédula (11 digits).")
+        .Validate(o => !string.IsNullOrWhiteSpace(o.RazonSocial),
+            $"{EcfEmisorOptions.SectionName}:{nameof(EcfEmisorOptions.RazonSocial)} is required.")
         .ValidateOnStart();
 
     // Register Security, Anti-Replay, Key Resolution & Durable Idempotency
@@ -202,6 +205,24 @@ try
         {
             throw new InvalidOperationException(
                 "CRITICAL SECURITY FAIL-FAST: JwtSettings:Secret is missing or configured with the insecure default value in a Non-Development environment.");
+        }
+    }
+
+    // Fail-fast check for a missing EcfClientOptions:RncEmisor in Non-Development environments.
+    // This is a SEPARATE identity key from EcfEmisor:Rnc (which governs the signed XML's <Emisor>
+    // block, validated above via ValidateOnStart) — this one feeds EcfTokenManager's DGII
+    // semilla-signing/token-cache-key path. Discovered because the committed appsettings.json
+    // default for BOTH keys was a stray test-fixture RNC, not the real emisor, and only
+    // EcfEmisor:Rnc had a startup check until now.
+    if (!app.Environment.IsDevelopment())
+    {
+        var ecfClientRncEmisor = app.Configuration["EcfClientOptions:RncEmisor"];
+        if (string.IsNullOrWhiteSpace(ecfClientRncEmisor))
+        {
+            throw new InvalidOperationException(
+                "CRITICAL SECURITY FAIL-FAST: EcfClientOptions:RncEmisor is required outside Development. " +
+                "It drives EcfTokenManager's DGII authentication (semilla signing) — a missing or wrong " +
+                "value breaks DGII auth or, worse, authenticates under the wrong emisor identity.");
         }
     }
 
