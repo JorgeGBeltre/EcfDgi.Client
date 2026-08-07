@@ -46,6 +46,22 @@ services:
       - DOTNET_SYSTEM_NET_DISABLE_IPV6=1
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=ecf_dgii;Username=postgres;Password=postgres
       - ConnectionStrings__Redis=redis:6379
+      # Emisor identity. appsettings.json deliberately ships these BLANK: the value committed there
+      # used to be a stray test-fixture RNC, and a default nobody chose is worse than no default —
+      # EcfEmisor:Rnc is validated by ValidateOnStart() unconditionally, so the host refuses to start
+      # rather than sign under the wrong identity. appsettings.Development.json carries the real value
+      # for local work but is excluded by .dockerignore (on purpose), so a container has to be told
+      # here. Not a secret: the RNC appears on every comprobante this company issues.
+      - EcfEmisor__Rnc=101889063
+      # Separate key, separate purpose: this one feeds EcfTokenManager's DGII semilla signing and the
+      # token cache key, NOT the <Emisor> block of the signed XML. Both must be the real RNC.
+      - EcfClientOptions__RncEmisor=101889063
+      # Secrets — supplied from a host-side .env (never baked into the image). Both are read at
+      # runtime; leaving them empty produces silent 401s between the worker and this API rather than
+      # a startup failure, because their fail-fast checks are Development-gated and this runs as
+      # Development. Set them in ./.env next to this file.
+      - WorkerSecretKey=${WORKER_SECRET_KEY:-}
+      - JwtSettings__Secret=${JWT_SECRET:-}
     depends_on:
       postgres:
         condition: service_healthy
