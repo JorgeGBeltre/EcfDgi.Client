@@ -32,7 +32,15 @@ namespace EcfDgii.Client.Api.Controllers
         private static readonly HashSet<string> NeverTransmittedStates = new(StringComparer.Ordinal)
         {
             "SequenceAllocated",
-            "SigningFailed"
+            "SigningFailed",
+            // Both stop the document strictly BEFORE any DGII call, exactly like the two above:
+            // SchemaInvalid means the local XSD gate refused it, Unsigned means there was no real
+            // certificate to sign with. Leaving them out stranded the eNCF permanently — a document
+            // that failed on a builder bug could never be retried once the bug was fixed, because a
+            // resubmit of the same TxnId just returned the stale failed state and the only way
+            // forward was to spend a fresh number.
+            "SchemaInvalid",
+            "Unsigned"
         };
 
         // The specific DB-level guarantee the concurrent-insert recovery below depends on.
@@ -131,6 +139,22 @@ namespace EcfDgii.Client.Api.Controllers
                     "'MontoTotal ≤ MontoTotal del e-CF modificado' NO se verifica localmente antes de " +
                     "enviar a DGII — solo el servidor de DGII lo valida.",
                     dto.SourceReference.TxnId, dto.References.CorrectsENcf);
+            }
+            else if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase))
+            {
+                // e-CF 31 (Crédito Fiscal): RNCComprador is minOccurs="1" in the real XSD — the whole
+                // point of a crédito fiscal is that an identified buyer can claim the ITBIS. Omitting
+                // it produced a document that failed schema validation only AFTER an eNCF had been
+                // allocated; a customer with no RNC on file belongs on a consumo (32), not here.
+                if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                {
+                    return BadRequest(new
+                    {
+                        error = "Header.RncComprador es obligatorio para TipoComprobante E31 (Crédito Fiscal). " +
+                                "El cliente no tiene RNC/cédula registrado — corrígelo en el ERP, o emítelo como " +
+                                "Factura de Consumo (E32), que no lo exige.",
+                    });
+                }
             }
             else if (string.Equals(dto.TipoComprobante, "E41", StringComparison.OrdinalIgnoreCase))
             {
@@ -541,6 +565,12 @@ namespace EcfDgii.Client.Api.Controllers
             // EXCLUSIVE in IdDoc's xs:sequence, not both-optional-fields. Tipo 34's IdDoc has no
             // FechaVencimientoSecuencia element at all; every other type this codebase emits (31/41)
             // has no IndicadorNotaCredito element at all.
+            // Verified element-by-element against the real XSDs, because the three cases are NOT a
+            // 34-vs-everything-else binary the way this originally assumed:
+            //   34 → IndicadorNotaCredito, no FechaVencimientoSecuencia
+            //   32 → NEITHER element exists in its IdDoc
+            //   31/33/41/43/44/45/46/47 → FechaVencimientoSecuencia
+            // Emitting FechaVencimientoSecuencia for tipo 32 failed every consumo invoice.
             if (tipoEcf == "34")
             {
                 // IndicadorNotaCreditoType: 0 = fecha de emisión <= 30 días calendario del e-CF
@@ -550,7 +580,7 @@ namespace EcfDgii.Client.Api.Controllers
                 // correction issued promptly). Known simplification, not yet resolved.
                 sb.AppendLine("      <IndicadorNotaCredito>0</IndicadorNotaCredito>");
             }
-            else
+            else if (tipoEcf != "32")
             {
                 var fechaVencimiento = DateTime.Today.AddYears(1).ToString("dd-MM-yyyy");
                 sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
@@ -581,16 +611,20 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
 
-            if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador) || !string.IsNullOrWhiteSpace(dto.Header?.RazonSocialComprador))
+            // <Comprador> itself is minOccurs="1" — always emitted, even for a consumo invoice to an
+            // anonymous walk-in customer where every child is optional and the block ends up nearly
+            // empty. Omitting it invalidated the document outright.
+            sb.AppendLine("    <Comprador>");
+            if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
             {
-                sb.AppendLine("    <Comprador>");
-                if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
-                    sb.AppendLine($"      <RNCComprador>{dto.Header.RncComprador}</RNCComprador>");
-                
-                var razonSocialComprador = EscapeXml(dto.Header?.RazonSocialComprador ?? "Consumidor Final");
-                sb.AppendLine($"      <RazonSocialComprador>{razonSocialComprador}</RazonSocialComprador>");
-                sb.AppendLine("    </Comprador>");
+                // Order matters (xs:sequence): RNCComprador precedes RazonSocialComprador. For tipo 31
+                // its presence is already guaranteed by SubmitCanonicalDocument's guard.
+                sb.AppendLine($"      <RNCComprador>{dto.Header.RncComprador}</RNCComprador>");
             }
+            var razonSocialComprador = EscapeXml(
+                string.IsNullOrWhiteSpace(dto.Header?.RazonSocialComprador) ? "Consumidor Final" : dto.Header.RazonSocialComprador);
+            sb.AppendLine($"      <RazonSocialComprador>{razonSocialComprador}</RazonSocialComprador>");
+            sb.AppendLine("    </Comprador>");
 
             sb.AppendLine("    <Totales>");
             if (dto.Totals != null)
@@ -696,8 +730,9 @@ namespace EcfDgii.Client.Api.Controllers
                     var itemName = EscapeXml(line.ItemName ?? "Item");
                     sb.AppendLine($"      <NombreItem>{itemName}</NombreItem>");
                     sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
-                    sb.AppendLine($"      <CantidadItem>{line.Quantity:F2}</CantidadItem>");
-                    sb.AppendLine($"      <PrecioUnitarioItem>{line.UnitPrice:F2}</PrecioUnitarioItem>");
+                    var (cantidad, precioUnitario) = NormalizeLineQuantity(line);
+                    sb.AppendLine($"      <CantidadItem>{cantidad:F2}</CantidadItem>");
+                    sb.AppendLine($"      <PrecioUnitarioItem>{precioUnitario:F2}</PrecioUnitarioItem>");
                     sb.AppendLine($"      <MontoItem>{line.Amount:F2}</MontoItem>");
                     sb.AppendLine("    </Item>");
                 }
@@ -752,6 +787,21 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("</ECF>");
             return sb.ToString();
         }
+
+        /// <summary>
+        /// DGII's CantidadItem is Decimal18D1or2ValidationTypeMayorCero — strictly greater than zero,
+        /// no exceptions. ERPs routinely produce lines with no quantity at all (a discount, freight, a
+        /// service charge entered as a lump amount), and passing that zero through invalidates the
+        /// ENTIRE document, not just the line.
+        ///
+        /// Such a line is declared as one unit priced at its own amount. Using the line's original
+        /// unit price instead would leave quantity × price ≠ amount, which is internally incoherent
+        /// even though the schema wouldn't catch it (PrecioUnitarioItem allows zero).
+        /// </summary>
+        private static (decimal Cantidad, decimal PrecioUnitario) NormalizeLineQuantity(CanonicalLineDto line) =>
+            line.Quantity > 0m
+                ? (line.Quantity, line.UnitPrice)
+                : (1m, line.Amount);
 
         /// <summary>
         /// Renders a date in the ONLY format DGII's schemas accept: dd-MM-yyyy (FechaValidationType,

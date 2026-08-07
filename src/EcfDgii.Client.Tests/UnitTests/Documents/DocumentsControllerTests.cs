@@ -102,7 +102,13 @@ namespace EcfDgii.Client.UnitTests.Documents
             {
                 SourceReference = new SourceReferenceDto { TxnId = txnId, EditSequence = editSequence },
                 TipoComprobante = "E31",
-                Header = new CanonicalHeaderDto { RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic" },
+                // RncComprador is required for E31 (the XSD has it minOccurs="1") — these tests are
+                // about idempotency/concurrency/emisor override, so the buyer just needs to be valid.
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 }
             };
         }
