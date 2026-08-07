@@ -408,6 +408,127 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo32_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            // Tipo 32 (Factura de Consumo) had NO test at all, and it is the type most of this
+            // company's real QuickBooks traffic maps to (B02 → E32). Its IdDoc has no
+            // FechaVencimientoSecuencia element whatsoever — the builder emitted one for every type
+            // except 34, so every single consumo invoice failed schema validation at position 133.
+            var (controller, db, _, _) = MakeRealController("E320000000801");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-32", EditSequence = "1" },
+                TipoComprobante = "E32",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RazonSocialComprador = "Consumidor Final",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Item", Quantity = 1m, UnitPrice = 100m, Amount = 100m }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync()).SignedXmlContent!;
+            Assert.DoesNotContain("<FechaVencimientoSecuencia>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 32 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task LineWithoutQuantity_IsDeclaredAsOneUnit_BecauseDgiiForbidsZero()
+        {
+            // CantidadItem is Decimal18D1or2ValidationTypeMayorCero — strictly greater than zero. Real
+            // QuickBooks invoices carry lines with no quantity at all (discounts, freight, service
+            // charges entered as an amount only), and passing that 0 straight through failed the whole
+            // document. Declaring one unit priced at the line's own amount keeps quantity × price =
+            // amount coherent, which a bare 1.00 with the original unit price would not.
+            var (controller, db, _, _) = MakeRealController("E310000000810");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-CANT0", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 500m, MontoItbis = 90m, MontoTotal = 590m },
+                Lines =
+                [
+                    new CanonicalLineDto { LineNumber = 1, ItemName = "Normal", Quantity = 2m, UnitPrice = 200m, Amount = 400m },
+                    new CanonicalLineDto { LineNumber = 2, ItemName = "Flete", Quantity = 0m, UnitPrice = 0m, Amount = 100m },
+                ],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync()).SignedXmlContent!;
+            Assert.DoesNotContain("<CantidadItem>0.00</CantidadItem>", xml);
+            Assert.Contains("<CantidadItem>2.00</CantidadItem>", xml);   // the real quantity is untouched
+            Assert.Contains("<CantidadItem>1.00</CantidadItem>", xml);
+            Assert.Contains("<PrecioUnitarioItem>100.00</PrecioUnitarioItem>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_WithoutRncComprador_IsRejectedBeforeSpendingASequence()
+        {
+            // e-CF 31's Comprador has RNCComprador minOccurs="1" — a crédito fiscal cannot exist
+            // without identifying the buyer. Previously the builder simply omitted the element when
+            // QuickBooks had no RNC for that customer, producing a document that failed schema
+            // validation AFTER an eNCF had already been allocated. Refuse before that.
+            var (controller, db, _, _) = MakeRealController("E310000000811");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-SIN-RNC", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RazonSocialComprador = "Cliente Sin RNC",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+            Assert.False(await db.EcfDocuments.AnyAsync());
+        }
+
+        [Fact]
+        public async Task Tipo32_WithNoBuyerDataAtAll_StillEmitsTheRequiredCompradorElement()
+        {
+            // Comprador itself is minOccurs="1" in tipo 32 even though every one of its children is
+            // optional — a consumo invoice to an anonymous walk-in customer still needs the element
+            // present. The builder used to omit the whole block when it had nothing to put inside.
+            var (controller, db, _, _) = MakeRealController("E320000000802");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-32-SINCOMPRADOR", EditSequence = "1" },
+                TipoComprobante = "E32",
+                Header = new CanonicalHeaderDto { RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic" },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync()).SignedXmlContent!;
+            Assert.Contains("<Comprador>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 32 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo34_GeneratedXml_IsValidAgainstDgiiXsd()
         {
             var (controller, db, _, _) = MakeRealController("E340000000801");
@@ -565,6 +686,41 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("SchemaInvalid", stored.State);
             signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once); // signing IS cheap/local, still happens
             ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never); // DGII round-trip must not happen
+        }
+
+        [Fact]
+        public async Task SchemaInvalidDocument_CanBeRetried_ReusingTheSameEncf()
+        {
+            // SchemaInvalid and Unsigned both mean the same thing about transmission: the XSD gate or
+            // the missing certificate stopped us BEFORE any DGII call, so nothing is in flight. If
+            // they aren't treated as never-transmitted, a document that failed on a builder bug holds
+            // its eNCF hostage forever — resubmitting the same TxnId just returns the stale bad state,
+            // and the only "recovery" is burning a fresh number on a fixed build.
+            var (controller, db, _, _) = MakeRealController("E410000000902", enableXsdGate: true);
+            var badDto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-RECUPERABLE", EditSequence = "1" },
+                TipoComprobante = "E41",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000005", RazonSocialComprador = "Proveedor Informal SRL",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
+                Retention = new CanonicalRetentionDto { IndicadorAgenteRetencionoPercepcion = 99, MontoItbisRetenido = 18m },
+            };
+
+            Assert.IsType<BadRequestObjectResult>(await controller.SubmitCanonicalDocument(badDto));
+            Assert.Equal("SchemaInvalid", (await db.EcfDocuments.SingleAsync()).State);
+
+            // Same TxnId, same EditSequence, now with a valid value — the retry a fixed build makes.
+            badDto.Retention!.IndicadorAgenteRetencionoPercepcion = 1;
+            var retry = await controller.SubmitCanonicalDocument(badDto);
+
+            Assert.True(retry is AcceptedResult, (retry as BadRequestObjectResult)?.Value?.ToString() ?? retry.GetType().Name);
+            var recovered = await db.EcfDocuments.SingleAsync();
+            Assert.Equal("Signed", recovered.State);
+            Assert.Equal("E410000000902", recovered.ENcf); // the SAME number, not a fresh one
         }
 
         [Fact]
