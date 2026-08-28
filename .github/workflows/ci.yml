@@ -1,47 +1,139 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline - EcfDgi.Client
 
 on:
   push:
-    branches: [ "develop" ]
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+env:
+  DOTNET_ENVIRONMENT: Production
+  ASPNETCORE_ENVIRONMENT: Production
+
+permissions:
+  contents: read
 
 jobs:
-  # 1. COMPILAR Y VERIFICAR
-  build-and-test:
+  build-test-and-deploy:
+    name: Compilar y Desplegar EcfDgi.Client (Motor Fiscal DGII)
     runs-on: ubuntu-latest
+
     steps:
-      - name: Descargar código EcfDgi.Client
+      - name: Clonar repositorio
         uses: actions/checkout@v4
 
-      - name: Configurar .NET
+      - name: Configurar entorno .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
-      - name: Compilar Solución
-        run: dotnet build EcfDgii.Client.slnx
+      - name: Restaurar dependencias
+        run: dotnet restore EcfDgii.Client.slnx
 
-      - name: Ejecutar Pruebas
-        run: dotnet test EcfDgii.Client.slnx --configuration Release --verbosity normal
+      - name: Compilar solución
+        run: dotnet build EcfDgii.Client.slnx -c Release --no-restore
 
-  # 2. AUTO-MERGE DE DEVELOP A MAIN
-  automerge:
-    name: Auto-Merge to main
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Ejecutar pruebas unitarias
+        run: dotnet test EcfDgii.Client.slnx -c Release --no-build --verbosity normal
 
-      - name: Merge develop into main and push
-        if: github.event_name == 'push' && github.ref_name == 'develop'
+      - name: Publicar API EcfDgi.Client
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout main
-          git merge --no-ff develop -m "Auto-merge develop to main"
-          git push origin main
+          dotnet publish src/EcfDgii.Client.Api/EcfDgii.Client.Api.csproj -c Release -o ./publish /p:UseAppHost=false
+
+      - name: Preparar Dockerfile para Runtime
+        run: |
+          cat > publish/Dockerfile <<'EOF'
+          FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
+          WORKDIR /app
+          RUN apk add --no-cache icu-libs tzdata
+          COPY . .
+          EXPOSE 8080
+          ENV ASPNETCORE_URLS=http://+:8080
+          ENTRYPOINT ["dotnet", "EcfDgii.Client.Api.dll"]
+          EOF
+          echo "Contenido generado en publish:"
+          ls -la publish
+
+      - name: Copiar artefactos al servidor VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOSTINGER_SERVER }}
+          username: ${{ secrets.HOSTINGER_USERNAME }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          source: "publish/*"
+          target: "/var/www/ecf-dgii-client/"
+          strip_components: 1
+          overwrite: true
+
+      - name: Desplegar contenedor Docker vía SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          ASPNETCORE_ENVIRONMENT: Production
+          DOTNET_ENVIRONMENT: Production
+          ASPNETCORE_URLS: http://+:8080
+          CONNECTION_STRING_REDIS: ${{ secrets.REDIS_CONNECTION_STRING }}
+          CONNECTION_STRING_DEFAULT: ${{ secrets.ECF_DB_CONNECTION_STRING }}
+          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR }}
+          AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE }}
+        with:
+          host: ${{ secrets.HOSTINGER_SERVER }}
+          username: ${{ secrets.HOSTINGER_USERNAME }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE
+          script: |
+            set -e
+
+            DEPLOY_PATH="/var/www/ecf-dgii-client"
+            CONTAINER_NAME="ecf_dgii_api"
+            IMAGE_NAME="ecf-dgii-api:latest"
+            ENV_FILE="$DEPLOY_PATH/.env"
+
+            cd "$DEPLOY_PATH"
+
+            echo "Verificando archivos desplegados..."
+            ls -la
+
+            echo "Generando archivo .env de producción de forma segura..."
+            cat > "$ENV_FILE" <<EOF
+            ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT}
+            DOTNET_ENVIRONMENT=${DOTNET_ENVIRONMENT}
+            ASPNETCORE_URLS=${ASPNETCORE_URLS}
+            ConnectionStrings__Redis=${CONNECTION_STRING_REDIS}
+            ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
+            RncEmisor=${RNC_EMISOR}
+            Ambiente=${AMBIENTE}
+            EOF
+
+            chmod 600 "$ENV_FILE"
+
+            echo "Deteniendo contenedor previo si existe..."
+            EXISTING_CONTAINER=$(docker ps -aq -f "name=^/${CONTAINER_NAME}$")
+            if [ -n "$EXISTING_CONTAINER" ]; then
+              docker stop "$CONTAINER_NAME" || true
+              docker rm "$CONTAINER_NAME" || true
+            else
+              echo "No existe contenedor previo."
+            fi
+
+            echo "Construyendo imagen Docker..."
+            docker build --no-cache -t "$IMAGE_NAME" .
+
+            echo "Iniciando nuevo contenedor Docker..."
+            docker run -d \
+              --name "$CONTAINER_NAME" \
+              -p 8085:8080 \
+              --add-host=host.docker.internal:host-gateway \
+              --env-file "$ENV_FILE" \
+              --restart unless-stopped \
+              "$IMAGE_NAME"
+
+            echo "Validando contenedor..."
+            docker ps -f "name=$CONTAINER_NAME"
+
+            echo "Últimos logs del contenedor..."
+            docker logs "$CONTAINER_NAME" --tail 30
+
+            echo "✅ Despliegue de EcfDgi.Client completado exitosamente."
