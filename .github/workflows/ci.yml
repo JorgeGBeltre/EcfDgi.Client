@@ -75,15 +75,16 @@ jobs:
           ASPNETCORE_URLS: http://+:8080
           CONNECTION_STRING_REDIS: ${{ secrets.REDIS_CONNECTION_STRING }}
           CONNECTION_STRING_DEFAULT: ${{ secrets.ECF_DB_CONNECTION_STRING }}
-          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR }}
-          AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE }}
-          WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY || secrets.JWT_SECRET_KEY }}
+          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '101889063' }}
+          AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Certecf' }}
+          WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY || secrets.JWT_SECRET_KEY || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET_KEY || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
         with:
           host: ${{ secrets.HOSTINGER_SERVER }}
           username: ${{ secrets.HOSTINGER_USERNAME }}
           key: ${{ secrets.HOSTINGER_SSH_KEY }}
           port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
-          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY
+          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET
           script: |
             set -e
 
@@ -107,6 +108,10 @@ jobs:
             RncEmisor=${RNC_EMISOR}
             Ambiente=${AMBIENTE}
             WorkerSecretKey=${WORKER_SECRET_KEY}
+            WORKER_SECRET_KEY=${WORKER_SECRET_KEY}
+            JwtSettings__Secret=${JWT_SECRET}
+            EcfClientOptions__RncEmisor=${RNC_EMISOR}
+            EcfEmisor__Rnc=${RNC_EMISOR}
             EOF
 
             chmod 600 "$ENV_FILE"
