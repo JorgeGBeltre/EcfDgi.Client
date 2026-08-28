@@ -77,12 +77,13 @@ jobs:
           CONNECTION_STRING_DEFAULT: ${{ secrets.ECF_DB_CONNECTION_STRING }}
           RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR }}
           AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE }}
+          WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY || secrets.JWT_SECRET_KEY }}
         with:
           host: ${{ secrets.HOSTINGER_SERVER }}
           username: ${{ secrets.HOSTINGER_USERNAME }}
           key: ${{ secrets.HOSTINGER_SSH_KEY }}
           port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
-          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE
+          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY
           script: |
             set -e
 
@@ -105,6 +106,7 @@ jobs:
             ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
             RncEmisor=${RNC_EMISOR}
             Ambiente=${AMBIENTE}
+            WorkerSecretKey=${WORKER_SECRET_KEY}
             EOF
 
             chmod 600 "$ENV_FILE"
@@ -121,10 +123,16 @@ jobs:
             echo "Construyendo imagen Docker..."
             docker build --no-cache -t "$IMAGE_NAME" .
 
-            echo "Iniciando nuevo contenedor Docker..."
+            echo "Iniciando nuevo contenedor Docker integrado con Traefik..."
             docker run -d \
               --name "$CONTAINER_NAME" \
+              --network netbird \
               -p 8085:8080 \
+              --label "traefik.enable=true" \
+              --label "traefik.http.routers.ecf-dgii.rule=Host(\`dgii.app.willychicrd.com\`)" \
+              --label "traefik.http.routers.ecf-dgii.entrypoints=websecure" \
+              --label "traefik.http.routers.ecf-dgii.tls.certresolver=letsencrypt" \
+              --label "traefik.http.services.ecf-dgii.loadbalancer.server.port=8080" \
               --add-host=host.docker.internal:host-gateway \
               --env-file "$ENV_FILE" \
               --restart unless-stopped \
