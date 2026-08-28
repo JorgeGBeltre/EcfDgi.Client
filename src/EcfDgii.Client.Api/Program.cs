@@ -240,45 +240,43 @@ try
 
         if (string.IsNullOrWhiteSpace(certPath) || !File.Exists(certPath))
         {
-            Log.Warning(
-                "DGII signing certificate path '{CertPath}' is not configured or file was not found. " +
-                "Dynamic tenant certificates from DB or API will be required for e-CF signing operations.", certPath ?? string.Empty);
+            throw new InvalidOperationException(
+                $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate path EcfClientOptions:CertificatePath ('{certPath}') does not exist. " +
+                "A real DGII signing certificate is required outside Development.");
         }
-        else
+
+        try
         {
-            try
+            using var cert = new X509Certificate2(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            var now = DateTime.Now; // X509Certificate2.NotBefore/NotAfter are local time
+            if (now < cert.NotBefore || now > cert.NotAfter)
             {
-                using var cert = new X509Certificate2(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
-                var now = DateTime.Now; // X509Certificate2.NotBefore/NotAfter are local time
-                if (now < cert.NotBefore || now > cert.NotAfter)
-                {
+                throw new InvalidOperationException(
+                    $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate at '{certPath}' is not currently valid " +
+                    $"(valid {cert.NotBefore:u} to {cert.NotAfter:u}, now {now:u}).");
+            }
+
+            var daysRemaining = (cert.NotAfter - now).TotalDays;
+            switch (CertificateExpiryPolicy.Classify(now, cert.NotAfter))
+            {
+                case CertificateExpiryPolicy.ExpiryUrgency.Critical:
                     Log.Error(
-                        "DGII signing certificate at '{CertPath}' is not currently valid (valid {NotBefore:u} to {NotAfter:u}, now {Now:u}).",
-                        certPath, cert.NotBefore, cert.NotAfter, now);
-                }
-                else
-                {
-                    var daysRemaining = (cert.NotAfter - now).TotalDays;
-                    switch (CertificateExpiryPolicy.Classify(now, cert.NotAfter))
-                    {
-                        case CertificateExpiryPolicy.ExpiryUrgency.Critical:
-                            Log.Error(
-                                "DGII signing certificate at {CertPath} expires in {Days:F0} day(s) ({NotAfter:u}). " +
-                                "Renewal with a certificate authority takes days — start now.",
-                                certPath, daysRemaining, cert.NotAfter);
-                            break;
-                        case CertificateExpiryPolicy.ExpiryUrgency.Warning:
-                            Log.Warning(
-                                "DGII signing certificate at {CertPath} expires in {Days:F0} day(s) ({NotAfter:u}).",
-                                certPath, daysRemaining, cert.NotAfter);
-                            break;
-                    }
-                }
+                        "DGII signing certificate at {CertPath} expires in {Days:F0} day(s) ({NotAfter:u}). " +
+                        "Renewal with a certificate authority takes days — start now.",
+                        certPath, daysRemaining, cert.NotAfter);
+                    break;
+                case CertificateExpiryPolicy.ExpiryUrgency.Warning:
+                    Log.Warning(
+                        "DGII signing certificate at {CertPath} expires in {Days:F0} day(s) ({NotAfter:u}).",
+                        certPath, daysRemaining, cert.NotAfter);
+                    break;
             }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Could not load certificate at '{CertPath}'. Dynamic certificates will be used.", certPath);
-            }
+        }
+        catch (CryptographicException ex)
+        {
+            throw new InvalidOperationException(
+                $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate at '{certPath}' could not be loaded " +
+                "(wrong password or corrupt file).", ex);
         }
     }
 

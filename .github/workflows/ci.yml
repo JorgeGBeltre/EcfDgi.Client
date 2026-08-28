@@ -98,6 +98,15 @@ jobs:
             echo "Verificando archivos desplegados..."
             ls -la
 
+            echo "Asegurando directorio de certificados..."
+            mkdir -p "$DEPLOY_PATH/certificates"
+            if [ ! -f "$DEPLOY_PATH/certificates/default.pfx" ]; then
+              echo "Generando certificado fiscal base de inicialización..."
+              openssl req -x509 -newkey rsa:2048 -keyout /tmp/key.pem -out /tmp/cert.pem -days 365 -nodes -subj "/CN=101889063/O=WILLY CHIC DOMINICANA"
+              openssl pkcs12 -export -out "$DEPLOY_PATH/certificates/default.pfx" -inkey /tmp/key.pem -in /tmp/cert.pem -passout pass:EcfTestPassword123!
+              rm -f /tmp/key.pem /tmp/cert.pem
+            fi
+
             echo "Generando archivo .env de producción de forma segura..."
             cat > "$ENV_FILE" <<EOF
             ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT}
@@ -112,6 +121,8 @@ jobs:
             JwtSettings__Secret=${JWT_SECRET}
             EcfClientOptions__RncEmisor=${RNC_EMISOR}
             EcfEmisor__Rnc=${RNC_EMISOR}
+            EcfClientOptions__CertificatePath=/app/certificates/default.pfx
+            EcfClientOptions__CertificatePassword=EcfTestPassword123!
             EOF
 
             chmod 600 "$ENV_FILE"
@@ -139,6 +150,7 @@ jobs:
               --label "traefik.http.routers.ecf-dgii.tls.certresolver=letsencrypt" \
               --label "traefik.http.services.ecf-dgii.loadbalancer.server.port=8080" \
               --add-host=host.docker.internal:host-gateway \
+              -v "$DEPLOY_PATH/certificates:/app/certificates" \
               --env-file "$ENV_FILE" \
               --restart unless-stopped \
               "$IMAGE_NAME"
