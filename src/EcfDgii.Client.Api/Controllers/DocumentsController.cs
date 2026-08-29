@@ -204,24 +204,6 @@ namespace EcfDgii.Client.Api.Controllers
                 return await HandleExistingDocumentAsync(existingDoc, dto, editSequence);
             }
 
-            // Validar que la fecha de emisión corresponda a la fecha actual para nuevos documentos
-            if (!string.IsNullOrWhiteSpace(dto.Header?.FechaEmision))
-            {
-                var todayUtc = DateOnly.FromDateTime(DateTime.UtcNow);
-                var todayLocal = DateOnly.FromDateTime(DateTime.Today);
-                if (DateOnly.TryParse(dto.Header.FechaEmision, out var parsedDate) ||
-                    (DateTime.TryParse(dto.Header.FechaEmision, out var parsedDt) && (parsedDate = DateOnly.FromDateTime(parsedDt)) != default))
-                {
-                    if (parsedDate != todayUtc && parsedDate != todayLocal)
-                    {
-                        return BadRequest(new
-                        {
-                            error = $"La fecha de emisión ({dto.Header.FechaEmision}) no corresponde a la fecha actual ({todayLocal:yyyy-MM-dd}). Solo se procesan comprobantes de la fecha actual."
-                        });
-                    }
-                }
-            }
-
             // 1. Allocate eNCF Sequence
             var eNcf = await _sequenceManager.GetNextEncfAsync(tenantId, dto.TipoComprobante ?? "E31");
 
