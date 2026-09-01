@@ -241,7 +241,7 @@ try
         if (string.IsNullOrWhiteSpace(certPath) || !File.Exists(certPath))
         {
             throw new InvalidOperationException(
-                $"CRITICAL SECURITY FAIL-FAST: EcfClientOptions:CertificatePath ('{certPath}') does not exist. " +
+                $"CRITICAL SECURITY FAIL-FAST: DGII signing certificate path EcfClientOptions:CertificatePath ('{certPath}') does not exist. " +
                 "A real DGII signing certificate is required outside Development.");
         }
 
@@ -256,10 +256,6 @@ try
                     $"(valid {cert.NotBefore:u} to {cert.NotAfter:u}, now {now:u}).");
             }
 
-            // Renewing with a CA takes days, not minutes — a warning that arrives on expiry day is
-            // too late to act on. No durable manual-review journal exists in this repo (that's an
-            // ERPConnector concept, tied to invoice envelopes, not applicable here), so this is
-            // Serilog-only; route it to wherever this API's alerting already watches its logs.
             var daysRemaining = (cert.NotAfter - now).TotalDays;
             switch (CertificateExpiryPolicy.Classify(now, cert.NotAfter))
             {

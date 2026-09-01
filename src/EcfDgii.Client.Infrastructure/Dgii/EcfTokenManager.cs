@@ -72,13 +72,13 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 
             if (_cacheService != null)
             {
-                await _cacheService.RemoveAsync($"ecf:tokens:{_rncEmisor}", ct);
+                await _cacheService.RemoveAsync($"ecf:tokens:{_rncEmisor}:{(int)_config.Ambiente}", ct);
             }
         }
 
         public async Task<string> GetTokenAsync(CancellationToken ct = default)
         {
-            string cacheKey = $"ecf:tokens:{_rncEmisor}";
+            string cacheKey = $"ecf:tokens:{_rncEmisor}:{(int)_config.Ambiente}";
 
             // 1. Check Redis Cache if available
             if (_cacheService != null)
@@ -97,7 +97,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             }
 
             // 3. Renew Token under Distributed Lock / Local Lock
-            string lockKey = $"ecf:tokens:lock:{_rncEmisor}";
+            string lockKey = $"ecf:tokens:lock:{_rncEmisor}:{(int)_config.Ambiente}";
             string lockValue = Guid.NewGuid().ToString();
             bool acquiredDistributedLock = false;
 

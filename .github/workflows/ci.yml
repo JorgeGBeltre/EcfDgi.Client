@@ -1,43 +1,45 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline - EcfDgi.Client
 
 on:
   push:
-    branches: [ "develop" ]
+    branches:
+      - develop
+  workflow_dispatch:
+
+env:
+  DOTNET_ENVIRONMENT: Production
+  ASPNETCORE_ENVIRONMENT: Production
+
+permissions:
+  contents: write
 
 jobs:
-  # 1. COMPILAR Y VERIFICAR
-  build-and-test:
+  build-test-and-deploy:
+    name: Compilar, Probar, Fusionar y Desplegar EcfDgi.Client
     runs-on: ubuntu-latest
+
     steps:
-      - name: Descargar código EcfDgi.Client
-        uses: actions/checkout@v4
-
-      - name: Configurar .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Compilar Solución
-        run: dotnet build EcfDgii.Client.slnx
-
-      - name: Ejecutar Pruebas
-        run: dotnet test EcfDgii.Client.slnx --configuration Release --verbosity normal
-
-  # 2. AUTO-MERGE DE DEVELOP A MAIN
-  automerge:
-    name: Auto-Merge to main
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
+      - name: Clonar repositorio
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Merge develop into main and push
+      - name: Configurar entorno .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore EcfDgii.Client.slnx
+
+      - name: Compilar solución
+        run: dotnet build EcfDgii.Client.slnx -c Release --no-restore
+
+      - name: Ejecutar pruebas unitarias
+        run: dotnet test EcfDgii.Client.slnx -c Release --no-build --verbosity normal
+
+      - name: Fusionar develop en main y hacer push
         if: github.event_name == 'push' && github.ref_name == 'develop'
         run: |
           git config --global user.name "github-actions[bot]"
@@ -45,3 +47,129 @@ jobs:
           git checkout main
           git merge --no-ff develop -m "Auto-merge develop to main"
           git push origin main
+
+      - name: Publicar API EcfDgi.Client
+        run: |
+          dotnet publish src/EcfDgii.Client.Api/EcfDgii.Client.Api.csproj -c Release -o ./publish /p:UseAppHost=false
+
+      - name: Preparar Dockerfile para Runtime
+        run: |
+          cat > publish/Dockerfile <<'EOF'
+          FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
+          WORKDIR /app
+          RUN apk add --no-cache icu-libs tzdata
+          COPY . .
+          EXPOSE 8080
+          ENV ASPNETCORE_URLS=http://+:8080
+          ENTRYPOINT ["dotnet", "EcfDgii.Client.Api.dll"]
+          EOF
+          echo "Contenido generado en publish:"
+          ls -la publish
+
+      - name: Copiar artefactos al servidor VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOSTINGER_SERVER }}
+          username: ${{ secrets.HOSTINGER_USERNAME }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          source: "publish/*"
+          target: "/var/www/ecf-dgii-client/"
+          strip_components: 1
+          overwrite: true
+
+      - name: Desplegar contenedor Docker vía SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          ASPNETCORE_ENVIRONMENT: Production
+          DOTNET_ENVIRONMENT: Production
+          ASPNETCORE_URLS: http://+:8080
+          CONNECTION_STRING_REDIS: ${{ secrets.REDIS_CONNECTION_STRING }}
+          CONNECTION_STRING_DEFAULT: ${{ secrets.ECF_DB_CONNECTION_STRING }}
+          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '101889063' }}
+          AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Certecf' }}
+          WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY || secrets.JWT_SECRET_KEY || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET_KEY || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
+        with:
+          host: ${{ secrets.HOSTINGER_SERVER }}
+          username: ${{ secrets.HOSTINGER_USERNAME }}
+          key: ${{ secrets.HOSTINGER_SSH_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET
+          script: |
+            set -e
+
+            DEPLOY_PATH="/var/www/ecf-dgii-client"
+            CONTAINER_NAME="ecf_dgii_api"
+            IMAGE_NAME="ecf-dgii-api:latest"
+            ENV_FILE="$DEPLOY_PATH/.env"
+
+            cd "$DEPLOY_PATH"
+
+            echo "Verificando archivos desplegados..."
+            ls -la
+
+            echo "Asegurando directorio de certificados..."
+            mkdir -p "$DEPLOY_PATH/certificates"
+            if [ ! -f "$DEPLOY_PATH/certificates/default.pfx" ]; then
+              echo "Generando certificado fiscal base de inicialización..."
+              openssl req -x509 -newkey rsa:2048 -keyout /tmp/key.pem -out /tmp/cert.pem -days 365 -nodes -subj "/CN=101889063/O=WILLY CHIC DOMINICANA"
+              openssl pkcs12 -export -out "$DEPLOY_PATH/certificates/default.pfx" -inkey /tmp/key.pem -in /tmp/cert.pem -passout pass:EcfTestPassword123!
+              rm -f /tmp/key.pem /tmp/cert.pem
+            fi
+
+            echo "Generando archivo .env de producción de forma segura..."
+            cat > "$ENV_FILE" <<EOF
+            ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT}
+            DOTNET_ENVIRONMENT=${DOTNET_ENVIRONMENT}
+            ASPNETCORE_URLS=${ASPNETCORE_URLS}
+            ConnectionStrings__Redis=${CONNECTION_STRING_REDIS}
+            ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
+            RncEmisor=${RNC_EMISOR}
+            Ambiente=${AMBIENTE}
+            WorkerSecretKey=${WORKER_SECRET_KEY}
+            WORKER_SECRET_KEY=${WORKER_SECRET_KEY}
+            JwtSettings__Secret=${JWT_SECRET}
+            EcfClientOptions__RncEmisor=${RNC_EMISOR}
+            EcfEmisor__Rnc=${RNC_EMISOR}
+            EcfClientOptions__CertificatePath=/app/certificates/default.pfx
+            EcfClientOptions__CertificatePassword=EcfTestPassword123!
+            EOF
+
+            chmod 600 "$ENV_FILE"
+
+            echo "Deteniendo contenedor previo si existe..."
+            EXISTING_CONTAINER=$(docker ps -aq -f "name=^/${CONTAINER_NAME}$")
+            if [ -n "$EXISTING_CONTAINER" ]; then
+              docker stop "$CONTAINER_NAME" || true
+              docker rm "$CONTAINER_NAME" || true
+            else
+              echo "No existe contenedor previo."
+            fi
+
+            echo "Construyendo imagen Docker..."
+            docker build --no-cache -t "$IMAGE_NAME" .
+
+            echo "Iniciando nuevo contenedor Docker integrado con Traefik..."
+            docker run -d \
+              --name "$CONTAINER_NAME" \
+              --network netbird \
+              -p 8085:8080 \
+              --label "traefik.enable=true" \
+              --label "traefik.http.routers.ecf-dgii.rule=Host(\`dgii.app.willychicrd.com\`)" \
+              --label "traefik.http.routers.ecf-dgii.entrypoints=websecure" \
+              --label "traefik.http.routers.ecf-dgii.tls.certresolver=letsencrypt" \
+              --label "traefik.http.services.ecf-dgii.loadbalancer.server.port=8080" \
+              --add-host=host.docker.internal:host-gateway \
+              -v "$DEPLOY_PATH/certificates:/app/certificates" \
+              --env-file "$ENV_FILE" \
+              --restart unless-stopped \
+              "$IMAGE_NAME"
+
+            echo "Validando contenedor..."
+            docker ps -f "name=$CONTAINER_NAME"
+
+            echo "Últimos logs del contenedor..."
+            docker logs "$CONTAINER_NAME" --tail 30
+
+            echo "✅ Despliegue de EcfDgi.Client completado exitosamente."
