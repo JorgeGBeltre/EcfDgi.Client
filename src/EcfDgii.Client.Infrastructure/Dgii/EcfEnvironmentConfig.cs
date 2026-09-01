@@ -7,6 +7,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 {
     public class EcfEnvironmentConfig
     {
+        public AmbienteEnum Ambiente { get; set; } = AmbienteEnum.Produccion;
         public string AutenticacionUrl { get; set; }
         public string RecepcionUrl { get; set; }
         public string RecepcionFcUrl { get; set; }
@@ -23,10 +24,11 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 
         public static EcfEnvironmentConfig GetConfig(AmbienteEnum ambiente)
         {
-            return ambiente switch
+            var config = ambiente switch
             {
                 AmbienteEnum.PreCertificacion => new EcfEnvironmentConfig
                 {
+                    Ambiente = ambiente,
                     AutenticacionUrl = "https://ecf.dgii.gov.do/testecf/autenticacion",
                     RecepcionUrl = "https://ecf.dgii.gov.do/testecf/recepcion",
                     RecepcionFcUrl = "https://fc.dgii.gov.do/testecf/recepcionfc",
@@ -42,6 +44,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 },
                 AmbienteEnum.Certificacion => new EcfEnvironmentConfig
                 {
+                    Ambiente = ambiente,
                     AutenticacionUrl = "https://ecf.dgii.gov.do/certecf/autenticacion",
                     RecepcionUrl = "https://ecf.dgii.gov.do/certecf/recepcion",
                     RecepcionFcUrl = "https://fc.dgii.gov.do/certecf/recepcionfc",
@@ -57,6 +60,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 },
                 AmbienteEnum.Produccion => new EcfEnvironmentConfig
                 {
+                    Ambiente = ambiente,
                     AutenticacionUrl = "https://ecf.dgii.gov.do/ecf/autenticacion",
                     RecepcionUrl = "https://ecf.dgii.gov.do/ecf/recepcion",
                     RecepcionFcUrl = "https://fc.dgii.gov.do/ecf/recepcionfc",
@@ -72,6 +76,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 },
                 _ => throw new ArgumentException("Ambiente no soportado")
             };
+            return config;
         }
     }
 }
