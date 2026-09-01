@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - develop
-      - main
   workflow_dispatch:
 
 env:
@@ -12,16 +11,19 @@ env:
   ASPNETCORE_ENVIRONMENT: Production
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-test-and-deploy:
-    name: Compilar y Desplegar EcfDgi.Client (Motor Fiscal DGII)
+    name: Compilar, Probar, Fusionar y Desplegar EcfDgi.Client
     runs-on: ubuntu-latest
 
     steps:
       - name: Clonar repositorio
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configurar entorno .NET
         uses: actions/setup-dotnet@v4
@@ -36,6 +38,15 @@ jobs:
 
       - name: Ejecutar pruebas unitarias
         run: dotnet test EcfDgii.Client.slnx -c Release --no-build --verbosity normal
+
+      - name: Fusionar develop en main y hacer push
+        if: github.event_name == 'push' && github.ref_name == 'develop'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git merge --no-ff develop -m "Auto-merge develop to main"
+          git push origin main
 
       - name: Publicar API EcfDgi.Client
         run: |
