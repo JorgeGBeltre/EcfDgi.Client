@@ -86,12 +86,14 @@ jobs:
           ASPNETCORE_ENVIRONMENT: Production
           DOTNET_ENVIRONMENT: Production
           ASPNETCORE_URLS: http://+:8080
-          CONNECTION_STRING_REDIS: ${{ secrets.REDIS_CONNECTION_STRING }}
-          CONNECTION_STRING_DEFAULT: ${{ secrets.ECF_DB_CONNECTION_STRING }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '101889063' }}
           AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Certecf' }}
-          WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY || secrets.JWT_SECRET_KEY || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET_KEY || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
+          WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY || secrets.JWT_SECRET || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
         with:
           host: ${{ secrets.HOSTINGER_SERVER }}
           username: ${{ secrets.HOSTINGER_USERNAME }}
@@ -99,7 +101,7 @@ jobs:
           port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
           timeout: 120s
           command_timeout: 10m
-          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET
+          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,REDIS_PASSWORD,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET
           script: |
             set -e
 
@@ -122,13 +124,25 @@ jobs:
               rm -f /tmp/key.pem /tmp/cert.pem
             fi
 
+            echo "Construyendo cadenas de conexión desde GitHub Secrets..."
+            DB_NAME="${POSTGRES_DB}"
+            DB_USER="${POSTGRES_USER}"
+            DB_PASS="${POSTGRES_PASSWORD}"
+            DEFAULT_DB_CONN="Host=ecf-postgres-db;Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASS}"
+
+            if [ -n "$REDIS_PASSWORD" ]; then
+              DEFAULT_REDIS_CONN="ecf-redis-db:6379,password=${REDIS_PASSWORD},abortConnect=false"
+            else
+              DEFAULT_REDIS_CONN="ecf-redis-db:6379,abortConnect=false"
+            fi
+
             echo "Generando archivo .env de producción de forma segura..."
             cat > "$ENV_FILE" <<EOF
             ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT}
             DOTNET_ENVIRONMENT=${DOTNET_ENVIRONMENT}
             ASPNETCORE_URLS=${ASPNETCORE_URLS}
-            ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf-redis-db:6379,abortConnect=false}
-            ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT:-Host=ecf-postgres-db;Port=5432;Database=ecf_db;Username=ecf_user;Password=Ad@GxicRH@zFHTE\$4Sj}
+            ConnectionStrings__Redis=${DEFAULT_REDIS_CONN}
+            ConnectionStrings__DefaultConnection=${DEFAULT_DB_CONN}
             RncEmisor=${RNC_EMISOR}
             Ambiente=${AMBIENTE}
             WorkerSecretKey=${WORKER_SECRET_KEY}

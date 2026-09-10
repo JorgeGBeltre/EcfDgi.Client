@@ -30,8 +30,8 @@ services:
       - ASPNETCORE_URLS=http://+:8080
       - DOTNET_SYSTEM_NET_DISABLE_IPV6=1
       # Conexión compartida a la base de datos central ecf_db
-      - ConnectionStrings__DefaultConnection=${DEFAULT_DB_CONNECTION:-Host=ecf-postgres-db;Port=5432;Database=ecf_db;Username=ecf_user;Password=Ad@GxicRH@zFHTE$4Sj}
-      - ConnectionStrings__Redis=${DEFAULT_REDIS_CONNECTION:-ecf_dgii_redis:6379}
+      - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT:-}
+      - ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf_dgii_redis:6379}
       - EcfEmisor__Rnc=101889063
       - EcfClientOptions__RncEmisor=101889063
       - WorkerSecretKey=${WORKER_SECRET_KEY:-}
