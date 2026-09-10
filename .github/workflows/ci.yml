@@ -123,8 +123,8 @@ jobs:
             ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT}
             DOTNET_ENVIRONMENT=${DOTNET_ENVIRONMENT}
             ASPNETCORE_URLS=${ASPNETCORE_URLS}
-            ConnectionStrings__Redis=${CONNECTION_STRING_REDIS}
-            ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
+            ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf-redis-db:6379,abortConnect=false}
+            ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT:-Host=ecf-postgres-db;Port=5432;Database=ecf_db;Username=ecf_user;Password=Ad@GxicRH@zFHTE\$4Sj}
             RncEmisor=${RNC_EMISOR}
             Ambiente=${AMBIENTE}
             WorkerSecretKey=${WORKER_SECRET_KEY}
