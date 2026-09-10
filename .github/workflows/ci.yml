@@ -77,6 +77,8 @@ jobs:
           target: "/var/www/ecf-dgii-client/"
           strip_components: 1
           overwrite: true
+          timeout: 120s
+          command_timeout: 10m
 
       - name: Desplegar contenedor Docker vía SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -95,6 +97,8 @@ jobs:
           username: ${{ secrets.HOSTINGER_USERNAME }}
           key: ${{ secrets.HOSTINGER_SSH_KEY }}
           port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          timeout: 120s
+          command_timeout: 10m
           envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,CONNECTION_STRING_REDIS,CONNECTION_STRING_DEFAULT,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET
           script: |
             set -e
