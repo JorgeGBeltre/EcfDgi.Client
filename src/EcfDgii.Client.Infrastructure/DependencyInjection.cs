@@ -23,6 +23,20 @@ namespace EcfDgii.Client.Infrastructure
         {
             // DB Context
             var connectionString = configuration.GetConnectionString("DefaultConnection");
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                connectionString = configuration["ConnectionStrings:DefaultConnection"]
+                    ?? configuration["ConnectionStrings__DefaultConnection"]
+                    ?? configuration["DATABASE_URL"]
+                    ?? configuration["DB_CONNECTION_STRING"];
+            }
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                // Fallback predeterminado alineado con la base de datos central en la red Docker
+                connectionString = "Host=ecf-postgres-db;Port=5432;Database=ecf_db;Username=ecf_user;Password=Ad@GxicRH@zFHTE$4Sj";
+            }
+
             if (connectionString == "InMemory")
             {
                 services.AddDbContext<ApplicationDbContext>(options =>
@@ -37,6 +51,17 @@ namespace EcfDgii.Client.Infrastructure
 
             // Redis Infrastructure Setup
             var redisConnectionString = configuration.GetConnectionString("Redis");
+            if (string.IsNullOrWhiteSpace(redisConnectionString))
+            {
+                redisConnectionString = configuration["ConnectionStrings:Redis"]
+                    ?? configuration["ConnectionStrings__Redis"]
+                    ?? configuration["REDIS_URL"];
+            }
+            if (string.IsNullOrWhiteSpace(redisConnectionString))
+            {
+                redisConnectionString = "ecf-redis-db:6379,localhost:6379,abortConnect=false";
+            }
+
             if (!string.IsNullOrEmpty(redisConnectionString))
             {
                 services.AddSingleton<IConnectionMultiplexer>(sp =>

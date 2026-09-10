@@ -310,7 +310,10 @@ try
     // created by an earlier model version silently kept running with a stale, incomplete schema
     // instead of failing loudly. Migrate() applies any pending migrations (including on first run,
     // where it creates the schema from the migration history instead of the live model).
-    if (app.Environment.IsDevelopment())
+    // Automatically apply migrations at startup for relational databases.
+    // Migrate() applies any pending migrations (including on first run,
+    // where it creates the schema from the migration history instead of the live model).
+    try
     {
         using var scope = app.Services.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -318,6 +321,10 @@ try
         {
             context.Database.Migrate();
         }
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Could not apply database migrations on startup: {Message}", ex.Message);
     }
 
     app.Run();
