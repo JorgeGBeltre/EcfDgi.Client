@@ -604,7 +604,8 @@ namespace EcfDgii.Client.Api.Controllers
             // Deliberately emisorRnc/emisorRazonSocial (this instance's configured identity), never
             // dto.Header?.RncEmisor/RazonSocialEmisor — see ApplyCanonicalContent's doc comment.
             sb.AppendLine($"      <RNCEmisor>{emisorRnc}</RNCEmisor>");
-            var razonSocialEmisor = EscapeXml(emisorRazonSocial);
+            var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
+            var razonSocialEmisor = EscapeXml(safeEmisorName);
             sb.AppendLine($"      <RazonSocialEmisor>{razonSocialEmisor}</RazonSocialEmisor>");
             sb.AppendLine("      <DireccionEmisor>Distrito Nacional, SD</DireccionEmisor>");
             var fechaEmision = NormalizeFechaDgii(dto.Header?.FechaEmision);
@@ -619,10 +620,19 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 // Order matters (xs:sequence): RNCComprador precedes RazonSocialComprador. For tipo 31
                 // its presence is already guaranteed by SubmitCanonicalDocument's guard.
-                sb.AppendLine($"      <RNCComprador>{dto.Header.RncComprador}</RNCComprador>");
+                var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
+                if (cleanRnc.Length is 9 or 11)
+                {
+                    sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                }
+                else if (tipoEcf is "31" or "41")
+                {
+                    sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                }
             }
-            var razonSocialComprador = EscapeXml(
-                string.IsNullOrWhiteSpace(dto.Header?.RazonSocialComprador) ? "Consumidor Final" : dto.Header.RazonSocialComprador);
+            var rawComprador = string.IsNullOrWhiteSpace(dto.Header?.RazonSocialComprador) ? "Consumidor Final" : dto.Header.RazonSocialComprador;
+            var safeComprador = rawComprador.Length > 150 ? rawComprador[..150] : rawComprador;
+            var razonSocialComprador = EscapeXml(safeComprador);
             sb.AppendLine($"      <RazonSocialComprador>{razonSocialComprador}</RazonSocialComprador>");
             sb.AppendLine("    </Comprador>");
 
@@ -721,19 +731,26 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("  <DetallesItems>");
             if (dto.Lines != null && dto.Lines.Count > 0)
             {
-                foreach (var line in dto.Lines)
+                var processedItems = NormalizeCanonicalLines(dto.Lines);
+                foreach (var item in processedItems)
                 {
                     sb.AppendLine("    <Item>");
-                    sb.AppendLine($"      <NumeroLinea>{line.LineNumber}</NumeroLinea>");
+                    sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
                     sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
                     AppendRetencion(sb, retention);
-                    var itemName = EscapeXml(line.ItemName ?? "Item");
-                    sb.AppendLine($"      <NombreItem>{itemName}</NombreItem>");
+                    sb.AppendLine($"      <NombreItem>{EscapeXml(item.Name)}</NombreItem>");
                     sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
-                    var (cantidad, precioUnitario) = NormalizeLineQuantity(line);
-                    sb.AppendLine($"      <CantidadItem>{cantidad:F2}</CantidadItem>");
-                    sb.AppendLine($"      <PrecioUnitarioItem>{precioUnitario:F2}</PrecioUnitarioItem>");
-                    sb.AppendLine($"      <MontoItem>{line.Amount:F2}</MontoItem>");
+                    if (!string.IsNullOrWhiteSpace(item.Description))
+                    {
+                        sb.AppendLine($"      <DescripcionItem>{EscapeXml(item.Description)}</DescripcionItem>");
+                    }
+                    sb.AppendLine($"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
+                    sb.AppendLine($"      <PrecioUnitarioItem>{item.UnitPrice:F2}</PrecioUnitarioItem>");
+                    if (item.DiscountAmount > 0)
+                    {
+                        sb.AppendLine($"      <DescuentoMonto>{item.DiscountAmount:F2}</DescuentoMonto>");
+                    }
+                    sb.AppendLine($"      <MontoItem>{item.MontoItem:F2}</MontoItem>");
                     sb.AppendLine("    </Item>");
                 }
             }
@@ -746,7 +763,7 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("      <NombreItem>Item General</NombreItem>");
                 sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
                 sb.AppendLine("      <CantidadItem>1.00</CantidadItem>");
-                var defaultTotal = dto.Totals?.MontoTotal ?? 0;
+                var defaultTotal = Math.Max(0m, dto.Totals?.MontoTotal ?? 0);
                 sb.AppendLine($"      <PrecioUnitarioItem>{defaultTotal:F2}</PrecioUnitarioItem>");
                 sb.AppendLine($"      <MontoItem>{defaultTotal:F2}</MontoItem>");
                 sb.AppendLine("    </Item>");
@@ -777,7 +794,8 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 if (!string.IsNullOrWhiteSpace(refs.RazonModificacion))
                 {
-                    sb.AppendLine($"    <RazonModificacion>{EscapeXml(refs.RazonModificacion)}</RazonModificacion>");
+                    var safeRazon = refs.RazonModificacion.Length > 90 ? refs.RazonModificacion[..90] : refs.RazonModificacion;
+                    sb.AppendLine($"    <RazonModificacion>{EscapeXml(safeRazon)}</RazonModificacion>");
                 }
                 sb.AppendLine("  </InformacionReferencia>");
             }
@@ -860,6 +878,77 @@ namespace EcfDgii.Client.Api.Controllers
                         .Replace(">", "&gt;")
                         .Replace("\"", "&quot;")
                         .Replace("'", "&apos;");
+        }
+
+        private sealed class ProcessedLineItem
+        {
+            public int LineNumber { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public string? Description { get; set; }
+            public decimal Quantity { get; set; }
+            public decimal UnitPrice { get; set; }
+            public decimal DiscountAmount { get; set; }
+            public decimal MontoItem { get; set; }
+        }
+
+        private static List<ProcessedLineItem> NormalizeCanonicalLines(List<CanonicalLineDto> lines)
+        {
+            var result = new List<ProcessedLineItem>();
+
+            foreach (var line in lines)
+            {
+                var (rawQty, rawPrice) = NormalizeLineQuantity(line);
+                var rawName = !string.IsNullOrWhiteSpace(line.ItemName) ? line.ItemName : "Item";
+
+                // Si la línea es negativa (descuento en QuickBooks)
+                if (line.Amount < 0 || rawPrice < 0)
+                {
+                    var absDiscount = Math.Abs(line.Amount);
+                    if (result.Count > 0)
+                    {
+                        // Absorber como descuento en el ítem anterior
+                        var prev = result[^1];
+                        prev.DiscountAmount += absDiscount;
+                        prev.MontoItem = Math.Max(0m, prev.MontoItem - absDiscount);
+                        continue;
+                    }
+                }
+
+                var safeQty = rawQty > 0m ? rawQty : 1m;
+                var safePrice = Math.Max(0m, rawPrice);
+                var safeAmount = Math.Max(0m, line.Amount);
+
+                var shortName = rawName.Length > 80 ? rawName[..80] : rawName;
+                string? extendedDesc = rawName.Length > 80
+                    ? (rawName.Length > 1000 ? rawName[..1000] : rawName)
+                    : null;
+
+                result.Add(new ProcessedLineItem
+                {
+                    LineNumber = result.Count + 1,
+                    Name = shortName,
+                    Description = extendedDesc,
+                    Quantity = safeQty,
+                    UnitPrice = safePrice,
+                    DiscountAmount = 0m,
+                    MontoItem = safeAmount
+                });
+            }
+
+            if (result.Count == 0)
+            {
+                result.Add(new ProcessedLineItem
+                {
+                    LineNumber = 1,
+                    Name = "Item General",
+                    Quantity = 1.00m,
+                    UnitPrice = 0m,
+                    DiscountAmount = 0m,
+                    MontoItem = 0m
+                });
+            }
+
+            return result;
         }
     }
 }

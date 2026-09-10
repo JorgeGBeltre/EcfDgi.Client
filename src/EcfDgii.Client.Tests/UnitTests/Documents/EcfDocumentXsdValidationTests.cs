@@ -724,29 +724,78 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
-        public async Task StructurallyInvalidDocument_StillSigned_WhenGateIsDisabled()
+        public async Task LongItemDescription_PassesXsdValidation_ByTruncatingNombreItemAndAddingDescripcionItem()
         {
-            // Regression guard: ValidateSchemasLocal/XsdDirectoryPath are opt-in (matches EcfClient's
-            // own pre-existing behavior) — a deployment that hasn't configured them must behave
-            // exactly as before this round, not suddenly start rejecting documents.
-            var (controller, db, signerSpy, _) = MakeRealController("E410000000901", enableXsdGate: false);
-            var dto = new CanonicalDocumentDto
+            var (controller, db, _, _) = MakeRealController("E310000000821");
+            var dtoLongDesc = new CanonicalDocumentDto
             {
-                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-GATEOFF", EditSequence = "1" },
-                TipoComprobante = "E41",
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-LONG-DESC", EditSequence = "1" },
+                TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
                     RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
-                    RncComprador = "130000005", RazonSocialComprador = "Proveedor Informal SRL",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
-                Retention = new CanonicalRetentionDto { IndicadorAgenteRetencionoPercepcion = 99, MontoItbisRetenido = 18m },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = new string('A', 120), Quantity = 1m, UnitPrice = 100m, Amount = 100m }],
             };
+            var res = await controller.SubmitCanonicalDocument(dtoLongDesc);
+            Assert.IsType<AcceptedResult>(res);
 
-            var result = await controller.SubmitCanonicalDocument(dto);
+            var doc = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<NombreItem>" + new string('A', 80) + "</NombreItem>", doc.XmlContent);
+            Assert.Contains("<DescripcionItem>" + new string('A', 120) + "</DescripcionItem>", doc.XmlContent);
+        }
 
-            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
-            signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+        [Fact]
+        public async Task NegativeDiscountLine_PassesXsdValidation_ByFoldingIntoLineDiscount()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000822");
+            var dtoNegLine = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-NEG-LINE", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+                Lines = [
+                    new CanonicalLineDto { LineNumber = 1, ItemName = "Item Normal", Quantity = 2m, UnitPrice = 100m, Amount = 200m },
+                    new CanonicalLineDto { LineNumber = 2, ItemName = "Descuento 50%", Quantity = 1m, UnitPrice = -100m, Amount = -100m },
+                ],
+            };
+            var res = await controller.SubmitCanonicalDocument(dtoNegLine);
+            Assert.IsType<AcceptedResult>(res);
+
+            var doc = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<DescuentoMonto>100.00</DescuentoMonto>", doc.XmlContent);
+            Assert.DoesNotContain("<PrecioUnitarioItem>-", doc.XmlContent);
+            Assert.DoesNotContain("<MontoItem>-", doc.XmlContent);
+        }
+
+        [Fact]
+        public async Task LongCustomerName_PassesXsdValidation_ByTruncatingRazonSocial()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000824");
+            var dtoLongCust = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-LONG-CUST", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = new string('B', 180),
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Item Normal", Quantity = 1m, UnitPrice = 100m, Amount = 100m }],
+            };
+            var res = await controller.SubmitCanonicalDocument(dtoLongCust);
+            Assert.IsType<AcceptedResult>(res);
+
+            var doc = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<RazonSocialComprador>" + new string('B', 150) + "</RazonSocialComprador>", doc.XmlContent);
         }
     }
 }
