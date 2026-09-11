@@ -1143,6 +1143,13 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                 }
 
+                // Regla DGII: Líneas con valor 0 o precio 0 (e.g. líneas informativas como "Total Bultos", "P-142501", "TOTAL METROS", subtotales de ERP)
+                // no se agregan al XML que se envía a la DGII.
+                if (line.Amount == 0m || rawPrice == 0m)
+                {
+                    continue;
+                }
+
                 var safeQty = rawQty > 0m ? rawQty : 1m;
                 var safePrice = Math.Max(0m, rawPrice);
                 var safeAmount = Math.Max(0m, line.Amount);
