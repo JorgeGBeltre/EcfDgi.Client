@@ -51,17 +51,17 @@ namespace EcfDgii.Client.Api.Controllers
                 // Build ARECF (Acuse de Recibo) XML string
                 var arecfBuilder = new StringBuilder();
                 arecfBuilder.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
-                arecfBuilder.AppendLine("<arecf>");
-                arecfBuilder.AppendLine("  <detalleacusederecibo>");
-                arecfBuilder.AppendLine("    <version>1.0</version>");
-                arecfBuilder.AppendLine($"    <rncemisor>{rncEmisor}</rncemisor>");
-                arecfBuilder.AppendLine($"    <rnccomprador>{rncComprador}</rnccomprador>");
-                arecfBuilder.AppendLine($"    <encf>{encf}</encf>");
-                arecfBuilder.AppendLine("    <estado>0</estado>"); // 0 = Aceptado/Recibido
+                arecfBuilder.AppendLine("<ARECF>");
+                arecfBuilder.AppendLine("  <DetalleAcusedeRecibo>");
+                arecfBuilder.AppendLine("    <Version>1.0</Version>");
+                arecfBuilder.AppendLine($"    <RNCEmisor>{rncEmisor}</RNCEmisor>");
+                arecfBuilder.AppendLine($"    <RNCComprador>{rncComprador}</RNCComprador>");
+                arecfBuilder.AppendLine($"    <eNCF>{encf}</eNCF>");
+                arecfBuilder.AppendLine("    <Estado>0</Estado>"); // 0 = Aceptado/Recibido
                 var fechaHora = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
-                arecfBuilder.AppendLine($"    <fechahoraacuserecibo>{fechaHora}</fechahoraacuserecibo>");
-                arecfBuilder.AppendLine("  </detalleacusederecibo>");
-                arecfBuilder.AppendLine("</arecf>");
+                arecfBuilder.AppendLine($"    <FechaHoraAcuseRecibo>{fechaHora}</FechaHoraAcuseRecibo>");
+                arecfBuilder.AppendLine("  </DetalleAcusedeRecibo>");
+                arecfBuilder.AppendLine("</ARECF>");
 
                 var unsignedArecf = arecfBuilder.ToString();
                 
