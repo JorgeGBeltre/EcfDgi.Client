@@ -752,6 +752,14 @@ namespace EcfDgii.Client.Api.Controllers
                 if (tipoEcf != "47" && !string.IsNullOrWhiteSpace(dto.Header?.CorreoComprador))
                 {
                     var trimmedEmail = dto.Header.CorreoComprador.Trim();
+                    if (trimmedEmail.Contains(';') || trimmedEmail.Contains(','))
+                    {
+                        var first = trimmedEmail.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim();
+                        if (!string.IsNullOrWhiteSpace(first))
+                        {
+                            trimmedEmail = first;
+                        }
+                    }
                     if (trimmedEmail.Length > 80) trimmedEmail = trimmedEmail[..80];
                     if (System.Text.RegularExpressions.Regex.IsMatch(trimmedEmail, @"^\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*$"))
                     {
