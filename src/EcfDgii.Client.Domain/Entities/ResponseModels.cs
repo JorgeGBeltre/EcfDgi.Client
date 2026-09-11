@@ -245,12 +245,12 @@ namespace EcfDgii.Client.Domain.Entities
 
     public class ConsultaEstadoRequest
     {
-        public string RncEmisor { get; set; }
-        public string ENcf { get; set; }
-        public string RncComprador { get; set; }
-        public string CodigoSeguridad { get; set; }
+        public string RncEmisor { get; set; } = string.Empty;
+        public string ENcf { get; set; } = string.Empty;
+        public string? RncComprador { get; set; }
+        public string? CodigoSeguridad { get; set; }
 
-        public ConsultaEstadoRequest(string rncEmisor, string eNcf, string rncComprador = null, string codigoSeguridad = null)
+        public ConsultaEstadoRequest(string rncEmisor, string eNcf, string? rncComprador = null, string? codigoSeguridad = null)
         {
             RncEmisor = rncEmisor;
             ENcf = eNcf;

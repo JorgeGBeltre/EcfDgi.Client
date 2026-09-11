@@ -48,9 +48,12 @@ namespace EcfDgii.Client.Infrastructure.Security
             doc.LoadXml(xmlContent);
 
             var signedXml = new SignedXml(doc);
-            signedXml.SigningKey = _certificate.GetRSAPrivateKey();
-            signedXml.SignedInfo.SignatureMethod = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
-            signedXml.SignedInfo.CanonicalizationMethod = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
+            signedXml.SigningKey = _certificate.GetRSAPrivateKey() ?? throw new EcfSigningException("El certificado no contiene una clave privada RSA válida.");
+            if (signedXml.SignedInfo != null)
+            {
+                signedXml.SignedInfo.SignatureMethod = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+                signedXml.SignedInfo.CanonicalizationMethod = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
+            }
 
             var reference = new Reference();
             reference.Uri = "";
