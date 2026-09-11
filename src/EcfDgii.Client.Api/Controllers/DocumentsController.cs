@@ -342,7 +342,8 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = existingDoc.ENcf,
                 state = existingDoc.State,
                 trackId = existingDoc.TrackId,
-                securityCode = existingDoc.SecurityCode
+                securityCode = existingDoc.SecurityCode,
+                signedXml = existingDoc.SignedXmlContent
             });
         }
 
@@ -517,7 +518,8 @@ namespace EcfDgii.Client.Api.Controllers
                     eNcf = doc.ENcf,
                     state = doc.State,
                     trackId = doc.TrackId,
-                    securityCode = doc.SecurityCode
+                    securityCode = doc.SecurityCode,
+                    signedXml = doc.SignedXmlContent
                 });
             }
 
@@ -554,7 +556,8 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,
-                securityCode = doc.SecurityCode
+                securityCode = doc.SecurityCode,
+                signedXml = doc.SignedXmlContent
             });
         }
 
@@ -578,8 +581,41 @@ namespace EcfDgii.Client.Api.Controllers
                 state = doc.State,
                 trackId = doc.TrackId,
                 securityCode = doc.SecurityCode,
-                receiptDate = doc.ReceiptDate
+                receiptDate = doc.ReceiptDate,
+                signedXml = doc.SignedXmlContent
             });
+        }
+
+        [HttpGet("by-source/{txnId}/xml")]
+        public async Task<IActionResult> GetXmlBySourceTxnId(string txnId)
+        {
+            var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
+            var doc = await _db.EcfDocuments
+                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == txnId);
+
+            if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+            {
+                return NotFound(new { error = $"Document with source TxnId '{txnId}' not found or has no XML." });
+            }
+
+            var fileName = $"{doc.RncEmisor}-{doc.ENcf}.xml";
+            return File(Encoding.UTF8.GetBytes(doc.SignedXmlContent), "application/xml", fileName);
+        }
+
+        [HttpGet("{id:guid}/xml")]
+        public async Task<IActionResult> GetXmlById(Guid id)
+        {
+            var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
+            var doc = await _db.EcfDocuments
+                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == id);
+
+            if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+            {
+                return NotFound(new { error = $"Document '{id}' not found or has no XML." });
+            }
+
+            var fileName = $"{doc.RncEmisor}-{doc.ENcf}.xml";
+            return File(Encoding.UTF8.GetBytes(doc.SignedXmlContent), "application/xml", fileName);
         }
 
         private static string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial)
@@ -713,6 +749,15 @@ namespace EcfDgii.Client.Api.Controllers
                 var safeComprador = rawComprador.Length > 150 ? rawComprador[..150] : rawComprador;
                 var razonSocialComprador = EscapeXml(safeComprador);
                 sb.AppendLine($"      <RazonSocialComprador>{razonSocialComprador}</RazonSocialComprador>");
+                if (tipoEcf != "47" && !string.IsNullOrWhiteSpace(dto.Header?.CorreoComprador))
+                {
+                    var trimmedEmail = dto.Header.CorreoComprador.Trim();
+                    if (trimmedEmail.Length > 80) trimmedEmail = trimmedEmail[..80];
+                    if (System.Text.RegularExpressions.Regex.IsMatch(trimmedEmail, @"^\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*$"))
+                    {
+                        sb.AppendLine($"      <CorreoComprador>{EscapeXml(trimmedEmail)}</CorreoComprador>");
+                    }
+                }
                 sb.AppendLine("    </Comprador>");
             }
 

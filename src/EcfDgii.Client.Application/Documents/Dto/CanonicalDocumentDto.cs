@@ -15,6 +15,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string RazonSocialEmisor { get; set; } = string.Empty;
         public string RncComprador { get; set; } = string.Empty;
         public string RazonSocialComprador { get; set; } = string.Empty;
+        public string? CorreoComprador { get; set; }
         /// <summary>
         /// ISO 8601 (yyyy-MM-dd) — the canonical, jurisdiction-neutral form callers should send.
         /// DocumentsController.NormalizeFechaDgii converts it into DGII's dd-MM-yyyy before it reaches

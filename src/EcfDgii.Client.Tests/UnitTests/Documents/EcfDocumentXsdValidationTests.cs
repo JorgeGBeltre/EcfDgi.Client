@@ -1259,5 +1259,62 @@ namespace EcfDgii.Client.UnitTests.Documents
             var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 41 v.1.0.xsd"));
             Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
         }
+
+        [Fact]
+        public async Task Tipo31_And_Tipo32_WithCorreoComprador_IsValidAgainstDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000301");
+
+            var dto = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E31",
+                SourceReference = new SourceReferenceDto
+                {
+                    TxnId = "TXN-EMAIL-31",
+                    EditSequence = "1",
+                },
+                Header = new CanonicalHeaderDto
+                {
+                    RncComprador = "101010101",
+                    RazonSocialComprador = "COMPRADOR CORP SRL",
+                    CorreoComprador = "facturacion@comprador.com",
+                    FechaEmision = "2026-04-15",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoGravadoTotal = 1000m,
+                    MontoExento = 0m,
+                    MontoItbis = 180m,
+                    MontoTotal = 1180m,
+                    TaxBuckets =
+                    [
+                        new() { Rate = 18, Base = 1000m, Tax = 180m }
+                    ],
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "Licencia de Software",
+                        Quantity = 1m,
+                        UnitPrice = 1000m,
+                        Amount = 1000m,
+                    },
+                ],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            Assert.Contains("<CorreoComprador>facturacion@comprador.com</CorreoComprador>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
     }
 }
