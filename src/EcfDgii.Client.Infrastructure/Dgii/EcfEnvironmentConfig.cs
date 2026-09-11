@@ -8,18 +8,18 @@ namespace EcfDgii.Client.Infrastructure.Dgii
     public class EcfEnvironmentConfig
     {
         public AmbienteEnum Ambiente { get; set; } = AmbienteEnum.Produccion;
-        public string AutenticacionUrl { get; set; }
-        public string RecepcionUrl { get; set; }
-        public string RecepcionFcUrl { get; set; }
-        public string ConsultaResultadoUrl { get; set; }
-        public string ConsultaEstadoUrl { get; set; }
-        public string ConsultaTrackIdsUrl { get; set; }
-        public string ConsultaRfceUrl { get; set; }
-        public string AprobacionComercialUrl { get; set; }
-        public string AnulacionRangosUrl { get; set; }
-        public string DirectorioUrl { get; set; }
-        public string TimbreUrl { get; set; }
-        public string TimbreFcUrl { get; set; }
+        public string AutenticacionUrl { get; set; } = string.Empty;
+        public string RecepcionUrl { get; set; } = string.Empty;
+        public string RecepcionFcUrl { get; set; } = string.Empty;
+        public string ConsultaResultadoUrl { get; set; } = string.Empty;
+        public string ConsultaEstadoUrl { get; set; } = string.Empty;
+        public string ConsultaTrackIdsUrl { get; set; } = string.Empty;
+        public string ConsultaRfceUrl { get; set; } = string.Empty;
+        public string AprobacionComercialUrl { get; set; } = string.Empty;
+        public string AnulacionRangosUrl { get; set; } = string.Empty;
+        public string DirectorioUrl { get; set; } = string.Empty;
+        public string TimbreUrl { get; set; } = string.Empty;
+        public string TimbreFcUrl { get; set; } = string.Empty;
         public string EstatusServiciosUrl { get; set; } = "https://statusecf.dgii.gov.do";
 
         public static EcfEnvironmentConfig GetConfig(AmbienteEnum ambiente)

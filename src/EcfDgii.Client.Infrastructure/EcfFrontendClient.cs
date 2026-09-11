@@ -26,9 +26,16 @@ namespace EcfDgii.Client
 
             if (opts.Mode == IntegrationMode.DgiiDirect)
             {
-                var envConfig = EcfEnvironmentConfig.GetConfig((AmbienteEnum)opts.Environment);
+                var ambiente = opts.Environment switch
+                {
+                    EcfEnvironment.Test => AmbienteEnum.PreCertificacion,
+                    EcfEnvironment.Cert => AmbienteEnum.Certificacion,
+                    EcfEnvironment.Prod => AmbienteEnum.Produccion,
+                    _ => AmbienteEnum.PreCertificacion
+                };
+                var envConfig = EcfEnvironmentConfig.GetConfig(ambiente);
 
-                EcfXmlSigner signer = null;
+                EcfXmlSigner? signer = null;
                 if (!string.IsNullOrEmpty(opts.CertificatePath))
                     signer = new EcfXmlSigner(opts.CertificatePath, opts.CertificatePassword ?? "");
 
@@ -48,7 +55,7 @@ namespace EcfDgii.Client
             }
         }
 
-        public Task<ConsultaEstadoResponse> ConsultarEstadoAsync(string rncEmisor, string eNcf, string rncComprador = null, string codigoSeguridad = null, CancellationToken ct = default) =>
+        public Task<ConsultaEstadoResponse> ConsultarEstadoAsync(string rncEmisor, string eNcf, string? rncComprador = null, string? codigoSeguridad = null, CancellationToken ct = default) =>
             _transport.ConsultarEstadoAsync(new ConsultaEstadoRequest(rncEmisor, eNcf, rncComprador, codigoSeguridad), ct);
 
         public Task<RfceConsultaResponse> ConsultarRfceAsync(string rncEmisor, string eNcf, string codigoSeguridad, CancellationToken ct = default) =>
