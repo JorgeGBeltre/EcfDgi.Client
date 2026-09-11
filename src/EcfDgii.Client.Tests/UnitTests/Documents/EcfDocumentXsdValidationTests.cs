@@ -478,6 +478,48 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task LinesWithZeroAmountOrZeroPrice_AreOmittedFromDgiiXml_AndXmlIsValidAgainstXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000810");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-ZERO-LINES", EditSequence = "1" },
+                TipoComprobante = "E31",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 400m, MontoItbis = 72m, MontoTotal = 472m },
+                Lines =
+                [
+                    new CanonicalLineDto { LineNumber = 1, ItemName = "Porcelanato 60x60", Quantity = 2m, UnitPrice = 200m, Amount = 400m },
+                    new CanonicalLineDto { LineNumber = 2, ItemName = "Total Bultos", Quantity = 232.00m, UnitPrice = 0.00m, Amount = 0.00m },
+                    new CanonicalLineDto { LineNumber = 3, ItemName = "P-142501", Quantity = 0.00m, UnitPrice = 0.00m, Amount = 0.00m },
+                    new CanonicalLineDto { LineNumber = 4, ItemName = "TOTAL METROS", Quantity = 733.92m, UnitPrice = 0.00m, Amount = 0.00m },
+                ],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync(d => d.SourceTxnId == "TXN-ZERO-LINES")).SignedXmlContent!;
+            
+            // Las líneas informativas con valor 0 o precio 0 NO deben aparecer en el XML
+            Assert.DoesNotContain("<NombreItem>Total Bultos</NombreItem>", xml);
+            Assert.DoesNotContain("<NombreItem>P-142501</NombreItem>", xml);
+            Assert.DoesNotContain("<NombreItem>TOTAL METROS</NombreItem>", xml);
+            
+            // La línea real sí debe estar presente y ser el único ítem
+            Assert.Contains("<NombreItem>Porcelanato 60x60</NombreItem>", xml);
+            Assert.Contains("<NumeroLinea>1</NumeroLinea>", xml);
+            Assert.DoesNotContain("<NumeroLinea>2</NumeroLinea>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo31_WithoutRncComprador_IsRejectedBeforeSpendingASequence()
         {
             // e-CF 31's Comprador has RNCComprador minOccurs="1" — a crédito fiscal cannot exist
