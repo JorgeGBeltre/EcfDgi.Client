@@ -775,8 +775,25 @@ namespace EcfDgii.Client.Api.Controllers
             // first version of this code, written from the prose spec's field-level tables alone).
             if (tipoEcf == "34" && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
             {
+                var ncfMod = refs.CorrectsENcf.Trim();
+                if (ncfMod.Length < 11)
+                {
+                    if ((ncfMod.StartsWith("1") || ncfMod.StartsWith("2") || ncfMod.StartsWith("4")) && ncfMod.Length == 9)
+                    {
+                        ncfMod = "B0" + ncfMod;
+                    }
+                    else if (ncfMod.StartsWith("0") && ncfMod.Length == 10)
+                    {
+                        ncfMod = "B" + ncfMod;
+                    }
+                    else if (ncfMod.Length == 8 && ncfMod.All(char.IsDigit))
+                    {
+                        ncfMod = "B02" + ncfMod;
+                    }
+                }
+
                 sb.AppendLine("  <InformacionReferencia>");
-                sb.AppendLine($"    <NCFModificado>{refs.CorrectsENcf}</NCFModificado>");
+                sb.AppendLine($"    <NCFModificado>{ncfMod}</NCFModificado>");
                 if (!string.IsNullOrWhiteSpace(refs.RncOtroContribuyente))
                 {
                     sb.AppendLine($"    <RNCOtroContribuyente>{refs.RncOtroContribuyente}</RNCOtroContribuyente>");
