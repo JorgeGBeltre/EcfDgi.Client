@@ -797,5 +797,279 @@ namespace EcfDgii.Client.UnitTests.Documents
             var doc = await db.EcfDocuments.SingleAsync();
             Assert.Contains("<RazonSocialComprador>" + new string('B', 150) + "</RazonSocialComprador>", doc.XmlContent);
         }
+
+        [Fact]
+        public async Task Tipo33_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E330000000801");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-33", EditSequence = "1" },
+                TipoComprobante = "E33",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "E310000000801",
+                    CodigoModificacion = 1,
+                    RazonModificacion = "Cargo adicional por mora",
+                    FechaNcfModificado = "2026-08-06",
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<TipoeCF>33</TipoeCF>", stored.SignedXmlContent!);
+            Assert.Contains("<InformacionReferencia>", stored.SignedXmlContent!);
+            Assert.Contains("<NCFModificado>E310000000801</NCFModificado>", stored.SignedXmlContent!);
+
+            var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 33 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo33_WithoutReferences_IsRejectedBeforeSpendingASequence()
+        {
+            var (controller, db, _, _) = MakeRealController("E330000000802");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-33-NOREF", EditSequence = "1" },
+                TipoComprobante = "E33",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.IsType<BadRequestObjectResult>(result);
+            Assert.False(await db.EcfDocuments.AnyAsync());
+        }
+
+        [Fact]
+        public async Task Tipo43_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E430000000801");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-43", EditSequence = "1" },
+                TipoComprobante = "E43",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 500m, MontoItbis = 0m, MontoTotal = 500m },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Café y azúcar para oficina", Quantity = 1m, UnitPrice = 500m, Amount = 500m }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            Assert.Contains("<TipoeCF>43</TipoeCF>", xml);
+            Assert.DoesNotContain("<Comprador>", xml);
+            Assert.DoesNotContain("<TipoIngresos>", xml);
+            Assert.DoesNotContain("<MontoGravadoTotal>", xml);
+            Assert.Contains("<MontoExento>500.00</MontoExento>", xml);
+            Assert.Contains("<MontoTotal>500.00</MontoTotal>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 43 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo44_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E440000000801");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-44", EditSequence = "1" },
+                TipoComprobante = "E44",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000000", RazonSocialComprador = "Zona Franca del Norte SAS",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoItbis = 0m, MontoTotal = 1000m },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Prendas de vestir zona franca", Quantity = 10m, UnitPrice = 100m, Amount = 1000m }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            Assert.Contains("<TipoeCF>44</TipoeCF>", xml);
+            Assert.Contains("<Comprador>", xml);
+            Assert.Contains("<MontoExento>1000.00</MontoExento>", xml);
+            Assert.Contains("<MontoTotal>1000.00</MontoTotal>", xml);
+            Assert.DoesNotContain("<TotalITBIS>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 44 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo45_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E450000000801");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-45", EditSequence = "1" },
+                TipoComprobante = "E45",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "401007421", RazonSocialComprador = "Ministerio de Hacienda",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoItbis = 180m, MontoTotal = 1180m },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Servicio Institucional", Quantity = 1m, UnitPrice = 1000m, Amount = 1000m }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            Assert.Contains("<TipoeCF>45</TipoeCF>", xml);
+            Assert.Contains("<RNCComprador>401007421</RNCComprador>", xml);
+            Assert.Contains("<MontoGravadoTotal>1000.00</MontoGravadoTotal>", xml);
+            Assert.Contains("<TotalITBIS>180.00</TotalITBIS>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 45 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo45_WithoutRncComprador_IsRejectedBeforeSpendingASequence()
+        {
+            var (controller, db, _, _) = MakeRealController("E450000000802");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-45-NORNC", EditSequence = "1" },
+                TipoComprobante = "E45",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RazonSocialComprador = "Institucion Sin RNC",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoItbis = 180m, MontoTotal = 1180m },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.IsType<BadRequestObjectResult>(result);
+            Assert.False(await db.EcfDocuments.AnyAsync());
+        }
+
+        [Fact]
+        public async Task Tipo46_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E460000000801");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-46", EditSequence = "1" },
+                TipoComprobante = "E46",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "US-987654321", RazonSocialComprador = "Miami Apparel Imports LLC",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 2500m, MontoItbis = 0m, MontoTotal = 2500m },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Exportación Lote Textiles", Quantity = 25m, UnitPrice = 100m, Amount = 2500m }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            Assert.Contains("<TipoeCF>46</TipoeCF>", xml);
+            Assert.Contains("<IdentificadorExtranjero>US-987654321</IdentificadorExtranjero>", xml);
+            Assert.Contains("<MontoGravadoTotal>2500.00</MontoGravadoTotal>", xml);
+            Assert.Contains("<MontoGravadoI3>2500.00</MontoGravadoI3>", xml);
+            Assert.Contains("<ITBIS3>0</ITBIS3>", xml);
+            Assert.Contains("<TotalITBIS>0.00</TotalITBIS>", xml);
+            Assert.Contains("<TotalITBIS3>0.00</TotalITBIS3>", xml);
+            Assert.Contains("<MontoTotal>2500.00</MontoTotal>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 46 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo47_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E470000000801");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-47", EditSequence = "1" },
+                TipoComprobante = "E47",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "DE-123456789", RazonSocialComprador = "Software Cloud GmbH",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 3000m, MontoItbis = 0m, MontoTotal = 3000m },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Licencia de Software Extranjero", Quantity = 1m, UnitPrice = 3000m, Amount = 3000m }],
+                Retention = new CanonicalRetentionDto
+                {
+                    IndicadorAgenteRetencionoPercepcion = 1,
+                    MontoIsrRetenido = 300m,
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            Assert.Contains("<TipoeCF>47</TipoeCF>", xml);
+            Assert.DoesNotContain("<TipoIngresos>", xml);
+            Assert.DoesNotContain("<RNCComprador>", xml);
+            Assert.Contains("<IdentificadorExtranjero>DE-123456789</IdentificadorExtranjero>", xml);
+            Assert.Contains("<MontoExento>3000.00</MontoExento>", xml);
+            Assert.Contains("<TotalISRRetencion>300.00</TotalISRRetencion>", xml);
+            Assert.Contains("<MontoISRRetenido>300.00</MontoISRRetenido>", xml);
+            Assert.DoesNotContain("<MontoITBISRetenido>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 47 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public void Arecf_GeneratedXml_IsValidAgainstDgiiXsd()
+        {
+            var unsignedArecf = @"<?xml version=""1.0"" encoding=""utf-8""?>
+<ARECF>
+  <DetalleAcusedeRecibo>
+    <Version>1.0</Version>
+    <RNCEmisor>101889063</RNCEmisor>
+    <RNCComprador>130000000</RNCComprador>
+    <eNCF>E310000000801</eNCF>
+    <Estado>0</Estado>
+    <FechaHoraAcuseRecibo>10-09-2026 21:00:00</FechaHoraAcuseRecibo>
+  </DetalleAcusedeRecibo>
+</ARECF>";
+
+            var signer = new EcfXmlSigner(string.Empty, string.Empty);
+            var signedArecf = signer.SignXml(unsignedArecf, "130000000");
+
+            var validation = new EcfSchemaValidator().Validate(signedArecf, XsdPath("ARECF v1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
     }
 }

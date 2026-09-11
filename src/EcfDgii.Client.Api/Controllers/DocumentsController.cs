@@ -114,43 +114,37 @@ namespace EcfDgii.Client.Api.Controllers
             // Type-specific required fields per DGII's "Formato Comprobante Fiscal Electrónico (e-CF)
             // V1.0" spec — checked before allocating a sequence, since a document missing these can
             // never be validly built regardless of what eNCF it gets.
-            if (string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(dto.TipoComprobante, "E33", StringComparison.OrdinalIgnoreCase))
             {
-                // Tipo 34 (Nota de Crédito): InformacionReferencia is obligatorio (1). NCFModificado
-                // and CodigoModificacion are its two obligatorio sub-fields (lines 1113, 1126).
+                // Tipo 34 (Nota de Crédito) / Tipo 33 (Nota de Débito): InformacionReferencia is obligatorio (1).
                 if (string.IsNullOrWhiteSpace(dto.References?.CorrectsENcf))
                 {
-                    return BadRequest(new { error = "References.CorrectsENcf (NCFModificado) is required for TipoComprobante E34." });
+                    return BadRequest(new { error = $"References.CorrectsENcf (NCFModificado) is required for TipoComprobante {dto.TipoComprobante}." });
                 }
                 if (dto.References?.CodigoModificacion is null)
                 {
-                    return BadRequest(new { error = "References.CodigoModificacion is required for TipoComprobante E34." });
+                    return BadRequest(new { error = $"References.CodigoModificacion is required for TipoComprobante {dto.TipoComprobante}." });
                 }
 
-                // DGII enforces MontoTotal(NC) ≤ MontoTotal(e-CF modificado) — a SEMANTIC rule the XSD
-                // cannot express (xs:sequence/xs:restriction only check structure and simple-type
-                // constraints, not cross-document business rules) and this codebase does not verify:
-                // doing so needs a DB lookup of dto.References.CorrectsENcf's own stored total, not
-                // implemented here. A document violating this passes schema validation cleanly and is
-                // rejected only when DGII itself receives it. Logged explicitly so this is a known,
-                // documented limit — not a surprise discovered in Certificación.
-                _logger.LogWarning(
-                    "e-CF {ENcf} tipo 34 (Nota de Crédito) para NCFModificado {NcfModificado}: el tope " +
-                    "'MontoTotal ≤ MontoTotal del e-CF modificado' NO se verifica localmente antes de " +
-                    "enviar a DGII — solo el servidor de DGII lo valida.",
-                    dto.SourceReference.TxnId, dto.References.CorrectsENcf);
+                if (string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning(
+                        "e-CF {ENcf} tipo 34 (Nota de Crédito) para NCFModificado {NcfModificado}: el tope " +
+                        "'MontoTotal ≤ MontoTotal del e-CF modificado' NO se verifica localmente antes de " +
+                        "enviar a DGII — solo el servidor de DGII lo valida.",
+                        dto.SourceReference.TxnId, dto.References.CorrectsENcf);
+                }
             }
-            else if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(dto.TipoComprobante, "E45", StringComparison.OrdinalIgnoreCase))
             {
-                // e-CF 31 (Crédito Fiscal): RNCComprador is minOccurs="1" in the real XSD — the whole
-                // point of a crédito fiscal is that an identified buyer can claim the ITBIS. Omitting
-                // it produced a document that failed schema validation only AFTER an eNCF had been
-                // allocated; a customer with no RNC on file belongs on a consumo (32), not here.
+                // e-CF 31 (Crédito Fiscal) & e-CF 45 (Gubernamental): RNCComprador is minOccurs="1" in the real XSD.
                 if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                 {
                     return BadRequest(new
                     {
-                        error = "Header.RncComprador es obligatorio para TipoComprobante E31 (Crédito Fiscal). " +
+                        error = $"Header.RncComprador es obligatorio para TipoComprobante {dto.TipoComprobante}. " +
                                 "El cliente no tiene RNC/cédula registrado — corrígelo en el ERP, o emítelo como " +
                                 "Factura de Consumo (E32), que no lo exige.",
                     });
@@ -158,10 +152,7 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else if (string.Equals(dto.TipoComprobante, "E41", StringComparison.OrdinalIgnoreCase))
             {
-                // Tipo 41 (Comprobante de Compras): RNCComprador is obligatorio (1) here (vs.
-                // condicional for 31/32/33/34) — it's the informal vendor's identity. Retención is
-                // obligatorio (1) only for 41 (and 47) — the buyer withholds ITBIS/ISR on the
-                // informal seller's behalf.
+                // Tipo 41 (Comprobante de Compras): RNCComprador is obligatorio (1) here (the informal vendor).
                 if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                 {
                     return BadRequest(new { error = "Header.RncComprador is required for TipoComprobante E41 (the informal vendor's RNC/Cédula)." });
@@ -169,6 +160,14 @@ namespace EcfDgii.Client.Api.Controllers
                 if (dto.Retention is null)
                 {
                     return BadRequest(new { error = "Retention is required for TipoComprobante E41." });
+                }
+            }
+            else if (string.Equals(dto.TipoComprobante, "E47", StringComparison.OrdinalIgnoreCase))
+            {
+                // Tipo 47 (Pagos al Exterior): Retención de ISR es obligatoria (1)
+                if (dto.Retention is null)
+                {
+                    return BadRequest(new { error = "Retention is required for TipoComprobante E47." });
                 }
             }
 
@@ -586,16 +585,13 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
             }
 
-            // TipoIngresos doesn't exist as an element at all in tipo 41's IdDoc schema (confirmed by
-            // running the real XSD — the prose spec's "obligatoriedad 0" undersold how absolute this
-            // is). Present (optional) for 31/34.
-            if (tipoEcf != "41")
+            // TipoIngresos doesn't exist as an element at all in tipo 41, 43, 47 IdDoc schemas (confirmed by
+            // running the real XSDs). Present for 31, 32, 33, 34, 44, 45, 46.
+            if (tipoEcf is not "41" and not "43" and not "47")
             {
-                // DGII's TipoIngresosValidationType (real XSD) is a zero-padded 2-digit enumeration
-                // ("01".."06"), not a bare integer — "1" fails schema validation outright. Pre-existing
-                // bug, found by actually running the XSD (not something the field-level obligatoriedad
-                // tables alone would have caught).
-                sb.AppendLine("      <TipoIngresos>01</TipoIngresos>");
+                // In 46 (Exportaciones), TipoIngresos 02 = Ingresos por exportaciones (or 01).
+                var tipoIngresoVal = tipoEcf == "46" ? "02" : "01";
+                sb.AppendLine($"      <TipoIngresos>{tipoIngresoVal}</TipoIngresos>");
             }
             sb.AppendLine("      <TipoPago>1</TipoPago>");
             sb.AppendLine("    </IdDoc>");
@@ -612,29 +608,67 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
 
-            // <Comprador> itself is minOccurs="1" — always emitted, even for a consumo invoice to an
-            // anonymous walk-in customer where every child is optional and the block ends up nearly
-            // empty. Omitting it invalidated the document outright.
-            sb.AppendLine("    <Comprador>");
-            if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+            // <Comprador> is omitted entirely for tipo 43 (Gastos Menores) because the schema
+            // forbids it. For tipo 47 (Pagos al Exterior), only IdentificadorExtranjero and
+            // RazonSocialComprador are allowed. For all other types, Comprador is minOccurs="1".
+            if (tipoEcf != "43")
             {
-                // Order matters (xs:sequence): RNCComprador precedes RazonSocialComprador. For tipo 31
-                // its presence is already guaranteed by SubmitCanonicalDocument's guard.
-                var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
-                if (cleanRnc.Length is 9 or 11)
+                sb.AppendLine("    <Comprador>");
+                if (tipoEcf == "47")
                 {
-                    sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                    if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                    {
+                        var foreignId = dto.Header.RncComprador.Length > 20 ? dto.Header.RncComprador[..20] : dto.Header.RncComprador;
+                        sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
+                    }
                 }
-                else if (tipoEcf is "31" or "41")
+                else if (tipoEcf == "46")
                 {
-                    sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                    if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                    {
+                        if (System.Text.RegularExpressions.Regex.IsMatch(dto.Header.RncComprador, @"[A-Za-z]"))
+                        {
+                            var foreignId = dto.Header.RncComprador.Length > 20 ? dto.Header.RncComprador[..20] : dto.Header.RncComprador;
+                            sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
+                        }
+                        else
+                        {
+                            var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
+                            if (cleanRnc.Length is 9 or 11)
+                            {
+                                sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                            }
+                            else
+                            {
+                                var foreignId = dto.Header.RncComprador.Length > 20 ? dto.Header.RncComprador[..20] : dto.Header.RncComprador;
+                                sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
+                            }
+                        }
+                    }
                 }
+                else
+                {
+                    if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                    {
+                        var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
+                        if (cleanRnc.Length is 9 or 11)
+                        {
+                            sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                        }
+                        else if (tipoEcf is "31" or "41" or "45")
+                        {
+                            sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                        }
+                    }
+                }
+                var rawComprador = string.IsNullOrWhiteSpace(dto.Header?.RazonSocialComprador)
+                    ? (tipoEcf == "47" ? "Beneficiario del Exterior" : (tipoEcf == "46" ? "Comprador Internacional" : "Consumidor Final"))
+                    : dto.Header.RazonSocialComprador;
+                var safeComprador = rawComprador.Length > 150 ? rawComprador[..150] : rawComprador;
+                var razonSocialComprador = EscapeXml(safeComprador);
+                sb.AppendLine($"      <RazonSocialComprador>{razonSocialComprador}</RazonSocialComprador>");
+                sb.AppendLine("    </Comprador>");
             }
-            var rawComprador = string.IsNullOrWhiteSpace(dto.Header?.RazonSocialComprador) ? "Consumidor Final" : dto.Header.RazonSocialComprador;
-            var safeComprador = rawComprador.Length > 150 ? rawComprador[..150] : rawComprador;
-            var razonSocialComprador = EscapeXml(safeComprador);
-            sb.AppendLine($"      <RazonSocialComprador>{razonSocialComprador}</RazonSocialComprador>");
-            sb.AppendLine("    </Comprador>");
 
             sb.AppendLine("    <Totales>");
             if (dto.Totals != null)
@@ -648,69 +682,109 @@ namespace EcfDgii.Client.Api.Controllers
                 var gravado = dto.Totals.MontoGravadoTotal ?? dto.Totals.MontoSubtotal;
                 var exento = dto.Totals.MontoExento ?? 0m;
 
-                // Element ORDER here is the XSD's Totales xs:sequence, which is not negotiable:
-                // MontoGravadoTotal, I1, I2, I3, MontoExento, ITBIS1-3, TotalITBIS, TotalITBIS1-3,
-                // ..., MontoTotal. Everything except MontoTotal is minOccurs="0", so omitting the
-                // buckets this codebase doesn't populate is valid — misplacing one is not.
-                if (gravado > 0)
+                if (tipoEcf is "43" or "44")
                 {
-                    sb.AppendLine($"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
+                    // Tipos 43 (Gastos Menores) y 44 (Regímenes Especiales): exentos de ITBIS.
+                    // El esquema solo admite MontoExento y MontoTotal (prohíbe MontoGravadoTotal y TotalITBIS).
+                    if (total > 0)
+                    {
+                        sb.AppendLine($"      <MontoExento>{total:F2}</MontoExento>");
+                    }
+                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
                 }
+                else if (tipoEcf == "47")
+                {
+                    // Tipo 47 (Pagos al Exterior): exento de ITBIS local, retención de ISR.
+                    if (total > 0)
+                    {
+                        sb.AppendLine($"      <MontoExento>{total:F2}</MontoExento>");
+                    }
+                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
+                    if (dto.Retention?.MontoIsrRetenido is { } isrTotal && isrTotal > 0)
+                    {
+                        sb.AppendLine($"      <TotalISRRetencion>{isrTotal:F2}</TotalISRRetencion>");
+                    }
+                }
+                else if (tipoEcf == "46")
+                {
+                    // Tipo 46 (Exportaciones): gravadas al 0% ITBIS (bucket 3).
+                    // El esquema XSD 46 solo admite MontoGravadoTotal, MontoGravadoI3, ITBIS3, TotalITBIS, TotalITBIS3, MontoTotal.
+                    if (total > 0)
+                    {
+                        sb.AppendLine($"      <MontoGravadoTotal>{total:F2}</MontoGravadoTotal>");
+                        sb.AppendLine($"      <MontoGravadoI3>{total:F2}</MontoGravadoI3>");
+                        sb.AppendLine("      <ITBIS3>0</ITBIS3>");
+                        sb.AppendLine("      <TotalITBIS>0.00</TotalITBIS>");
+                        sb.AppendLine("      <TotalITBIS3>0.00</TotalITBIS3>");
+                    }
+                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
+                }
+                else
+                {
+                    // Element ORDER here is the XSD's Totales xs:sequence, which is not negotiable:
+                    // MontoGravadoTotal, I1, I2, I3, MontoExento, ITBIS1-3, TotalITBIS, TotalITBIS1-3,
+                    // ..., MontoTotal. Everything except MontoTotal is minOccurs="0", so omitting the
+                    // buckets this codebase doesn't populate is valid — misplacing one is not.
+                    if (gravado > 0)
+                    {
+                        sb.AppendLine($"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
+                    }
 
-                // Slot 1..3 = DGII's 18% / 16% / 0% ITBIS buckets. A caller that sends no buckets
-                // predates them: everything taxed goes to I1 and no ITBIS rate elements are emitted,
-                // exactly as before — a version-skewed pair must not produce a different document.
-                var slotBase = new decimal?[4];
-                var slotRate = new int?[4];
-                var slotTax = new decimal?[4];
+                    // Slot 1..3 = DGII's 18% / 16% / 0% ITBIS buckets. A caller that sends no buckets
+                    // predates them: everything taxed goes to I1 and no ITBIS rate elements are emitted,
+                    // exactly as before — a version-skewed pair must not produce a different document.
+                    var slotBase = new decimal?[4];
+                    var slotRate = new int?[4];
+                    var slotTax = new decimal?[4];
 
-                if (dto.Totals.TaxBuckets is { Count: > 0 } buckets)
-                {
-                    foreach (var bucket in buckets)
+                    if (dto.Totals.TaxBuckets is { Count: > 0 } buckets)
                     {
-                        // Rates were validated against the slot map before any sequence was allocated
-                        // (see SubmitCanonicalDocument), so every one of them maps here.
-                        var slot = DgiiItbisSlots[bucket.Rate];
-                        slotBase[slot] = (slotBase[slot] ?? 0m) + bucket.Base;
-                        slotTax[slot] = (slotTax[slot] ?? 0m) + bucket.Tax;
-                        slotRate[slot] = bucket.Rate;
+                        foreach (var bucket in buckets)
+                        {
+                            // Rates were validated against the slot map before any sequence was allocated
+                            // (see SubmitCanonicalDocument), so every one of them maps here.
+                            var slot = DgiiItbisSlots[bucket.Rate];
+                            slotBase[slot] = (slotBase[slot] ?? 0m) + bucket.Base;
+                            slotTax[slot] = (slotTax[slot] ?? 0m) + bucket.Tax;
+                            slotRate[slot] = bucket.Rate;
+                        }
                     }
-                }
-                else if (gravado > 0)
-                {
-                    slotBase[1] = gravado;
-                    slotTax[1] = itbis;
-                }
+                    else if (gravado > 0)
+                    {
+                        slotBase[1] = gravado;
+                        slotTax[1] = itbis;
+                    }
 
-                for (var slot = 1; slot <= 3; slot++)
-                {
-                    if (slotBase[slot] is { } montoGravado)
+                    for (var slot = 1; slot <= 3; slot++)
                     {
-                        sb.AppendLine($"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
+                        if (slotBase[slot] is { } montoGravado)
+                        {
+                            sb.AppendLine($"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
+                        }
                     }
-                }
-                if (exento > 0)
-                {
-                    sb.AppendLine($"      <MontoExento>{exento:F2}</MontoExento>");
-                }
-                // ITBIS1/2/3 declare the RATE of each bucket (Integer2ValidationType — a 1-2 digit
-                // integer, not an amount); TotalITBIS1/2/3 further down carry the amounts.
-                for (var slot = 1; slot <= 3; slot++)
-                {
-                    if (slotRate[slot] is { } rate)
+                    if (exento > 0)
                     {
-                        sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
+                        sb.AppendLine($"      <MontoExento>{exento:F2}</MontoExento>");
                     }
-                }
-                sb.AppendLine($"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
-                for (var slot = 1; slot <= 3; slot++)
-                {
-                    if (slotTax[slot] is { } montoItbis)
+                    // ITBIS1/2/3 declare the RATE of each bucket (Integer2ValidationType — a 1-2 digit
+                    // integer, not an amount); TotalITBIS1/2/3 further down carry the amounts.
+                    for (var slot = 1; slot <= 3; slot++)
                     {
-                        sb.AppendLine($"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
+                        if (slotRate[slot] is { } rate)
+                        {
+                            sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
+                        }
                     }
+                    sb.AppendLine($"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
+                    for (var slot = 1; slot <= 3; slot++)
+                    {
+                        if (slotTax[slot] is { } montoItbis)
+                        {
+                            sb.AppendLine($"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
+                        }
+                    }
+                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
                 }
-                sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
             }
             else
             {
@@ -719,14 +793,10 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    </Totales>");
             sb.AppendLine("  </Encabezado>");
 
-            // Retención (tipo 41 only) is PER LINE ITEM inside DetallesItems/Item — NOT a document-
-            // level section. Confirmed by running the real XSD: initially built as a header-level
-            // block after DetallesItems, which is entirely the wrong structure (the field-level
-            // obligatoriedad tables give no hint of this at all). Applied uniformly from the single
-            // header-level Retention DTO to every item — this codebase doesn't model per-line
-            // withholding, and a single-vendor purchase document plausibly has one retention treatment
-            // across its lines; known simplification if that's ever not true.
-            var retention = tipoEcf == "41" ? dto.Retention : null;
+            // Retención is PER LINE ITEM inside DetallesItems/Item.
+            // In tipo 41, ITBIS & ISR retention are supported.
+            // In tipo 47, only ISR retention is supported.
+            var retention = (tipoEcf is "41" or "47") ? dto.Retention : null;
 
             sb.AppendLine("  <DetallesItems>");
             if (dto.Lines != null && dto.Lines.Count > 0)
@@ -737,7 +807,7 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine("    <Item>");
                     sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
                     sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
-                    AppendRetencion(sb, retention);
+                    AppendRetencion(sb, retention, tipoEcf);
                     sb.AppendLine($"      <NombreItem>{EscapeXml(item.Name)}</NombreItem>");
                     sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
                     if (!string.IsNullOrWhiteSpace(item.Description))
@@ -746,7 +816,7 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                     sb.AppendLine($"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
                     sb.AppendLine($"      <PrecioUnitarioItem>{item.UnitPrice:F2}</PrecioUnitarioItem>");
-                    if (item.DiscountAmount > 0)
+                    if (tipoEcf != "43" && item.DiscountAmount > 0)
                     {
                         sb.AppendLine($"      <DescuentoMonto>{item.DiscountAmount:F2}</DescuentoMonto>");
                     }
@@ -759,7 +829,7 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("    <Item>");
                 sb.AppendLine("      <NumeroLinea>1</NumeroLinea>");
                 sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
-                AppendRetencion(sb, retention);
+                AppendRetencion(sb, retention, tipoEcf);
                 sb.AppendLine("      <NombreItem>Item General</NombreItem>");
                 sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
                 sb.AppendLine("      <CantidadItem>1.00</CantidadItem>");
@@ -770,10 +840,9 @@ namespace EcfDgii.Client.Api.Controllers
             }
             sb.AppendLine("  </DetallesItems>");
 
-            // "InformacionReferencia" — confirmed by the real XSD to be a top-level sibling AFTER
-            // DetallesItems (not before it, and not nested inside Encabezado — both wrong in the
-            // first version of this code, written from the prose spec's field-level tables alone).
-            if (tipoEcf == "34" && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
+            // "InformacionReferencia" — top-level sibling AFTER DetallesItems.
+            // Obligatorio para 33 y 34; opcional para los demás si dto.References != null.
+            if ((tipoEcf is "33" or "34" || dto.References != null) && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
             {
                 var ncfMod = refs.CorrectsENcf.Trim();
                 if (ncfMod.Length < 11)
@@ -798,16 +867,16 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     sb.AppendLine($"    <RNCOtroContribuyente>{refs.RncOtroContribuyente}</RNCOtroContribuyente>");
                 }
-                // The real XSD marks FechaNCFModificado minOccurs="1" (structurally required) even
-                // though the prose spec calls it "condicional a...reemplazo de contingencia" — the two
-                // documents disagree, and the XSD is authoritative for what DGII's server will accept.
-                // Defaults to today when the caller doesn't have the referenced document's real date;
-                // known simplification, not a faithful "fecha del NCF modificado" in that case.
+                // The real XSD marks FechaNCFModificado minOccurs="1" (structurally required).
                 var fechaNcfModificado = NormalizeFechaDgii(refs.FechaNcfModificado);
                 sb.AppendLine($"    <FechaNCFModificado>{fechaNcfModificado}</FechaNCFModificado>");
                 if (refs.CodigoModificacion is { } codigo)
                 {
                     sb.AppendLine($"    <CodigoModificacion>{codigo}</CodigoModificacion>");
+                }
+                else if (tipoEcf is "33" or "34")
+                {
+                    sb.AppendLine("    <CodigoModificacion>1</CodigoModificacion>");
                 }
                 if (!string.IsNullOrWhiteSpace(refs.RazonModificacion))
                 {
@@ -873,16 +942,24 @@ namespace EcfDgii.Client.Api.Controllers
         /// MontoITBISRetenido (optional), MontoISRRetenido (optional) — verified against the checked-in
         /// DGII schema, not inferred from the prose spec.
         /// </summary>
-        private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention)
+        private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention, string tipoEcf)
         {
             if (retention is null) return;
 
             sb.AppendLine("      <Retencion>");
             sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
-            sb.AppendLine($"        <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
-            if (retention.MontoIsrRetenido is { } montoIsr)
+            if (tipoEcf == "47")
             {
-                sb.AppendLine($"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+                var isr = retention.MontoIsrRetenido ?? 0m;
+                sb.AppendLine($"        <MontoISRRetenido>{isr:F2}</MontoISRRetenido>");
+            }
+            else
+            {
+                sb.AppendLine($"        <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
+                if (retention.MontoIsrRetenido is { } montoIsr)
+                {
+                    sb.AppendLine($"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+                }
             }
             sb.AppendLine("      </Retencion>");
         }
