@@ -149,6 +149,40 @@ namespace EcfDgii.Client.Api.Controllers
                                 "Factura de Consumo (E32), que no lo exige.",
                     });
                 }
+                var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
+                if (cleanRnc.Length != 9 && cleanRnc.Length != 11)
+                {
+                    return BadRequest(new
+                    {
+                        error = $"Header.RncComprador '{dto.Header.RncComprador}' es inválido para {dto.TipoComprobante}. " +
+                                "Debe tener exactamente 9 dígitos (RNC) u 11 dígitos (Cédula)."
+                    });
+                }
+            }
+            else if (string.Equals(dto.TipoComprobante, "E32", StringComparison.OrdinalIgnoreCase))
+            {
+                // Tipo 32 (Factura de Consumo): si el monto total es >= DOP$250,000.00 se debe identificar
+                // obligatoriamente RNC/Cédula del comprador o Identificador Extranjero (DGII regla de validación).
+                var total = dto.Totals?.MontoTotal ?? 0m;
+                if (total >= 250000m)
+                {
+                    if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                    {
+                        return BadRequest(new
+                        {
+                            error = "Header.RncComprador (o pasaporte/identificación extranjera) es obligatorio para Factura de Consumo (E32) con MontoTotal ≥ RD$250,000.00 (DGII Regla de Validación tipo 32)."
+                        });
+                    }
+                    var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
+                    var hasAlpha = System.Text.RegularExpressions.Regex.IsMatch(dto.Header.RncComprador, @"[A-Za-z]");
+                    if (!hasAlpha && cleanRnc.Length != 9 && cleanRnc.Length != 11)
+                    {
+                        return BadRequest(new
+                        {
+                            error = $"Header.RncComprador '{dto.Header.RncComprador}' es inválido para E32 ≥ RD$250,000.00. Debe tener 9 dígitos (RNC), 11 dígitos (Cédula), o ser Identificador Extranjero."
+                        });
+                    }
+                }
             }
             else if (string.Equals(dto.TipoComprobante, "E41", StringComparison.OrdinalIgnoreCase))
             {
@@ -156,6 +190,14 @@ namespace EcfDgii.Client.Api.Controllers
                 if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                 {
                     return BadRequest(new { error = "Header.RncComprador is required for TipoComprobante E41 (the informal vendor's RNC/Cédula)." });
+                }
+                var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
+                if (cleanRnc.Length != 9 && cleanRnc.Length != 11)
+                {
+                    return BadRequest(new
+                    {
+                        error = $"Header.RncComprador '{dto.Header.RncComprador}' es inválido para E41. Debe tener 9 dígitos (RNC) u 11 dígitos (Cédula)."
+                    });
                 }
                 if (dto.Retention is null)
                 {
@@ -650,14 +692,18 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                     {
-                        var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
-                        if (cleanRnc.Length is 9 or 11)
+                        if (System.Text.RegularExpressions.Regex.IsMatch(dto.Header.RncComprador, @"[A-Za-z]") && tipoEcf is "32" or "33" or "34" or "44")
                         {
-                            sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                            var foreignId = dto.Header.RncComprador.Length > 20 ? dto.Header.RncComprador[..20] : dto.Header.RncComprador;
+                            sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
                         }
-                        else if (tipoEcf is "31" or "41" or "45")
+                        else
                         {
-                            sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                            var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
+                            if (cleanRnc.Length is 9 or 11 || tipoEcf is "31" or "41" or "45")
+                            {
+                                sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                            }
                         }
                     }
                 }
@@ -784,6 +830,17 @@ namespace EcfDgii.Client.Api.Controllers
                         }
                     }
                     sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
+                    if (tipoEcf is "31" or "33" or "34" or "41")
+                    {
+                        if (dto.Retention?.MontoItbisRetenido is { } itbisRet && itbisRet > 0)
+                        {
+                            sb.AppendLine($"      <TotalITBISRetenido>{itbisRet:F2}</TotalITBISRetenido>");
+                        }
+                        if (dto.Retention?.MontoIsrRetenido is { } isrRet && isrRet > 0)
+                        {
+                            sb.AppendLine($"      <TotalISRRetencion>{isrRet:F2}</TotalISRRetencion>");
+                        }
+                    }
                 }
             }
             else
@@ -794,9 +851,20 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("  </Encabezado>");
 
             // Retención is PER LINE ITEM inside DetallesItems/Item.
-            // In tipo 41, ITBIS & ISR retention are supported.
+            // In tipo 41, ITBIS & ISR retention are supported; 31, 33, 34 also support it per schema.
             // In tipo 47, only ISR retention is supported.
-            var retention = (tipoEcf is "41" or "47") ? dto.Retention : null;
+            var retention = (tipoEcf is "31" or "33" or "34" or "41" or "47") ? dto.Retention : null;
+
+            var indicadorFacturacion = tipoEcf switch
+            {
+                "43" or "44" or "47" => "4", // Exento (DGII Nota 50)
+                "46" => "3",                 // ITBIS tasa cero (DGII Nota 51)
+                _ => (dto.Totals?.MontoExento > 0 && (dto.Totals.MontoGravadoTotal == null || dto.Totals.MontoGravadoTotal == 0) && (dto.Totals.MontoItbis == 0)) ? "4" : "1"
+            };
+
+            var indicadorBienoServicio = tipoEcf == "47"
+                ? "2" // Servicio (DGII Nota 54)
+                : (tipoEcf == "41" && dto.Retention?.MontoIsrRetenido > 0 ? "2" : "1");
 
             sb.AppendLine("  <DetallesItems>");
             if (dto.Lines != null && dto.Lines.Count > 0)
@@ -806,17 +874,17 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     sb.AppendLine("    <Item>");
                     sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
-                    sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
+                    sb.AppendLine($"      <IndicadorFacturacion>{indicadorFacturacion}</IndicadorFacturacion>");
                     AppendRetencion(sb, retention, tipoEcf);
                     sb.AppendLine($"      <NombreItem>{EscapeXml(item.Name)}</NombreItem>");
-                    sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
+                    sb.AppendLine($"      <IndicadorBienoServicio>{indicadorBienoServicio}</IndicadorBienoServicio>");
                     if (!string.IsNullOrWhiteSpace(item.Description))
                     {
                         sb.AppendLine($"      <DescripcionItem>{EscapeXml(item.Description)}</DescripcionItem>");
                     }
                     sb.AppendLine($"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
                     sb.AppendLine($"      <PrecioUnitarioItem>{item.UnitPrice:F2}</PrecioUnitarioItem>");
-                    if (tipoEcf != "43" && item.DiscountAmount > 0)
+                    if (tipoEcf is not "43" and not "47" && item.DiscountAmount > 0)
                     {
                         sb.AppendLine($"      <DescuentoMonto>{item.DiscountAmount:F2}</DescuentoMonto>");
                     }
@@ -828,10 +896,10 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 sb.AppendLine("    <Item>");
                 sb.AppendLine("      <NumeroLinea>1</NumeroLinea>");
-                sb.AppendLine("      <IndicadorFacturacion>1</IndicadorFacturacion>");
+                sb.AppendLine($"      <IndicadorFacturacion>{indicadorFacturacion}</IndicadorFacturacion>");
                 AppendRetencion(sb, retention, tipoEcf);
                 sb.AppendLine("      <NombreItem>Item General</NombreItem>");
-                sb.AppendLine("      <IndicadorBienoServicio>1</IndicadorBienoServicio>");
+                sb.AppendLine($"      <IndicadorBienoServicio>{indicadorBienoServicio}</IndicadorBienoServicio>");
                 sb.AppendLine("      <CantidadItem>1.00</CantidadItem>");
                 var defaultTotal = Math.Max(0m, dto.Totals?.MontoTotal ?? 0);
                 sb.AppendLine($"      <PrecioUnitarioItem>{defaultTotal:F2}</PrecioUnitarioItem>");
@@ -865,7 +933,7 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine($"    <NCFModificado>{ncfMod}</NCFModificado>");
                 if (!string.IsNullOrWhiteSpace(refs.RncOtroContribuyente))
                 {
-                    sb.AppendLine($"    <RNCOtroContribuyente>{refs.RncOtroContribuyente}</RNCOtroContribuyente>");
+                    sb.AppendLine($"    <RNCOtroContribuyente>{EscapeXml(refs.RncOtroContribuyente.Trim())}</RNCOtroContribuyente>");
                 }
                 // The real XSD marks FechaNCFModificado minOccurs="1" (structurally required).
                 var fechaNcfModificado = NormalizeFechaDgii(refs.FechaNcfModificado);
@@ -878,7 +946,7 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     sb.AppendLine("    <CodigoModificacion>1</CodigoModificacion>");
                 }
-                if (!string.IsNullOrWhiteSpace(refs.RazonModificacion))
+                if ((tipoEcf is "33" or "34") && !string.IsNullOrWhiteSpace(refs.RazonModificacion))
                 {
                     var safeRazon = refs.RazonModificacion.Length > 90 ? refs.RazonModificacion[..90] : refs.RazonModificacion;
                     sb.AppendLine($"    <RazonModificacion>{EscapeXml(safeRazon)}</RazonModificacion>");
@@ -922,6 +990,17 @@ namespace EcfDgii.Client.Api.Controllers
         /// different calendar day. Only the exact ISO shape is converted; anything already valid (or
         /// unrecognized) passes through untouched, leaving the XSD gate as the backstop it already is.
         /// </summary>
+        private static readonly string[] AllowedIncomingDateFormats = new[]
+        {
+            "yyyy-MM-dd",
+            "yyyy/MM/dd",
+            "dd-MM-yyyy",
+            "dd/MM/yyyy",
+            "yyyyMMdd",
+            "MM-dd-yyyy",
+            "MM/dd/yyyy"
+        };
+
         private static string NormalizeFechaDgii(string? value)
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -931,9 +1010,17 @@ namespace EcfDgii.Client.Api.Controllers
 
             var trimmed = value.Trim();
 
-            return DateTime.TryParseExact(trimmed, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var iso)
-                ? iso.ToString(DgiiDateFormat, CultureInfo.InvariantCulture)
-                : trimmed;
+            if (DateTime.TryParseExact(trimmed, "dd-MM-yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+            {
+                return trimmed;
+            }
+
+            if (DateTime.TryParseExact(trimmed, AllowedIncomingDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+            {
+                return parsed.ToString(DgiiDateFormat, CultureInfo.InvariantCulture);
+            }
+
+            return trimmed.Replace('/', '-');
         }
 
         /// <summary>
@@ -971,7 +1058,10 @@ namespace EcfDgii.Client.Api.Controllers
                         .Replace("<", "&lt;")
                         .Replace(">", "&gt;")
                         .Replace("\"", "&quot;")
-                        .Replace("'", "&apos;");
+                        .Replace("'", "&apos;")
+                        .Replace("©", "&#169;")
+                        .Replace("€", "&#8364;")
+                        .Replace("®", "&#174;");
         }
 
         private sealed class ProcessedLineItem
