@@ -182,6 +182,16 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
+            // Aislamiento Multi-Tenant:
+            // Si el tenant no proveyó certificado propio ni existe en disco, se advierte y se recurre
+            // al firmador base (_signer), el cual validará rigurosamente el RNC en ValidateCertificateSn durante SignXml.
+            if (!isDefaultFallback && rncEmisor != _emisorRnc)
+            {
+                _logger.LogWarning(
+                    "No se proporcionó certificado digital dinámico para el tenant '{TenantId}' (RNC emisor: {RncEmisor}). " +
+                    "Se utilizará el firmador base configurado.", tenantId, rncEmisor);
+            }
+
             return _signer;
         }
 
