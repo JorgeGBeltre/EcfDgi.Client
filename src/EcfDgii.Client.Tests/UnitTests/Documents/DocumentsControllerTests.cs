@@ -873,5 +873,66 @@ namespace EcfDgii.Client.UnitTests.Documents
                 () => controller.SubmitCanonicalDocument(MakeDto("TXN-GHOST", "1")));
             Assert.Contains("TXN-GHOST", ex.Message);
         }
+
+        [Fact]
+        public async Task MultiTenant_DifferentTenantsAndEnvironments_AllocateIndependentSequenceScopes()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var requestedScopes = new List<string>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Callback<string, string, CancellationToken>((scope, tipo, ct) => requestedScopes.Add(scope))
+                .ReturnsAsync("E310000000001");
+
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-MT" });
+
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
+                .Returns((string xml, string rnc) => FakeSignedXml);
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+
+            // Tenant A in PreCert / Test
+            var dtoTenantA = MakeDto("TXN-A", "1");
+            dtoTenantA.TenantId = "tenant-a";
+            dtoTenantA.Environment = "TestEcf";
+            dtoTenantA.Header.RncEmisor = "133664692";
+            dtoTenantA.Header.RazonSocialEmisor = "Ceramic Chic SRL";
+
+            await controller.SubmitCanonicalDocument(dtoTenantA);
+
+            // Tenant B in Cert / Homologacion
+            var dtoTenantB = MakeDto("TXN-B", "1");
+            dtoTenantB.TenantId = "tenant-b";
+            dtoTenantB.Environment = "CertEcf";
+            dtoTenantB.Header.RncEmisor = "101889063";
+            dtoTenantB.Header.RazonSocialEmisor = "Willy Chic Dominicana SRL";
+
+            await controller.SubmitCanonicalDocument(dtoTenantB);
+
+            // Tenant A in Produccion
+            var dtoTenantAProd = MakeDto("TXN-A-PROD", "1");
+            dtoTenantAProd.TenantId = "tenant-a";
+            dtoTenantAProd.Environment = "Produccion";
+            dtoTenantAProd.Header.RncEmisor = "133664692";
+            dtoTenantAProd.Header.RazonSocialEmisor = "Ceramic Chic SRL";
+
+            await controller.SubmitCanonicalDocument(dtoTenantAProd);
+
+            Assert.Equal(3, requestedScopes.Count);
+            Assert.Equal("tenant-a:PreCertificacion", requestedScopes[0]);
+            Assert.Equal("tenant-b:Certificacion", requestedScopes[1]);
+            Assert.Equal("tenant-a:Produccion", requestedScopes[2]);
+
+            var docs = await db.EcfDocuments.OrderBy(d => d.CreatedAt).ToListAsync();
+            Assert.Equal("tenant-a", docs[0].TenantId);
+            Assert.Equal("133664692", docs[0].RncEmisor);
+            Assert.Equal("tenant-b", docs[1].TenantId);
+            Assert.Equal("101889063", docs[1].RncEmisor);
+            Assert.Equal("tenant-a", docs[2].TenantId);
+            Assert.Equal("133664692", docs[2].RncEmisor);
+        }
     }
 }

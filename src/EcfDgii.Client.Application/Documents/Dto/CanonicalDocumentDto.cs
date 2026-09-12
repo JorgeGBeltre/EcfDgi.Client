@@ -140,8 +140,18 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public decimal? MontoIsrRetenido { get; set; }
     }
 
+    public class CanonicalCertificateDto
+    {
+        public string? CertificateBase64 { get; set; }
+        public string? Password { get; set; }
+        public string? CertificatePath { get; set; }
+    }
+
     public class CanonicalDocumentDto
     {
+        public string? TenantId { get; set; }
+        public string? Environment { get; set; }
+        public CanonicalCertificateDto? Certificate { get; set; }
         public string? Ncf { get; set; }
         public SourceReferenceDto SourceReference { get; set; } = new SourceReferenceDto();
         public string DocumentKind { get; set; } = "Invoice"; // Invoice, CreditNote, DebitNote, Bill

@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 using EcfDgii.Client.Application.Documents.Dto;
 using EcfDgii.Client.Domain.Entities;
 using EcfDgii.Client.Domain.Interfaces;
+using EcfDgii.Client.Infrastructure.Dgii;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Infrastructure.Security;
@@ -77,6 +79,7 @@ namespace EcfDgii.Client.Api.Controllers
         private readonly string _emisorRazonSocial;
         private readonly IEcfSchemaValidator _schemaValidator;
         private readonly EcfClientOptions _ecfClientOptions;
+        private readonly AmbienteEnum _defaultAmbiente;
 
         public DocumentsController(
             ApplicationDbContext db,
@@ -101,6 +104,110 @@ namespace EcfDgii.Client.Api.Controllers
             _emisorRazonSocial = emisorOptions.Value.RazonSocial;
             _schemaValidator = schemaValidator;
             _ecfClientOptions = ecfClientOptions.Value;
+            _defaultAmbiente = _ecfClientOptions.Environment switch
+            {
+                EcfEnvironment.Test => AmbienteEnum.PreCertificacion,
+                EcfEnvironment.Cert => AmbienteEnum.Certificacion,
+                EcfEnvironment.Prod => AmbienteEnum.Produccion,
+                _ => AmbienteEnum.Certificacion
+            };
+        }
+
+        private AmbienteEnum ResolveAmbienteEnum(string? rawEnv)
+        {
+            if (string.IsNullOrWhiteSpace(rawEnv)) return _defaultAmbiente;
+            var lower = rawEnv.ToLowerInvariant();
+            if (lower == "test" || lower == "testecf" || lower.Contains("precert")) return AmbienteEnum.PreCertificacion;
+            if (lower == "cert" || lower == "certecf" || lower.Contains("certific") || lower.Contains("homolog")) return AmbienteEnum.Certificacion;
+            if (lower == "prod" || lower == "ecf" || lower.Contains("producc")) return AmbienteEnum.Produccion;
+            if (Enum.TryParse<AmbienteEnum>(rawEnv, true, out var parsed)) return parsed;
+            return _defaultAmbiente;
+        }
+
+        private IEcfXmlSigner ResolveSigner(string tenantId, string rncEmisor, CanonicalCertificateDto? certDto, bool isDefaultFallback = true)
+        {
+            if (isDefaultFallback)
+            {
+                return _signer;
+            }
+
+            if (certDto != null && !string.IsNullOrWhiteSpace(certDto.CertificateBase64))
+            {
+                try
+                {
+                    var bytes = Convert.FromBase64String(certDto.CertificateBase64);
+                    var pwd = certDto.Password ?? string.Empty;
+                    var cert = X509CertificateLoader.LoadPkcs12(bytes, pwd, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+                    return new EcfXmlSigner(cert);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "No se pudo cargar certificado base64 para Tenant {TenantId}. Se utilizará respaldo.", tenantId);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(certDto?.CertificatePath) && System.IO.File.Exists(certDto.CertificatePath))
+            {
+                try
+                {
+                    return new EcfXmlSigner(certDto.CertificatePath, certDto.Password ?? string.Empty);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "No se pudo cargar certificado en ruta {Path}. Se utilizará respaldo.", certDto.CertificatePath);
+                }
+            }
+
+            var defaultCertDir = "/app/certificates";
+            if (Directory.Exists(defaultCertDir))
+            {
+                var tenantCertFile = Path.Combine(defaultCertDir, $"{tenantId}.pfx");
+                if (System.IO.File.Exists(tenantCertFile))
+                {
+                    try
+                    {
+                        return new EcfXmlSigner(tenantCertFile, certDto?.Password ?? "EcfTestPassword123!");
+                    }
+                    catch { }
+                }
+
+                var rncCertFile = Path.Combine(defaultCertDir, $"{rncEmisor}.pfx");
+                if (System.IO.File.Exists(rncCertFile))
+                {
+                    try
+                    {
+                        return new EcfXmlSigner(rncCertFile, certDto?.Password ?? "EcfTestPassword123!");
+                    }
+                    catch { }
+                }
+            }
+
+            return _signer;
+        }
+
+        private IEcfClient ResolveEcfClient(string rncEmisor, IEcfXmlSigner signer, AmbienteEnum ambiente, bool isDefaultFallback = true)
+        {
+            if (isDefaultFallback || (signer == _signer && rncEmisor == _emisorRnc && ambiente == _defaultAmbiente))
+            {
+                return _ecfClient;
+            }
+
+            var tenantOptions = new EcfClientOptions
+            {
+                RncEmisor = rncEmisor,
+                Environment = ambiente switch
+                {
+                    AmbienteEnum.PreCertificacion => EcfEnvironment.Test,
+                    AmbienteEnum.Certificacion => EcfEnvironment.Cert,
+                    AmbienteEnum.Produccion => EcfEnvironment.Prod,
+                    _ => EcfEnvironment.Cert
+                },
+                Mode = IntegrationMode.DgiiDirect,
+                ValidateSchemasLocal = _ecfClientOptions.ValidateSchemasLocal,
+                XsdDirectoryPath = _ecfClientOptions.XsdDirectoryPath
+            };
+
+            return new EcfClient(tenantOptions, signer: signer, schemaValidator: _schemaValidator);
         }
 
         [HttpPost]
@@ -233,7 +340,17 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
-            var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
+            var tenantId = HttpContext.Items["TenantId"]?.ToString()
+                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null)
+                ?? dto.TenantId
+                ?? "default-tenant";
+
+            var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
+            var ambiente = ResolveAmbienteEnum(rawEnv);
+
+            var isDefaultFallback = tenantId == "default-tenant" && string.IsNullOrWhiteSpace(rawEnv) && !Request.Headers.ContainsKey("X-Tenant-Id") && string.IsNullOrWhiteSpace(dto.TenantId);
+            var sequenceScope = isDefaultFallback ? "default-tenant" : $"{tenantId}:{ambiente}";
+
             var editSequence = dto.SourceReference.EditSequence ?? string.Empty;
 
             // Check if document for this TxnId has already been processed
@@ -242,11 +359,11 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (existingDoc != null)
             {
-                return await HandleExistingDocumentAsync(existingDoc, dto, editSequence);
+                return await HandleExistingDocumentAsync(existingDoc, dto, editSequence, ambiente);
             }
 
             // 1. Allocate eNCF Sequence
-            var eNcf = await _sequenceManager.GetNextEncfAsync(tenantId, dto.TipoComprobante ?? "E31");
+            var eNcf = await _sequenceManager.GetNextEncfAsync(sequenceScope, dto.TipoComprobante ?? "E31");
 
             var doc = new EcfDocument
             {
@@ -254,7 +371,7 @@ namespace EcfDgii.Client.Api.Controllers
                 SourceTxnId = dto.SourceReference.TxnId,
                 ENcf = eNcf
             };
-            ApplyCanonicalContent(doc, dto, editSequence);
+            ApplyCanonicalContent(doc, dto, editSequence, isDefaultFallback);
 
             _db.EcfDocuments.Add(doc);
             try
@@ -286,10 +403,10 @@ namespace EcfDgii.Client.Api.Controllers
                         "This should be impossible; investigate before retrying.", ex);
                 }
 
-                return await HandleExistingDocumentAsync(winner, dto, editSequence);
+                return await HandleExistingDocumentAsync(winner, dto, editSequence, ambiente);
             }
 
-            return await SignAndSendAsync(doc);
+            return await SignAndSendAsync(doc, dto, ambiente);
         }
 
         private static bool IsTenantTxnUniqueViolation(DbUpdateException ex) =>
@@ -301,21 +418,22 @@ namespace EcfDgii.Client.Api.Controllers
         /// the prior attempt got. Shared by the normal lookup path and by the concurrent-insert
         /// recovery path above, so both go through identical never-transmitted/uncertain/terminal logic.
         /// </summary>
-        private async Task<IActionResult> HandleExistingDocumentAsync(EcfDocument existingDoc, CanonicalDocumentDto dto, string editSequence)
+        private async Task<IActionResult> HandleExistingDocumentAsync(EcfDocument existingDoc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null)
         {
+            var isDefaultFallback = existingDoc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto.Environment) && string.IsNullOrWhiteSpace(dto.TenantId);
             if (NeverTransmittedStates.Contains(existingDoc.State))
             {
                 // Nothing was ever handed to DGII for this eNCF. Safe to reapply the incoming
                 // content — whether or not it changed — and retry under the same eNCF.
-                ApplyCanonicalContent(existingDoc, dto, editSequence);
+                ApplyCanonicalContent(existingDoc, dto, editSequence, isDefaultFallback);
                 await _db.SaveChangesAsync();
-                return await SignAndSendAsync(existingDoc);
+                return await SignAndSendAsync(existingDoc, dto, ambiente);
             }
 
             if (existingDoc.State == "Uncertain")
             {
                 // We don't know if the prior attempt reached DGII. Ask before doing anything else.
-                return await ReconcileUncertainAsync(existingDoc, dto, editSequence);
+                return await ReconcileUncertainAsync(existingDoc, dto, editSequence, ambiente);
             }
 
             // Terminal / known-transmitted states (AwaitingTransmission, Signed, RejectedByDgii, ...).
@@ -352,22 +470,28 @@ namespace EcfDgii.Client.Api.Controllers
         /// eNCF is already fixed. Used both for a brand-new document and for retrying a document
         /// that never actually reached DGII, where the incoming content may have been edited since.
         ///
-        /// RncEmisor AND RazonSocialEmisor deliberately come from this instance's configured
-        /// EcfEmisorOptions, not from dto.Header: both are the identity this API signs and transmits
-        /// under, and a wrong or missing value from the caller must never produce a validly-signed
-        /// e-CF under someone else's RNC or a fabricated legal name. See EcfEmisorOptions for why
-        /// this is instance-level rather than per-request.
+        /// In multi-tenant environments, RncEmisor and RazonSocialEmisor come from dto.Header.
+        /// In legacy single-tenant/fallback test mode, configured EcfEmisorOptions are respected.
         /// </summary>
-        private void ApplyCanonicalContent(EcfDocument doc, CanonicalDocumentDto dto, string editSequence)
+        private void ApplyCanonicalContent(EcfDocument doc, CanonicalDocumentDto dto, string editSequence, bool isDefaultFallback = true)
         {
             doc.EditSequence = editSequence;
             doc.DocumentKind = dto.DocumentKind ?? "Invoice";
             doc.Ncf = dto.Ncf;
-            doc.RncEmisor = _emisorRnc;
+
+            var effectiveRnc = !isDefaultFallback && !string.IsNullOrWhiteSpace(dto.Header?.RncEmisor)
+                ? dto.Header.RncEmisor
+                : _emisorRnc;
+
+            var effectiveRazonSocial = !isDefaultFallback && !string.IsNullOrWhiteSpace(dto.Header?.RazonSocialEmisor)
+                ? dto.Header.RazonSocialEmisor
+                : _emisorRazonSocial;
+
+            doc.RncEmisor = effectiveRnc;
             doc.RncComprador = dto.Header?.RncComprador;
             doc.TotalAmount = dto.Totals?.MontoTotal ?? 0;
             doc.ItbisAmount = dto.Totals?.MontoItbis ?? 0;
-            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, _emisorRnc, _emisorRazonSocial);
+            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, effectiveRnc, effectiveRazonSocial);
             doc.State = "SequenceAllocated";
         }
 
@@ -376,7 +500,7 @@ namespace EcfDgii.Client.Api.Controllers
         /// received it. Ask DGII directly instead of guessing: resending blindly risks a duplicate
         /// e-CF under the same eNCF, and silently giving up risks losing one DGII never got.
         /// </summary>
-        private async Task<IActionResult> ReconcileUncertainAsync(EcfDocument doc, CanonicalDocumentDto dto, string editSequence)
+        private async Task<IActionResult> ReconcileUncertainAsync(EcfDocument doc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null)
         {
             var uncertainSince = doc.UpdatedAt.HasValue
                 ? new DateTimeOffset(doc.UpdatedAt.Value, TimeSpan.Zero)
@@ -396,10 +520,15 @@ namespace EcfDgii.Client.Api.Controllers
                 });
             }
 
+            var effectiveAmbiente = ambiente ?? _defaultAmbiente;
+            var isDefaultFallback = doc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto.Environment) && string.IsNullOrWhiteSpace(dto.TenantId);
+            var effectiveSigner = ResolveSigner(doc.TenantId, doc.RncEmisor, dto.Certificate, isDefaultFallback);
+            var effectiveClient = ResolveEcfClient(doc.RncEmisor, effectiveSigner, effectiveAmbiente, isDefaultFallback);
+
             ConsultaEstadoResponse? status;
             try
             {
-                status = await _ecfClient.ConsultarEstadoAsync(doc.RncEmisor, doc.ENcf);
+                status = await effectiveClient.ConsultarEstadoAsync(doc.RncEmisor, doc.ENcf);
             }
             catch (Exception)
             {
@@ -430,9 +559,9 @@ namespace EcfDgii.Client.Api.Controllers
             }
 
             // DGII confirms it never received the prior attempt: safe to treat as never-transmitted.
-            ApplyCanonicalContent(doc, dto, editSequence);
+            ApplyCanonicalContent(doc, dto, editSequence, isDefaultFallback);
             await _db.SaveChangesAsync();
-            return await SignAndSendAsync(doc);
+            return await SignAndSendAsync(doc, dto, ambiente);
         }
 
         private static bool IsNotFoundByDgii(ConsultaEstadoResponse status) =>
@@ -443,13 +572,18 @@ namespace EcfDgii.Client.Api.Controllers
         /// (either just-allocated, or an existing document being retried). Safe to call
         /// repeatedly for the same document: it never touches sequence allocation.
         /// </summary>
-        private async Task<IActionResult> SignAndSendAsync(EcfDocument doc)
+        private async Task<IActionResult> SignAndSendAsync(EcfDocument doc, CanonicalDocumentDto? dto = null, AmbienteEnum? ambiente = null)
         {
+            var effectiveAmbiente = ambiente ?? _defaultAmbiente;
+            var isDefaultFallback = doc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto?.Environment) && string.IsNullOrWhiteSpace(dto?.TenantId);
+            var effectiveSigner = ResolveSigner(doc.TenantId, doc.RncEmisor, dto?.Certificate, isDefaultFallback);
+            var effectiveClient = ResolveEcfClient(doc.RncEmisor, effectiveSigner, effectiveAmbiente, isDefaultFallback);
+
             // 3. Digital signing & Real Security Code Calculation
             string signedXml;
             try
             {
-                signedXml = _signer.SignXml(doc.XmlContent, doc.RncEmisor);
+                signedXml = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
                 var secCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml).ToUpperInvariant();
 
                 doc.SignedXmlContent = signedXml;
@@ -504,7 +638,7 @@ namespace EcfDgii.Client.Api.Controllers
             // letting the failure come back as "Uncertain" — which means "we don't know whether DGII
             // received it" and would be a lie here: we know exactly why this cannot succeed.
             // The signed XML is kept so it can still be inspected.
-            if (_signer.UsesFallbackCertificate)
+            if (effectiveSigner.UsesFallbackCertificate)
             {
                 doc.State = "Unsigned";
                 await _db.SaveChangesAsync();
@@ -528,7 +662,7 @@ namespace EcfDgii.Client.Api.Controllers
             try
             {
                 var fileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
-                var response = await _ecfClient.SendEcfAsync(doc.SignedXmlContent, fileName);
+                var response = await effectiveClient.SendEcfAsync(doc.SignedXmlContent, fileName);
                 if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
                 {
                     doc.TrackId = response.TrackId;
@@ -564,9 +698,12 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpGet("by-source/{txnId}")]
         public async Task<IActionResult> GetBySourceTxnId(string txnId)
         {
-            var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
+            var tenantId = HttpContext.Items["TenantId"]?.ToString()
+                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                ?? "default-tenant";
+
             var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == txnId);
+                .FirstOrDefaultAsync(d => (tenantId == "default-tenant" || d.TenantId == tenantId) && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
 
             if (doc == null)
             {
@@ -589,9 +726,12 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpGet("by-source/{txnId}/xml")]
         public async Task<IActionResult> GetXmlBySourceTxnId(string txnId)
         {
-            var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
+            var tenantId = HttpContext.Items["TenantId"]?.ToString()
+                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                ?? "default-tenant";
+
             var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == txnId);
+                .FirstOrDefaultAsync(d => (tenantId == "default-tenant" || d.TenantId == tenantId) && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
 
             if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
             {
@@ -605,9 +745,12 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpGet("{id:guid}/xml")]
         public async Task<IActionResult> GetXmlById(Guid id)
         {
-            var tenantId = HttpContext.Items["TenantId"]?.ToString() ?? "default-tenant";
+            var tenantId = HttpContext.Items["TenantId"]?.ToString()
+                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                ?? "default-tenant";
+
             var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == id);
+                .FirstOrDefaultAsync(d => (tenantId == "default-tenant" || d.TenantId == tenantId) && d.Id == id);
 
             if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
             {
