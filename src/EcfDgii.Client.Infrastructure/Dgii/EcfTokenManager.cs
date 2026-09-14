@@ -7,6 +7,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using System.Xml.Linq;
 using System.Xml.Serialization;
 
@@ -157,14 +158,27 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
 
-            var doc = XDocument.Parse(responseBody);
-            var tokenElement = doc.Root?.Element("token");
-            var expiraElement = doc.Root?.Element("expira");
+            string? token = null;
+            string? expira = null;
 
-            if (tokenElement == null || expiraElement == null)
-                throw new EcfException("Respuesta de autenticación inválida: falta token o fecha de expiración.");
+            if (responseBody.TrimStart().StartsWith("<"))
+            {
+                var doc = XDocument.Parse(responseBody);
+                token = doc.Root?.Element("token")?.Value;
+                expira = doc.Root?.Element("expira")?.Value;
+            }
+            else
+            {
+                using var jsonDoc = JsonDocument.Parse(responseBody);
+                var root = jsonDoc.RootElement;
+                if (root.TryGetProperty("token", out var tp)) token = tp.GetString();
+                if (root.TryGetProperty("expira", out var ep)) expira = ep.GetString();
+            }
 
-            _cachedToken = tokenElement.Value;
+            if (string.IsNullOrWhiteSpace(token))
+                throw new EcfException($"Respuesta de autenticación inválida de DGII: falta token. Cuerpo: {responseBody}");
+
+            _cachedToken = token;
 
             var dateFormats = new[]
             {
@@ -176,7 +190,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 "yyyy-MM-ddTHH:mm:ss"
             };
 
-            if (DateTimeOffset.TryParseExact(expiraElement.Value.Trim(), dateFormats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var expiry))
+            if (!string.IsNullOrWhiteSpace(expira) && DateTimeOffset.TryParseExact(expira.Trim(), dateFormats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var expiry))
             {
                 _tokenExpiry = expiry;
             }

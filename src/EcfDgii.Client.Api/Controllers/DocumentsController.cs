@@ -687,8 +687,9 @@ namespace EcfDgii.Client.Api.Controllers
                     doc.State = "RejectedByDgii";
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                _logger.LogError(ex, "Fallo transmitiendo e-CF {ENcf} (RNC {Rnc}) a DGII: {Message}", doc.ENcf, doc.RncEmisor, ex.Message);
                 doc.State = "Uncertain";
             }
 
