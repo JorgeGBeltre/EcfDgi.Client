@@ -40,7 +40,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                     AnulacionRangosUrl = "https://ecf.dgii.gov.do/testecf/anulacionrangos",
                     DirectorioUrl = "https://ecf.dgii.gov.do/testecf/consultadirectorio",
                     TimbreUrl = "https://ecf.dgii.gov.do/testecf/consultatimbre",
-                    TimbreFcUrl = "https://fc.dgii.gov.do/testecf/consultatimbrefc"
+                    TimbreFcUrl = "https://ecf.dgii.gov.do/testecf/consultatimbrefc"
                 },
                 AmbienteEnum.Certificacion => new EcfEnvironmentConfig
                 {
@@ -56,7 +56,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                     AnulacionRangosUrl = "https://ecf.dgii.gov.do/certecf/anulacionrangos",
                     DirectorioUrl = "https://ecf.dgii.gov.do/certecf/consultadirectorio",
                     TimbreUrl = "https://ecf.dgii.gov.do/certecf/consultatimbre",
-                    TimbreFcUrl = "https://fc.dgii.gov.do/certecf/consultatimbrefc"
+                    TimbreFcUrl = "https://ecf.dgii.gov.do/certecf/consultatimbrefc"
                 },
                 AmbienteEnum.Produccion => new EcfEnvironmentConfig
                 {
@@ -72,7 +72,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                     AnulacionRangosUrl = "https://ecf.dgii.gov.do/ecf/anulacionrangos",
                     DirectorioUrl = "https://ecf.dgii.gov.do/ecf/consultadirectorio",
                     TimbreUrl = "https://ecf.dgii.gov.do/ecf/consultatimbre",
-                    TimbreFcUrl = "https://fc.dgii.gov.do/ecf/consultatimbrefc"
+                    TimbreFcUrl = "https://ecf.dgii.gov.do/ecf/consultatimbrefc"
                 },
                 _ => throw new ArgumentException("Ambiente no soportado")
             };

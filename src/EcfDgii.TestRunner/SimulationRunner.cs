@@ -687,7 +687,7 @@ namespace EcfDgii.TestRunner
             string qrUrl;
             if (isRfce)
             {
-                qrUrl = $"https://fc.dgii.gov.do/certecf/consultatimbrefc?rncemisor={_rncEmisor}&encf={c.NewEncf}&montototal={c.MontoTotal.ToString("F2", CultureInfo.InvariantCulture)}&codigoseguridad={Uri.EscapeDataString(c.SecurityCode)}";
+                qrUrl = $"https://ecf.dgii.gov.do/certecf/consultatimbrefc?rncemisor={_rncEmisor}&encf={c.NewEncf}&montototal={c.MontoTotal.ToString("F2", CultureInfo.InvariantCulture)}&codigoseguridad={Uri.EscapeDataString(c.SecurityCode)}";
             }
             else
             {
@@ -929,7 +929,7 @@ namespace EcfDgii.TestRunner
                             {
                                 qrCol.Item().Row(qrRow =>
                                 {
-                                    qrRow.AutoItem().Height(95).Width(95).Image(qrBytes);
+                                    qrRow.AutoItem().Height(95).Width(95).Hyperlink(qrUrl).Image(qrBytes);
                                 });
 
                                 qrCol.Item().PaddingTop(4);
