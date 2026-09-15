@@ -35,7 +35,7 @@ namespace EcfDgii.Client.Application.Ecf.Queries.GetEcfStatus
                     // Map to response model
                     var localResponse = new ConsultaEstadoResponse
                     {
-                        Codigo = 0,
+                        Codigo = "0",
                         Estado = localDoc.State,
                         RncEmisor = localDoc.RncEmisor,
                         NcfElectronico = localDoc.ENcf,

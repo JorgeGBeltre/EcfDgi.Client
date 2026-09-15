@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Serialization;
 
@@ -55,7 +56,8 @@ namespace EcfDgii.Client.Domain.Entities
 
         [XmlElement("codigo")]
         [JsonPropertyName("codigo")]
-        public int Codigo { get; set; }
+        [JsonConverter(typeof(StringOrNumberConverter))]
+        public string Codigo { get; set; } = string.Empty;
 
         [XmlElement("estado")]
         [JsonPropertyName("estado")]
@@ -86,7 +88,8 @@ namespace EcfDgii.Client.Domain.Entities
     public class ConsultaEstadoResponse
     {
         [JsonPropertyName("codigo")]
-        public int Codigo { get; set; }
+        [JsonConverter(typeof(StringOrNumberConverter))]
+        public string Codigo { get; set; } = string.Empty;
 
         [JsonPropertyName("estado")]
         public string Estado { get; set; }
@@ -163,8 +166,9 @@ namespace EcfDgii.Client.Domain.Entities
 
     public class MensajeCodigo
     {
-        public string Codigo { get; set; }
-        public string Valor { get; set; }
+        [JsonConverter(typeof(StringOrNumberConverter))]
+        public string Codigo { get; set; } = string.Empty;
+        public string Valor { get; set; } = string.Empty;
     }
 
     public class DirectorioContribuyente
@@ -200,6 +204,7 @@ namespace EcfDgii.Client.Domain.Entities
     public class AprobacionComercialResponse
     {
         [JsonPropertyName("codigo")]
+        [JsonConverter(typeof(StringOrNumberConverter))]
         public string Codigo { get; set; }
 
         [JsonPropertyName("estado")]
@@ -256,6 +261,24 @@ namespace EcfDgii.Client.Domain.Entities
             ENcf = eNcf;
             RncComprador = rncComprador;
             CodigoSeguridad = codigoSeguridad;
+        }
+    }
+
+    public class StringOrNumberConverter : JsonConverter<string>
+    {
+        public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Number)
+            {
+                if (reader.TryGetInt64(out long l)) return l.ToString();
+                if (reader.TryGetDouble(out double d)) return d.ToString();
+            }
+            return reader.GetString() ?? string.Empty;
+        }
+
+        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
+        {
+            writer.WriteStringValue(value);
         }
     }
 }

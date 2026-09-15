@@ -60,7 +60,11 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 response = await _httpClient.SendAsync(buildRequest(freshToken), ct);
             }
 
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
+                throw new HttpRequestException($"DGII Error ({(int)response.StatusCode} {response.ReasonPhrase}): {errorBody}");
+            }
             return response;
         }
 
@@ -187,7 +191,20 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             }, ct);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
-            return JsonSerializer.Deserialize<AprobacionComercialResponse>(responseBody, JsonOptions)!;
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                return new AprobacionComercialResponse { Estado = "Aceptado", Codigo = "1" };
+            }
+
+            try
+            {
+                return JsonSerializer.Deserialize<AprobacionComercialResponse>(responseBody, JsonOptions)
+                    ?? new AprobacionComercialResponse { Estado = responseBody };
+            }
+            catch
+            {
+                return new AprobacionComercialResponse { Estado = responseBody, Codigo = response.IsSuccessStatusCode ? "1" : "2" };
+            }
         }
 
         public async Task<AnulacionResponse> AnularRangosAsync(string xmlContent, CancellationToken ct = default)
