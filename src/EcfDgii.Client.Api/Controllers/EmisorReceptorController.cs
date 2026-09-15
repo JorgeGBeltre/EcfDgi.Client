@@ -6,17 +6,25 @@ using System.Xml;
 using EcfDgii.Client.Domain.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace EcfDgii.Client.Api.Controllers
 {
     [ApiController]
     public class EmisorReceptorController : ControllerBase
     {
-        private readonly IEcfXmlSigner _signer;
+        private readonly ITenantSignerResolver _signerResolver;
+        private readonly IEcfXmlSigner _defaultSigner;
+        private readonly ILogger<EmisorReceptorController> _logger;
 
-        public EmisorReceptorController(IEcfXmlSigner signer)
+        public EmisorReceptorController(
+            ITenantSignerResolver signerResolver,
+            IEcfXmlSigner defaultSigner,
+            ILogger<EmisorReceptorController> logger)
         {
-            _signer = signer;
+            _signerResolver = signerResolver;
+            _defaultSigner = defaultSigner;
+            _logger = logger;
         }
 
         [HttpPost("fe/recepcion/api/ecf")]
@@ -65,13 +73,19 @@ namespace EcfDgii.Client.Api.Controllers
 
                 var unsignedArecf = arecfBuilder.ToString();
                 
-                // Sign the ARECF XML using our signer certificate (acting as comprador/receptor)
-                var signedArecf = _signer.SignXml(unsignedArecf, rncComprador);
+                // Resolver el firmador dinámicamente para el RNC del comprador/receptor
+                var signer = await _signerResolver.ResolveSignerAsync(rncComprador);
+
+                // Sign the ARECF XML using the resolved tenant signer certificate
+                var signedArecf = signer.SignXml(unsignedArecf, rncComprador);
+
+                _logger.LogInformation("e-CF recibido y ARECF emitido correctamente para RNC Comprador {RncComprador}, eNCF {eNCF}, Emisor {RncEmisor}", rncComprador, encf, rncEmisor);
 
                 return Content(signedArecf, "application/xml", Encoding.UTF8);
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Error al procesar la recepción de e-CF");
                 return BadRequest($"Error al procesar la recepción de e-CF: {ex.Message}");
             }
         }

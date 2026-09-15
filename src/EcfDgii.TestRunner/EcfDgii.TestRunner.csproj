@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EcfDgii.Client.Domain\EcfDgii.Client.Domain.csproj" />
+    <ProjectReference Include="..\EcfDgii.Client.Infrastructure\EcfDgii.Client.Infrastructure.csproj" />
+    <PackageReference Include="QuestPDF" Version="2024.12.3" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+  </ItemGroup>
+
+</Project>
