@@ -458,7 +458,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             // Retry: must reconcile with DGII before blindly resending. DGII confirms it never got it.
             ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101889063", "E310000000002", null, null, It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new ConsultaEstadoResponse { Codigo = 0, Estado = "No encontrado" });
+                .ReturnsAsync(new ConsultaEstadoResponse { Codigo = "0", Estado = "No encontrado" });
             ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-2" });
 
@@ -580,7 +580,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             // Retry: DGII confirms it DID receive the first transmission. Must not resend a duplicate.
             ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101889063", "E310000000009", null, null, It.IsAny<CancellationToken>()))
-                .ReturnsAsync(new ConsultaEstadoResponse { Codigo = 1, Estado = "Aceptado" });
+                .ReturnsAsync(new ConsultaEstadoResponse { Codigo = "1", Estado = "Aceptado" });
 
             var controller2 = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
             var result = await controller2.SubmitCanonicalDocument(MakeDto("TXN-9", "1"));

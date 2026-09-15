@@ -131,6 +131,8 @@ namespace EcfDgii.Client.Infrastructure
                 return new CachedEcfClient(baseClient, cacheService);
             });
 
+            services.AddSingleton<ITenantSignerResolver, TenantSignerResolver>();
+
             return services;
         }
     }
