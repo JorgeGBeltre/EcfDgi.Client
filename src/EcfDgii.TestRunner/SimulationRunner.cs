@@ -759,8 +759,8 @@ namespace EcfDgii.TestRunner
                                 c1.Item().Text("RNC: 133-66469-2").FontSize(8f);
                                 c1.Item().Text("Tel.: (809) 472-7676").FontSize(8f);
                                 c1.Item().Text("Correo: facturacion@ceramicchic.com.do").FontSize(8f);
-                                c1.Item().Text("Ave. Isabel Aguiar No. 269, Herrera").FontSize(8f);
-                                c1.Item().Text("Santo Domingo, República Dominicana").FontSize(8f);
+                                c1.Item().Text("Autopista Duarte Km. 13 ½, Parque Industrial Dualas").FontSize(8f);
+                                c1.Item().Text("Nave 5 Pantoja, Santo Domingo").FontSize(8f);
                                 c1.Item().Text("Sucursal: Sede principal").FontSize(8f).FontColor(Colors.Grey.Medium);
                             });
 
