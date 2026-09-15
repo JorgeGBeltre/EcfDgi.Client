@@ -687,7 +687,7 @@ namespace EcfDgii.TestRunner
             string qrUrl;
             if (isRfce)
             {
-                qrUrl = $"https://fc.dgii.gov.do/certecf/consultatimbrefc?rncemisor={_rncEmisor}&encf={c.NewEncf}&montototal={c.MontoTotal.ToString("F2", CultureInfo.InvariantCulture)}&codigoseguridad={c.SecurityCode}";
+                qrUrl = $"https://fc.dgii.gov.do/certecf/consultatimbrefc?rncemisor={_rncEmisor}&encf={c.NewEncf}&montototal={c.MontoTotal.ToString("F2", CultureInfo.InvariantCulture)}&codigoseguridad={Uri.EscapeDataString(c.SecurityCode)}";
             }
             else
             {
@@ -698,7 +698,7 @@ namespace EcfDgii.TestRunner
                         $"&fechaemision={c.FechaEmision}" +
                         $"&montototal={c.MontoTotal.ToString("F2", CultureInfo.InvariantCulture)}" +
                         $"&fechafirma={Uri.EscapeDataString(c.FechaFirma)}" +
-                        $"&codigoseguridad={c.SecurityCode}";
+                        $"&codigoseguridad={Uri.EscapeDataString(c.SecurityCode)}";
             }
 
             using var qrGen = new QRCodeGenerator();
@@ -711,6 +711,7 @@ namespace EcfDgii.TestRunner
             var logoCandidates = new[]
             {
                 @"C:\Users\Jorge\Desktop\Ecf\scratch\ceramic_chic_logo.png",
+                @"C:\Users\Jorge\Desktop\Ecf\scratch\ceramic_logo.png",
                 @"C:\Users\Jorge\Desktop\Ecf\Ceramic\ceramic_chic_logo.png"
             };
             foreach (var lp in logoCandidates)
@@ -933,7 +934,7 @@ namespace EcfDgii.TestRunner
 
                                 qrCol.Item().PaddingTop(4);
                                 qrCol.Item().Text($"Código de Seguridad: {c.SecurityCode}").FontSize(7.5f).Bold();
-                                qrCol.Item().Text($"Fecha Firma: {c.FechaFirma}").FontSize(7.5f);
+                                qrCol.Item().Text($"Fecha Firma Digital: {c.FechaFirma}").FontSize(7.5f);
                                 qrCol.Item().PaddingTop(3);
                                 qrCol.Item().Text("Documento emitido conforme a la normativa e-CF de la Dirección General de Impuestos Internos (DGII).")
                                     .FontSize(6.5f).Italic().FontColor(Colors.Grey.Darken2);
