@@ -934,5 +934,47 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("tenant-a", docs[2].TenantId);
             Assert.Equal("133664692", docs[2].RncEmisor);
         }
+
+        [Fact]
+        public async Task DifferentEnvironments_CanUseSameEncfSequence_WithoutCollision()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            // Return E310000000001 for both environments to simulate both starting from sequence 1
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E310000000001");
+
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-1" });
+
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
+                .Returns((string xml, string rnc) => FakeSignedXml);
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+
+            // 1. Submit in Certificacion
+            var dtoCert = MakeDto("TXN-CERT-1", "1");
+            dtoCert.TenantId = "sede-principal";
+            dtoCert.Environment = "Certificacion";
+            var resultCert = await controller.SubmitCanonicalDocument(dtoCert);
+            Assert.IsType<AcceptedResult>(resultCert);
+
+            // 2. Submit in Produccion with same eNCF sequence (starting from 1)
+            var dtoProd = MakeDto("TXN-PROD-1", "1");
+            dtoProd.TenantId = "sede-principal";
+            dtoProd.Environment = "Produccion";
+            var resultProd = await controller.SubmitCanonicalDocument(dtoProd);
+            Assert.IsType<AcceptedResult>(resultProd);
+
+            // Verify both saved without collision
+            var docs = await db.EcfDocuments.OrderBy(d => d.CreatedAt).ToListAsync();
+            Assert.Equal(2, docs.Count);
+            Assert.Equal("Certificacion", docs[0].Ambiente);
+            Assert.Equal("E310000000001", docs[0].ENcf);
+            Assert.Equal("Produccion", docs[1].Ambiente);
+            Assert.Equal("E310000000001", docs[1].ENcf);
+        }
     }
 }

@@ -363,9 +363,9 @@ namespace EcfDgii.Client.Api.Controllers
 
             var editSequence = dto.SourceReference.EditSequence ?? string.Empty;
 
-            // Check if document for this TxnId has already been processed
+            // Check if document for this TxnId has already been processed in this ambiente
             var existingDoc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == dto.SourceReference.TxnId);
+                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == dto.SourceReference.TxnId && (d.Ambiente == null || d.Ambiente == ambiente.ToString()));
 
             if (existingDoc != null)
             {
@@ -379,7 +379,8 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 TenantId = tenantId,
                 SourceTxnId = dto.SourceReference.TxnId,
-                ENcf = eNcf
+                ENcf = eNcf,
+                Ambiente = ambiente.ToString()
             };
             ApplyCanonicalContent(doc, dto, editSequence, isDefaultFallback);
 
@@ -390,14 +391,14 @@ namespace EcfDgii.Client.Api.Controllers
             }
             catch (DbUpdateException ex) when (IsTenantTxnUniqueViolation(ex))
             {
-                // Another request for the same (TenantId, SourceTxnId) won the race and committed
+                // Another request for the same (TenantId, SourceTxnId, Ambiente) won the race and committed
                 // between our SELECT and this INSERT. Our eNCF is wasted — a gap in the sequence,
                 // not a duplicate — but we must not create a second document for this invoice.
                 // Detach our losing attempt and defer to the winner.
                 _db.Entry(doc).State = EntityState.Detached;
 
                 var winner = await _db.EcfDocuments
-                    .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == dto.SourceReference.TxnId);
+                    .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == dto.SourceReference.TxnId && (d.Ambiente == null || d.Ambiente == ambiente.ToString()));
                 if (winner == null)
                 {
                     // Genuinely unexpected: the constraint fired, so a conflicting row must exist,
