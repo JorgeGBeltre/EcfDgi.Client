@@ -911,9 +911,9 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 else
                 {
-                    // Fecha de vigencia por defecto de la DGII para las secuencias e-CF autorizadas (31-12-2028).
-                    // La DGII rechaza fechas no alineadas a fin de año con código de error 145.
-                    fechaVencimiento = "31-12-2028";
+                    // Fecha de vigencia por defecto de la DGII para las secuencias e-CF autorizadas (31-12-2027).
+                    // La DGII rechaza fechas no coincidentes con la autorización con código de error 145.
+                    fechaVencimiento = "31-12-2027";
                 }
 
                 sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
