@@ -467,6 +467,38 @@ namespace EcfDgii.Client.Api.Controllers
                 return await ReconcileUncertainAsync(existingDoc, dto, editSequence, ambiente);
             }
 
+            if (existingDoc.State == "RejectedByDgii")
+            {
+                // El documento previo fue rechazado por la DGII. Conforme a la normativa de la DGII (Ley 32-23),
+                // el eNCF rechazado quedó consumido/inutilizado en los servidores de la DGII (Error 1209 si se reusa).
+                // Para reemitir la factura, se debe asignar un NUEVO correlativo de secuencia libre del rango autorizado.
+                var tenantId = HttpContext.Items["TenantId"]?.ToString()
+                    ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null)
+                    ?? dto.TenantId
+                    ?? existingDoc.TenantId;
+
+                var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
+                var effectiveAmbiente = ambiente ?? ResolveAmbienteEnum(rawEnv);
+                var isFallback = tenantId == "default-tenant" && string.IsNullOrWhiteSpace(rawEnv) && !Request.Headers.ContainsKey("X-Tenant-Id") && string.IsNullOrWhiteSpace(dto.TenantId);
+                var sequenceScope = isFallback ? "default-tenant" : $"{tenantId}:{effectiveAmbiente}";
+
+                var newEncf = await _sequenceManager.GetNextEncfAsync(sequenceScope, dto.TipoComprobante ?? "E31");
+                _logger.LogInformation("Reemisión de e-CF previamente rechazado para TxnId {TxnId}: eNCF anterior '{OldEncf}' -> Nuevo eNCF '{NewEncf}'",
+                    dto.SourceReference.TxnId, existingDoc.ENcf, newEncf);
+
+                existingDoc.ENcf = newEncf;
+                existingDoc.TrackId = null;
+                existingDoc.SecurityCode = null;
+                existingDoc.DgiiResponseXml = null;
+                existingDoc.SentToDgiiAt = null;
+                existingDoc.State = "AwaitingTransmission";
+
+                ApplyCanonicalContent(existingDoc, dto, editSequence, isFallback);
+                await _db.SaveChangesAsync();
+
+                return await SignAndSendAsync(existingDoc, dto, effectiveAmbiente);
+            }
+
             // Terminal / known-transmitted states (AwaitingTransmission, Signed, RejectedByDgii, ...).
             if (!string.Equals(existingDoc.EditSequence, editSequence, StringComparison.Ordinal))
             {
@@ -911,12 +943,20 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 else
                 {
-                    // Fecha de vigencia por defecto de la DGII para las secuencias e-CF autorizadas (31-12-2027).
-                    // La DGII rechaza fechas no coincidentes con la autorización con código de error 145.
-                    fechaVencimiento = "31-12-2027";
+                    // Fecha de vigencia calculada dinámicamente según normativa DGII (31 de diciembre del año posterior).
+                    // Para secuencias autorizadas en 2026/2027, la vigencia es 31-12-2027.
+                    var dynamicYear = Math.Max(2027, DateTime.UtcNow.Year + 1);
+                    fechaVencimiento = $"31-12-{dynamicYear}";
                 }
 
                 sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
+            }
+
+            if (tipoEcf is "31" or "32" or "33" or "34" or "41" or "45")
+            {
+                // IndicadorMontoGravado: 0 = montos en líneas sección B no tienen ITBIS incluido, 1 = se encuentran con ITBIS incluido.
+                // Requerido por la DGII cuando el documento contiene montos gravados (Error 176 si falta).
+                sb.AppendLine("      <IndicadorMontoGravado>0</IndicadorMontoGravado>");
             }
 
             // TipoIngresos doesn't exist as an element at all in tipo 41, 43, 47 IdDoc schemas (confirmed by
