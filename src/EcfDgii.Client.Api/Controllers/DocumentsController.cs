@@ -80,6 +80,7 @@ namespace EcfDgii.Client.Api.Controllers
         private readonly IEcfSchemaValidator _schemaValidator;
         private readonly EcfClientOptions _ecfClientOptions;
         private readonly AmbienteEnum _defaultAmbiente;
+        private readonly ITenantSignerResolver? _signerResolver;
 
         public DocumentsController(
             ApplicationDbContext db,
@@ -90,7 +91,8 @@ namespace EcfDgii.Client.Api.Controllers
             IClock clock,
             IOptions<EcfEmisorOptions> emisorOptions,
             IEcfSchemaValidator schemaValidator,
-            IOptions<EcfClientOptions> ecfClientOptions)
+            IOptions<EcfClientOptions> ecfClientOptions,
+            ITenantSignerResolver? signerResolver = null)
         {
             _db = db;
             _sequenceManager = sequenceManager;
@@ -104,6 +106,7 @@ namespace EcfDgii.Client.Api.Controllers
             _emisorRazonSocial = emisorOptions.Value.RazonSocial;
             _schemaValidator = schemaValidator;
             _ecfClientOptions = ecfClientOptions.Value;
+            _signerResolver = signerResolver;
             _defaultAmbiente = _ecfClientOptions.Environment switch
             {
                 EcfEnvironment.Test => AmbienteEnum.PreCertificacion,
@@ -124,7 +127,7 @@ namespace EcfDgii.Client.Api.Controllers
             return _defaultAmbiente;
         }
 
-        private IEcfXmlSigner ResolveSigner(string tenantId, string rncEmisor, CanonicalCertificateDto? certDto, bool isDefaultFallback = true)
+        private async Task<IEcfXmlSigner> ResolveSignerAsync(string tenantId, string rncEmisor, CanonicalCertificateDto? certDto, bool isDefaultFallback = true)
         {
             if (isDefaultFallback)
             {
@@ -155,6 +158,23 @@ namespace EcfDgii.Client.Api.Controllers
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "No se pudo cargar certificado en ruta {Path}. Se utilizará respaldo.", certDto.CertificatePath);
+                }
+            }
+
+            // Cargar certificado dinámico real desde PostgreSQL (Tenants)
+            if (_signerResolver != null && !string.IsNullOrWhiteSpace(rncEmisor))
+            {
+                try
+                {
+                    var tenantSigner = await _signerResolver.ResolveSignerAsync(rncEmisor);
+                    if (tenantSigner != null && tenantSigner != _signer)
+                    {
+                        return tenantSigner;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "TenantSignerResolver no resolvió certificado para RNC {Rnc}", rncEmisor);
                 }
             }
 
@@ -533,7 +553,7 @@ namespace EcfDgii.Client.Api.Controllers
 
             var effectiveAmbiente = ambiente ?? _defaultAmbiente;
             var isDefaultFallback = doc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto.Environment) && string.IsNullOrWhiteSpace(dto.TenantId);
-            var effectiveSigner = ResolveSigner(doc.TenantId, doc.RncEmisor, dto.Certificate, isDefaultFallback);
+            var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, dto.Certificate, isDefaultFallback);
             var effectiveClient = ResolveEcfClient(doc.RncEmisor, effectiveSigner, effectiveAmbiente, isDefaultFallback);
 
             ConsultaEstadoResponse? status;
@@ -587,7 +607,7 @@ namespace EcfDgii.Client.Api.Controllers
         {
             var effectiveAmbiente = ambiente ?? _defaultAmbiente;
             var isDefaultFallback = doc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto?.Environment) && string.IsNullOrWhiteSpace(dto?.TenantId);
-            var effectiveSigner = ResolveSigner(doc.TenantId, doc.RncEmisor, dto?.Certificate, isDefaultFallback);
+            var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, dto?.Certificate, isDefaultFallback);
             var effectiveClient = ResolveEcfClient(doc.RncEmisor, effectiveSigner, effectiveAmbiente, isDefaultFallback);
 
             // 3. Digital signing & Real Security Code Calculation
@@ -757,7 +777,7 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 try
                 {
-                    var effectiveSigner = ResolveSigner(doc.TenantId, doc.RncEmisor, null, isDefaultFallback: false);
+                    var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, null, isDefaultFallback: false);
                     var ambiente = ResolveAmbienteEnum(doc.Ambiente);
                     var client = ResolveEcfClient(doc.RncEmisor, effectiveSigner, ambiente, isDefaultFallback: false);
                     var resultado = await client.ConsultarResultadoAsync(doc.TrackId);
@@ -782,7 +802,10 @@ namespace EcfDgii.Client.Api.Controllers
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error consultando resultado DGII para {TrackId}", doc.TrackId);
+                }
             }
 
             return Ok(new
