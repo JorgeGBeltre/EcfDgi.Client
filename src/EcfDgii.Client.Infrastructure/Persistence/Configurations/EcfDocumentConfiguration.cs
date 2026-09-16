@@ -128,16 +128,20 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasColumnName("is_deleted")
                 .IsRequired();
 
-            // Composite Index (unique) for RncEmisor & ENcf
-            builder.HasIndex(e => new { e.RncEmisor, e.ENcf })
+            builder.Property(e => e.Ambiente)
+                .HasColumnName("ambiente")
+                .HasMaxLength(50);
+
+            // Composite Index (unique) for RncEmisor & ENcf per Ambiente
+            builder.HasIndex(e => new { e.RncEmisor, e.ENcf, e.Ambiente })
                 .IsUnique()
                 .HasDatabaseName("uq_ecf_documents_rnc_emisor_encf");
 
-            // Idempotency relies on the (TenantId, SourceTxnId) lookup in DocumentsController being
+            // Idempotency relies on the (TenantId, SourceTxnId, Ambiente) lookup in DocumentsController being
             // authoritative. Without a DB-level constraint, two concurrent submits for the same
             // TxnId can both pass that lookup before either commits, each allocating its own eNCF.
             // This index makes the second insert fail instead, so it can be caught and reconciled.
-            builder.HasIndex(e => new { e.TenantId, e.SourceTxnId })
+            builder.HasIndex(e => new { e.TenantId, e.SourceTxnId, e.Ambiente })
                 .IsUnique()
                 .HasDatabaseName("uq_ecf_documents_tenant_source_txn");
 

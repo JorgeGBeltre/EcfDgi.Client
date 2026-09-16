@@ -13,6 +13,7 @@ namespace EcfDgii.Client.Domain.Entities
         public string SourceTxnId { get; set; } = string.Empty;
         public string EditSequence { get; set; } = string.Empty;
         public string DocumentKind { get; set; } = "Invoice";
+        public string? Ambiente { get; set; }
         public string? TrackId { get; set; }
         // Signature-validity axis: Unsigned (no real certificate — nothing transmitted) vs Signed
         // (DGII acknowledged receipt with a TrackId). AwaitingTransmission is the transient between
