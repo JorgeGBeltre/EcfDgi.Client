@@ -8,6 +8,9 @@ using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Shared.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using EcfDgii.Client.Infrastructure;
+using EcfDgii.Client.Infrastructure.Configuration;
+using EcfDgii.Client.Domain.Entities;
 
 namespace EcfDgii.Client.Api.Services
 {
@@ -56,7 +59,8 @@ namespace EcfDgii.Client.Api.Services
         IEcfClient ecfClient,
         IClock clock,
         EcfStatusPollingOptions options,
-        ILogger<EcfStatusReconciler> logger)
+        ILogger<EcfStatusReconciler> logger,
+        ITenantSignerResolver? signerResolver = null)
     {
         private static readonly HashSet<string> AcceptedEstados = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -107,13 +111,70 @@ namespace EcfDgii.Client.Api.Services
 
                 try
                 {
-                    var response = await ecfClient.ConsultarEstadoAsync(
-                        doc.RncEmisor, doc.ENcf, doc.RncComprador, doc.SecurityCode, ct);
+                    var clientToUse = ecfClient;
+                    if (signerResolver != null && !string.IsNullOrWhiteSpace(doc.RncEmisor))
+                    {
+                        try
+                        {
+                            var dynamicSigner = await signerResolver.ResolveSignerAsync(doc.RncEmisor, ct);
+                            var isProd = string.Equals(doc.Ambiente, "Produccion", StringComparison.OrdinalIgnoreCase) ||
+                                         string.Equals(doc.Ambiente, "Ecf", StringComparison.OrdinalIgnoreCase);
+                            var env = isProd ? EcfEnvironment.Prod : EcfEnvironment.Cert;
+
+                            var clientOpts = new EcfClientOptions
+                            {
+                                RncEmisor = doc.RncEmisor,
+                                Environment = env,
+                                Mode = IntegrationMode.DgiiDirect,
+                                ValidateSchemasLocal = false
+                            };
+                            clientToUse = new EcfClient(clientOpts, signer: dynamicSigner);
+                        }
+                        catch (Exception resolveEx)
+                        {
+                            logger.LogDebug(resolveEx, "No se pudo resolver signer dinámico para {Rnc}; usando ecfClient default.", doc.RncEmisor);
+                        }
+                    }
+
+                    string? estado = null;
+                    if (!string.IsNullOrWhiteSpace(doc.TrackId))
+                    {
+                        try
+                        {
+                            var resultado = await clientToUse.ConsultarResultadoAsync(doc.TrackId, ct);
+                            if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
+                            {
+                                estado = resultado.Estado.Trim();
+                                if (resultado.Mensajes != null && resultado.Mensajes.Count > 0)
+                                {
+                                    doc.DgiiResponseXml = $"[{resultado.Estado}] " + string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"));
+                                }
+                                else
+                                {
+                                    doc.DgiiResponseXml = $"Estado DGII: {estado}";
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Fallback to ConsultarEstadoAsync below
+                        }
+                    }
+
+                    if (string.IsNullOrWhiteSpace(estado) || string.Equals(estado, "No encontrado", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var response = await clientToUse.ConsultarEstadoAsync(
+                            doc.RncEmisor, doc.ENcf, doc.RncComprador, doc.SecurityCode, ct);
+                        if (response != null && !string.IsNullOrWhiteSpace(response.Estado))
+                        {
+                            estado = response.Estado.Trim();
+                            doc.DgiiResponseXml = $"Estado DGII: {estado}";
+                        }
+                    }
 
                     doc.LastStatusCheckAt = now;
                     doc.StatusCheckAttempts++;
 
-                    var estado = response?.Estado?.Trim();
                     if (estado != null && AcceptedEstados.Contains(estado))
                     {
                         doc.State = "AcceptedByDgii";
