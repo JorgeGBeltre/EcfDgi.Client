@@ -90,8 +90,8 @@ jobs:
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '101889063' }}
-          AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Certecf' }}
+          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '133664692' }}
+          AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Produccion' }}
           WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY || secrets.JWT_SECRET || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
           JWT_SECRET: ${{ secrets.JWT_SECRET || 'AntigravityEcfSuperSecretKey2026MasterKey!DominicanRepublic' }}
         with:

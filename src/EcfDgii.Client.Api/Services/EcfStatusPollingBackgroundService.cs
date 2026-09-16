@@ -55,8 +55,9 @@ namespace EcfDgii.Client.Api.Services
             var ecfClient = scope.ServiceProvider.GetRequiredService<IEcfClient>();
             var clock = scope.ServiceProvider.GetRequiredService<IClock>();
             var reconcilerLogger = scope.ServiceProvider.GetRequiredService<ILogger<EcfStatusReconciler>>();
+            var signerResolver = scope.ServiceProvider.GetService<ITenantSignerResolver>();
 
-            var reconciler = new EcfStatusReconciler(db, ecfClient, clock, options, reconcilerLogger);
+            var reconciler = new EcfStatusReconciler(db, ecfClient, clock, options, reconcilerLogger, signerResolver);
 
             try
             {

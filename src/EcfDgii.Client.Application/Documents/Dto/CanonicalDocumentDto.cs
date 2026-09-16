@@ -22,6 +22,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         /// the XML; a value already in dd-MM-yyyy is accepted and passed through unchanged.
         /// </summary>
         public string FechaEmision { get; set; } = string.Empty;
+        public string? FechaVencimientoSecuencia { get; set; }
     }
 
     public class CanonicalLineDto
@@ -163,5 +164,8 @@ namespace EcfDgii.Client.Application.Documents.Dto
 
         /// <summary>Required (obligatorio) only for TipoComprobante "E41". Null for every other type.</summary>
         public CanonicalRetentionDto? Retention { get; set; }
+
+        /// <summary>Optional DGII sequence expiration date (dd-MM-yyyy or yyyy-MM-dd). Default 31-12-2028.</summary>
+        public string? FechaVencimientoSecuencia { get; set; }
     }
 }

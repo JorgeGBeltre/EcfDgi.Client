@@ -677,11 +677,40 @@ namespace EcfDgii.Client.Api.Controllers
                 if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
                 {
                     doc.TrackId = response.TrackId;
-                    // DGII received it and issued a TrackId — the signature is confirmed real. This is
-                    // the counterpart to "Unsigned": those two states are the signature-validity axis,
-                    // and only DGII's acceptance moves a document across it.
                     doc.State = "Signed";
                     doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+
+                    // Verificación inmediata: DGII usualmente procesa la validación del e-CF en 1-2 segundos.
+                    // Si DGII ya dictaminó estado, transicionar sincrónicamente para feedback inmediato.
+                    try
+                    {
+                        await Task.Delay(1500);
+                        var resultado = await effectiveClient.ConsultarResultadoAsync(doc.TrackId);
+                        if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
+                        {
+                            var estado = resultado.Estado.Trim();
+                            if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase))
+                            {
+                                doc.State = "AcceptedByDgii";
+                                doc.DgiiResponseXml = $"Aceptado por DGII: {estado}";
+                                _logger.LogInformation("e-CF {ENcf}: DGII confirmó '{Estado}' de inmediato.", doc.ENcf, estado);
+                            }
+                            else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
+                            {
+                                doc.State = "RejectedByDgii";
+                                var errors = resultado.Mensajes != null 
+                                    ? string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                                    : "Rechazado por DGII";
+                                doc.DgiiResponseXml = errors;
+                                _logger.LogWarning("e-CF {ENcf}: DGII rechazó de inmediato: {Errors}", doc.ENcf, errors);
+                            }
+                        }
+                    }
+                    catch (Exception checkEx)
+                    {
+                        _logger.LogDebug(checkEx, "Consulta inmediata DGII para {TrackId} no completó; se conciliará en segundo plano.", doc.TrackId);
+                    }
                 }
                 else
                 {
@@ -703,7 +732,8 @@ namespace EcfDgii.Client.Api.Controllers
                 state = doc.State,
                 trackId = doc.TrackId,
                 securityCode = doc.SecurityCode,
-                signedXml = doc.SignedXmlContent
+                signedXml = doc.SignedXmlContent,
+                dgiiResponse = doc.DgiiResponseXml
             });
         }
 
@@ -722,6 +752,39 @@ namespace EcfDgii.Client.Api.Controllers
                 return NotFound(new { error = $"Document with source TxnId '{txnId}' not found." });
             }
 
+            // Si el comprobante sigue en Signed con TrackId, verificar dinámicamente con DGII
+            if (doc.State == "Signed" && !string.IsNullOrWhiteSpace(doc.TrackId))
+            {
+                try
+                {
+                    var effectiveSigner = ResolveSigner(doc.TenantId, doc.RncEmisor, null, isDefaultFallback: false);
+                    var ambiente = ResolveAmbienteEnum(doc.Ambiente);
+                    var client = ResolveEcfClient(doc.RncEmisor, effectiveSigner, ambiente, isDefaultFallback: false);
+                    var resultado = await client.ConsultarResultadoAsync(doc.TrackId);
+                    if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
+                    {
+                        var estado = resultado.Estado.Trim();
+                        if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase))
+                        {
+                            doc.State = "AcceptedByDgii";
+                            doc.DgiiResponseXml = $"Aceptado por DGII: {estado}";
+                            await _db.SaveChangesAsync();
+                        }
+                        else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
+                        {
+                            doc.State = "RejectedByDgii";
+                            var errors = resultado.Mensajes != null && resultado.Mensajes.Count > 0
+                                ? string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                                : "Rechazado por DGII";
+                            doc.DgiiResponseXml = errors;
+                            await _db.SaveChangesAsync();
+                        }
+                    }
+                }
+                catch { }
+            }
+
             return Ok(new
             {
                 documentId = doc.Id,
@@ -731,7 +794,8 @@ namespace EcfDgii.Client.Api.Controllers
                 trackId = doc.TrackId,
                 securityCode = doc.SecurityCode,
                 receiptDate = doc.ReceiptDate,
-                signedXml = doc.SignedXmlContent
+                signedXml = doc.SignedXmlContent,
+                dgiiResponse = doc.DgiiResponseXml
             });
         }
 
@@ -814,7 +878,21 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else if (tipoEcf != "32")
             {
-                var fechaVencimiento = DateTime.Today.AddYears(1).ToString("dd-MM-yyyy");
+                var rawVencimiento = dto.FechaVencimientoSecuencia 
+                    ?? dto.Header?.FechaVencimientoSecuencia;
+
+                string fechaVencimiento;
+                if (!string.IsNullOrWhiteSpace(rawVencimiento))
+                {
+                    fechaVencimiento = NormalizeFechaDgii(rawVencimiento);
+                }
+                else
+                {
+                    // Fecha de vigencia por defecto de la DGII para las secuencias e-CF autorizadas (31-12-2028).
+                    // La DGII rechaza fechas no alineadas a fin de año con código de error 145.
+                    fechaVencimiento = "31-12-2028";
+                }
+
                 sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
             }
 
