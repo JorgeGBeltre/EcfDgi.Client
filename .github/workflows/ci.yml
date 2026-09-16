@@ -77,8 +77,6 @@ jobs:
           target: "/var/www/ecf-dgii-client/"
           strip_components: 1
           overwrite: true
-          timeout: 120s
-          command_timeout: 10m
 
       - name: Desplegar contenedor Docker vía SSH
         uses: appleboy/ssh-action@v1.2.0
