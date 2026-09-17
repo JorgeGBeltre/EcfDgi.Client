@@ -647,7 +647,7 @@ namespace EcfDgii.Client.Api.Controllers
             try
             {
                 signedXml = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
-                var secCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml).ToUpperInvariant();
+                var secCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
 
                 doc.SignedXmlContent = signedXml;
                 doc.SecurityCode = secCode;
