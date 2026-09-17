@@ -14,9 +14,24 @@ namespace EcfDgii.Client.Infrastructure.Security
         public static string CalcularCodigoSeguridad(string signedXml)
         {
             var signatureValue = ExtractSignatureValue(signedXml);
-            var bytes = Encoding.UTF8.GetBytes(signatureValue);
-            var hash = SHA256.HashData(bytes);
-            return Convert.ToHexString(hash).ToLowerInvariant().Substring(0, 6);
+            if (string.IsNullOrWhiteSpace(signatureValue) || signatureValue.Length < 6)
+                throw new EcfException("El SignatureValue es inválido o tiene menos de 6 caracteres.");
+            return signatureValue.Substring(0, 6);
+        }
+
+        public static string? ExtractFechaHoraFirma(string signedXml)
+        {
+            try
+            {
+                var doc = new XmlDocument();
+                doc.LoadXml(signedXml);
+                var node = doc.SelectSingleNode("//FechaHoraFirma");
+                return node?.InnerText?.Trim();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static string ExtractSignatureValue(string signedXml)
