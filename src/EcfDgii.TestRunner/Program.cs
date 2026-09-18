@@ -23,6 +23,13 @@ namespace EcfDgii.TestRunner
 
         public static async Task Main(string[] args)
         {
+            if (args.Length > 0 && (args[0] == "--willy-pdfs" || args[0] == "--willychic-pdfs"))
+            {
+                var willyRunner = new WillyChicPdfRunner();
+                willyRunner.GenerateAll();
+                return;
+            }
+
             Console.WriteLine("================================================================");
             Console.WriteLine("DGII CERTECF TEST SET RUNNER - CERAMIC CHIC SRL (133664692)");
             Console.WriteLine("================================================================");
