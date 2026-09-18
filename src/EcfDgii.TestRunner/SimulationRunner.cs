@@ -39,6 +39,7 @@ namespace EcfDgii.TestRunner
             public string TipoEcf { get; set; } = "";
             public string Description { get; set; } = "";
             public string? ReferenciaEncf { get; set; }
+            public string? Terms { get; set; }
             public bool IsRfce { get; set; }
             public bool IsBaseInvoice { get; set; }
             public bool IsNote { get; set; }
@@ -810,6 +811,15 @@ namespace EcfDgii.TestRunner
                                         r.AutoItem().Text("Moneda").FontSize(8f);
                                         r.RelativeItem().AlignRight().Text("DOP (RD$)").FontSize(8f);
                                     });
+
+                                    if (!string.IsNullOrWhiteSpace(c.Terms))
+                                    {
+                                        body.Item().PaddingTop(2).Row(r =>
+                                        {
+                                            r.AutoItem().Text("Términos").FontSize(8f);
+                                            r.RelativeItem().AlignRight().Text(c.Terms).FontSize(8f);
+                                        });
+                                    }
                                 });
                             });
                         });

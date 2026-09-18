@@ -39,6 +39,7 @@ namespace EcfDgii.TestRunner
             public string FechaEmisionFormatted { get; set; } = "";
             public string FechaFirma { get; set; } = "";
             public string? FechaVencimientoSecuencia { get; set; }
+            public string? Terms { get; set; }
             public string? ReferenciaEncf { get; set; }
             public string SecurityCode { get; set; } = "";
             public string RncComprador { get; set; } = "";
@@ -310,6 +311,15 @@ namespace EcfDgii.TestRunner
                                         r.AutoItem().Text("Moneda").FontSize(8f);
                                         r.RelativeItem().AlignRight().Text("DOP (RD$)").FontSize(8f);
                                     });
+
+                                    if (!string.IsNullOrWhiteSpace(c.Terms))
+                                    {
+                                        body.Item().PaddingTop(2).Row(r =>
+                                        {
+                                            r.AutoItem().Text("Términos").FontSize(8f);
+                                            r.RelativeItem().AlignRight().Text(c.Terms).FontSize(8f);
+                                        });
+                                    }
                                 });
                             });
                         });
