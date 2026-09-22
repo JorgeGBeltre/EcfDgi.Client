@@ -724,49 +724,82 @@ namespace EcfDgii.Client.Api.Controllers
 
             try
             {
-                var fileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
-                var response = await effectiveClient.SendEcfAsync(doc.SignedXmlContent, fileName);
-                if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
+                var isRfce = doc.ENcf.StartsWith("E32", StringComparison.OrdinalIgnoreCase) && doc.TotalAmount < 250000m;
+                if (isRfce)
                 {
-                    doc.TrackId = response.TrackId;
-                    doc.State = "Signed";
-                    doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                    var emisorRazon = !isDefaultFallback && !string.IsNullOrWhiteSpace(dto?.Header?.RazonSocialEmisor)
+                        ? dto.Header.RazonSocialEmisor
+                        : _emisorRazonSocial;
 
-                    // Verificación inmediata: DGII usualmente procesa la validación del e-CF en 1-2 segundos.
-                    // Si DGII ya dictaminó estado, transicionar sincrónicamente para feedback inmediato.
-                    try
+                    var rfceXml = BuildRfceXml(doc, dto, emisorRazon);
+                    var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
+                    var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+
+                    var rfceResp = await effectiveClient.SendRfceAsync(signedRfce, rfceFileName);
+                    if (rfceResp != null && (rfceResp.Codigo == 1 || string.Equals(rfceResp.Estado?.Trim(), "Aceptado", StringComparison.OrdinalIgnoreCase)))
                     {
-                        await Task.Delay(1500);
-                        var resultado = await effectiveClient.ConsultarResultadoAsync(doc.TrackId);
-                        if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
-                        {
-                            var estado = resultado.Estado.Trim();
-                            if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase))
-                            {
-                                doc.State = "AcceptedByDgii";
-                                doc.DgiiResponseXml = $"Aceptado por DGII: {estado}";
-                                _logger.LogInformation("e-CF {ENcf}: DGII confirmó '{Estado}' de inmediato.", doc.ENcf, estado);
-                            }
-                            else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
-                            {
-                                doc.State = "RejectedByDgii";
-                                var errors = resultado.Mensajes != null 
-                                    ? string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
-                                    : "Rechazado por DGII";
-                                doc.DgiiResponseXml = errors;
-                                _logger.LogWarning("e-CF {ENcf}: DGII rechazó de inmediato: {Errors}", doc.ENcf, errors);
-                            }
-                        }
+                        doc.TrackId = doc.SecurityCode;
+                        doc.State = "AcceptedByDgii";
+                        doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                        doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
+                        _logger.LogInformation("e-CF de Consumo {ENcf} transmitido y aceptado por RecepcionFC (RFCE).", doc.ENcf);
                     }
-                    catch (Exception checkEx)
+                    else
                     {
-                        _logger.LogDebug(checkEx, "Consulta inmediata DGII para {TrackId} no completó; se conciliará en segundo plano.", doc.TrackId);
+                        doc.State = "RejectedByDgii";
+                        var errors = rfceResp?.Mensajes != null && rfceResp.Mensajes.Count > 0
+                            ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                            : (rfceResp?.Estado ?? "Rechazado por RecepcionFC");
+                        doc.DgiiResponseXml = errors;
+                        _logger.LogWarning("e-CF de Consumo {ENcf} rechazado por RecepcionFC: {Errors}", doc.ENcf, errors);
                     }
                 }
                 else
                 {
-                    doc.State = "RejectedByDgii";
+                    var fileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+                    var response = await effectiveClient.SendEcfAsync(doc.SignedXmlContent, fileName);
+                    if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
+                    {
+                        doc.TrackId = response.TrackId;
+                        doc.State = "Signed";
+                        doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+
+                        // Verificación inmediata: DGII usualmente procesa la validación del e-CF en 1-2 segundos.
+                        // Si DGII ya dictaminó estado, transicionar sincrónicamente para feedback inmediato.
+                        try
+                        {
+                            await Task.Delay(1500);
+                            var resultado = await effectiveClient.ConsultarResultadoAsync(doc.TrackId);
+                            if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
+                            {
+                                var estado = resultado.Estado.Trim();
+                                if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    doc.State = "AcceptedByDgii";
+                                    doc.DgiiResponseXml = $"Aceptado por DGII: {estado}";
+                                    _logger.LogInformation("e-CF {ENcf}: DGII confirmó '{Estado}' de inmediato.", doc.ENcf, estado);
+                                }
+                                else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    doc.State = "RejectedByDgii";
+                                    var errors = resultado.Mensajes != null 
+                                        ? string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                                        : "Rechazado por DGII";
+                                    doc.DgiiResponseXml = errors;
+                                    _logger.LogWarning("e-CF {ENcf}: DGII rechazó de inmediato: {Errors}", doc.ENcf, errors);
+                                }
+                            }
+                        }
+                        catch (Exception checkEx)
+                        {
+                            _logger.LogDebug(checkEx, "Consulta inmediata DGII para {TrackId} no completó; se conciliará en segundo plano.", doc.TrackId);
+                        }
+                    }
+                    else
+                    {
+                        doc.State = "RejectedByDgii";
+                    }
                 }
             }
             catch (Exception ex)
@@ -892,6 +925,62 @@ namespace EcfDgii.Client.Api.Controllers
             return File(Encoding.UTF8.GetBytes(doc.SignedXmlContent), "application/xml", fileName);
         }
 
+        private static string BuildRfceXml(EcfDocument doc, CanonicalDocumentDto? dto, string emisorRazonSocial)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
+            sb.AppendLine("<RFCE>");
+            sb.AppendLine("  <Encabezado>");
+            sb.AppendLine("    <Version>1.0</Version>");
+            sb.AppendLine("    <IdDoc>");
+            sb.AppendLine("      <TipoeCF>32</TipoeCF>");
+            sb.AppendLine($"      <eNCF>{doc.ENcf}</eNCF>");
+            sb.AppendLine("      <TipoIngresos>01</TipoIngresos>");
+            sb.AppendLine("      <TipoPago>1</TipoPago>");
+            sb.AppendLine("    </IdDoc>");
+            sb.AppendLine("    <Emisor>");
+            sb.AppendLine($"      <RNCEmisor>{doc.RncEmisor}</RNCEmisor>");
+            var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
+            sb.AppendLine($"      <RazonSocialEmisor>{EscapeXml(safeEmisorName)}</RazonSocialEmisor>");
+            var fechaEmision = NormalizeFechaDgii(dto?.Header?.FechaEmision);
+            sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
+            sb.AppendLine("    </Emisor>");
+            sb.AppendLine("    <Comprador>");
+            if (!string.IsNullOrWhiteSpace(doc.RncComprador))
+            {
+                var cleanRnc = System.Text.RegularExpressions.Regex.Replace(doc.RncComprador, @"[^\d]", "");
+                if (cleanRnc.Length is 9 or 11)
+                {
+                    sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
+                }
+            }
+            var compradorName = !string.IsNullOrWhiteSpace(dto?.Header?.RazonSocialComprador)
+                ? dto.Header.RazonSocialComprador
+                : "CONSUMIDOR FINAL";
+            var safeCompradorName = compradorName.Length > 150 ? compradorName[..150] : compradorName;
+            sb.AppendLine($"      <RazonSocialComprador>{EscapeXml(safeCompradorName)}</RazonSocialComprador>");
+            sb.AppendLine("    </Comprador>");
+            sb.AppendLine("    <Totales>");
+            if (doc.ItbisAmount > 0)
+            {
+                var montoGravado = Math.Max(0m, doc.TotalAmount - doc.ItbisAmount);
+                sb.AppendLine($"      <MontoGravadoTotal>{montoGravado:F2}</MontoGravadoTotal>");
+                sb.AppendLine($"      <MontoGravadoI1>{montoGravado:F2}</MontoGravadoI1>");
+                sb.AppendLine($"      <TotalITBIS>{doc.ItbisAmount:F2}</TotalITBIS>");
+                sb.AppendLine($"      <TotalITBIS1>{doc.ItbisAmount:F2}</TotalITBIS1>");
+            }
+            else
+            {
+                sb.AppendLine($"      <MontoExento>{doc.TotalAmount:F2}</MontoExento>");
+            }
+            sb.AppendLine($"      <MontoTotal>{doc.TotalAmount:F2}</MontoTotal>");
+            sb.AppendLine("    </Totales>");
+            sb.AppendLine($"    <CodigoSeguridadeCF>{doc.SecurityCode}</CodigoSeguridadeCF>");
+            sb.AppendLine("  </Encabezado>");
+            sb.AppendLine("</RFCE>");
+            return sb.ToString().Trim();
+        }
+
         private static string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial)
         {
             var sb = new StringBuilder();
@@ -943,9 +1032,13 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 else
                 {
-                    // Fecha de vigencia calculada dinámicamente según normativa DGII (31 de diciembre del año posterior).
-                    // Para secuencias autorizadas en 2026/2027, la vigencia es 31-12-2027.
-                    var dynamicYear = Math.Max(2027, DateTime.UtcNow.Year + 1);
+                    // Si el ambiente es pruebas (PreCertificación/Certificación), la vigencia en DGII es fija a 31-12-2028.
+                    // En producción, es dinámicamente según normativa DGII (31 de diciembre del año posterior).
+                    var isTestOrCert = string.Equals(dto.Environment, "PreCertificacion", StringComparison.OrdinalIgnoreCase) ||
+                                       string.Equals(dto.Environment, "Certificacion", StringComparison.OrdinalIgnoreCase) ||
+                                       string.Equals(dto.Environment, "Test", StringComparison.OrdinalIgnoreCase) ||
+                                       string.Equals(dto.Environment, "Cert", StringComparison.OrdinalIgnoreCase);
+                    var dynamicYear = isTestOrCert ? 2028 : Math.Max(2027, DateTime.UtcNow.Year + 1);
                     fechaVencimiento = $"31-12-{dynamicYear}";
                 }
 

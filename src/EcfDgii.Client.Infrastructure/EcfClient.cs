@@ -123,6 +123,11 @@ namespace EcfDgii.Client
             return response;
         }
 
+        public async Task<RfceRecepcionResponse> SendRfceAsync(string xmlContent, string fileName, CancellationToken ct = default)
+        {
+            return await _transport.SendRfceAsync(xmlContent, fileName, ct);
+        }
+
         private string GetXsdFileName(string xmlContent)
         {
             return EcfXsdFileNameResolver.Resolve(xmlContent);

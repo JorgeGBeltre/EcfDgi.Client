@@ -31,6 +31,31 @@ namespace EcfDgii.Client.Infrastructure.Persistence
 
             if (sequence == null)
             {
+                // Fallback check between PreCertificacion and TestEcf, or Certificacion and CertEcf
+                string? altTenantId = null;
+                if (tenantId.EndsWith(":PreCertificacion", StringComparison.OrdinalIgnoreCase))
+                    altTenantId = tenantId[..^":PreCertificacion".Length] + ":TestEcf";
+                else if (tenantId.EndsWith(":TestEcf", StringComparison.OrdinalIgnoreCase))
+                    altTenantId = tenantId[..^":TestEcf".Length] + ":PreCertificacion";
+                else if (tenantId.EndsWith(":Certificacion", StringComparison.OrdinalIgnoreCase))
+                    altTenantId = tenantId[..^":Certificacion".Length] + ":CertEcf";
+                else if (tenantId.EndsWith(":CertEcf", StringComparison.OrdinalIgnoreCase))
+                    altTenantId = tenantId[..^":CertEcf".Length] + ":Certificacion";
+
+                if (altTenantId != null)
+                {
+                    sequence = await db.Sequences
+                        .FirstOrDefaultAsync(s => s.TenantId == altTenantId && s.TipoComprobante == tipoComprobante && s.IsActive, cancellationToken);
+                    if (sequence != null)
+                    {
+                        // Adopt canonical scope
+                        sequence.TenantId = tenantId;
+                    }
+                }
+            }
+
+            if (sequence == null)
+            {
                 // Auto-provision sequence range if not existing for default tenant / type
                 var prefix = tipoComprobante.StartsWith("E", StringComparison.OrdinalIgnoreCase) ? tipoComprobante : $"E{tipoComprobante}";
                 sequence = new EcfSequence
