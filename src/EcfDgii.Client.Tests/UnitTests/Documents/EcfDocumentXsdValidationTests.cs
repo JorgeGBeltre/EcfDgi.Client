@@ -813,6 +813,8 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var doc = await db.EcfDocuments.SingleAsync();
             Assert.Contains("<DescuentoMonto>100.00</DescuentoMonto>", doc.XmlContent);
+            Assert.Contains("<TablaSubDescuento>", doc.XmlContent);
+            Assert.Contains("<MontoSubDescuento>100.00</MontoSubDescuento>", doc.XmlContent);
             Assert.DoesNotContain("<PrecioUnitarioItem>-", doc.XmlContent);
             Assert.DoesNotContain("<MontoItem>-", doc.XmlContent);
         }
@@ -838,6 +840,33 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var doc = await db.EcfDocuments.SingleAsync();
             Assert.Contains("<RazonSocialComprador>" + new string('B', 150) + "</RazonSocialComprador>", doc.XmlContent);
+        }
+
+        [Fact]
+        public async Task Tipo46_WithoutBuyerRnc_GeneratesIdentificadorExtranjero_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E460000000028");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-E46-FOREIGN", EditSequence = "1" },
+                TipoComprobante = "E46",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "", // Sin RNC Dominicano
+                    RazonSocialComprador = "Foreign Client Corp",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 500, MontoTotal = 500 },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Export Item", Quantity = 1m, UnitPrice = 500m, Amount = 500m }],
+            };
+
+            var res = await controller.SubmitCanonicalDocument(dto);
+            Assert.IsType<AcceptedResult>(res);
+
+            var doc = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>", doc.XmlContent);
+            Assert.DoesNotContain("<RNCComprador>", doc.XmlContent);
         }
 
         [Fact]

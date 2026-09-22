@@ -1112,6 +1112,11 @@ namespace EcfDgii.Client.Api.Controllers
                             }
                         }
                     }
+                    else
+                    {
+                        // Fallback obligatorio DGII para E46 cuando el cliente extranjero no posee RNC Dominicano
+                        sb.AppendLine("      <IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>");
+                    }
                 }
                 else
                 {
@@ -1329,6 +1334,12 @@ namespace EcfDgii.Client.Api.Controllers
                     if (tipoEcf is not "43" and not "47" && item.DiscountAmount > 0)
                     {
                         sb.AppendLine($"      <DescuentoMonto>{item.DiscountAmount:F2}</DescuentoMonto>");
+                        sb.AppendLine("      <TablaSubDescuento>");
+                        sb.AppendLine("        <SubDescuento>");
+                        sb.AppendLine("          <TipoSubDescuento>$</TipoSubDescuento>");
+                        sb.AppendLine($"          <MontoSubDescuento>{item.DiscountAmount:F2}</MontoSubDescuento>");
+                        sb.AppendLine("        </SubDescuento>");
+                        sb.AppendLine("      </TablaSubDescuento>");
                     }
                     sb.AppendLine($"      <MontoItem>{item.MontoItem:F2}</MontoItem>");
                     sb.AppendLine("    </Item>");
