@@ -688,7 +688,7 @@ namespace EcfDgii.TestRunner
             string qrUrl;
             if (isRfce)
             {
-                qrUrl = $"https://ecf.dgii.gov.do/certecf/consultatimbrefc?rncemisor={_rncEmisor}&encf={c.NewEncf}&montototal={c.MontoTotal.ToString("F2", CultureInfo.InvariantCulture)}&codigoseguridad={Uri.EscapeDataString(c.SecurityCode)}";
+                qrUrl = $"https://fc.dgii.gov.do/certecf/consultatimbrefc?rncemisor={_rncEmisor}&encf={c.NewEncf}&montototal={c.MontoTotal.ToString("F2", CultureInfo.InvariantCulture)}&codigoseguridad={Uri.EscapeDataString(c.SecurityCode)}";
             }
             else
             {
