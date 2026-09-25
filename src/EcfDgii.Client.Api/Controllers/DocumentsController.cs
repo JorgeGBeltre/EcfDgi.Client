@@ -872,6 +872,93 @@ namespace EcfDgii.Client.Api.Controllers
                     _logger.LogWarning(ex, "Error consultando resultado DGII para {TrackId}", doc.TrackId);
                 }
             }
+            else if (doc.State == "Uncertain")
+            {
+                // Si el comprobante quedó en Uncertain por caída de red, reconciliar o retransmitir
+                try
+                {
+                    var isDefaultFallback = doc.TenantId == "default-tenant";
+                    var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, null, isDefaultFallback);
+                    var ambiente = ResolveAmbienteEnum(doc.Ambiente);
+                    var client = ResolveEcfClient(doc.RncEmisor, effectiveSigner, ambiente, isDefaultFallback);
+
+                    var isRfce = doc.ENcf.StartsWith("E32", StringComparison.OrdinalIgnoreCase) && doc.TotalAmount < 250000m;
+                    if (isRfce)
+                    {
+                        ConsultaEstadoResponse? status = null;
+                        try
+                        {
+                            status = await client.ConsultarEstadoAsync(doc.RncEmisor, doc.ENcf);
+                        }
+                        catch { }
+
+                        if (status != null && !IsNotFoundByDgii(status))
+                        {
+                            doc.TrackId = doc.SecurityCode;
+                            doc.State = "AcceptedByDgii";
+                            doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                            doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {status.Estado ?? "Aceptado"}";
+                            await _db.SaveChangesAsync();
+                        }
+                        else
+                        {
+                            // DGII nunca lo recibió: seguro de retransmitir el RFCE firmado
+                            var emisorRazon = _emisorRazonSocial;
+                            var rfceXml = BuildRfceXml(doc, null, emisorRazon);
+                            var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
+                            var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+
+                            var rfceResp = await client.SendRfceAsync(signedRfce, rfceFileName);
+                            if (rfceResp != null && (rfceResp.Codigo == 1 || string.Equals(rfceResp.Estado?.Trim(), "Aceptado", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                doc.TrackId = doc.SecurityCode;
+                                doc.State = "AcceptedByDgii";
+                                doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                                doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
+                                await _db.SaveChangesAsync();
+                                _logger.LogInformation("e-CF de Consumo {ENcf} retransmitido y aceptado por RecepcionFC (RFCE).", doc.ENcf);
+                            }
+                            else if (rfceResp != null)
+                            {
+                                doc.State = "RejectedByDgii";
+                                var errors = rfceResp.Mensajes != null && rfceResp.Mensajes.Count > 0
+                                    ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                                    : (rfceResp.Estado ?? "Rechazado por RecepcionFC");
+                                doc.DgiiResponseXml = errors;
+                                await _db.SaveChangesAsync();
+                            }
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(doc.TrackId))
+                    {
+                        var resultado = await client.ConsultarResultadoAsync(doc.TrackId);
+                        if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
+                        {
+                            var estado = resultado.Estado.Trim();
+                            if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase))
+                            {
+                                doc.State = "AcceptedByDgii";
+                                doc.DgiiResponseXml = $"Aceptado por DGII: {estado}";
+                                await _db.SaveChangesAsync();
+                            }
+                            else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
+                            {
+                                doc.State = "RejectedByDgii";
+                                var errors = resultado.Mensajes != null && resultado.Mensajes.Count > 0
+                                    ? string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                                    : "Rechazado por DGII";
+                                doc.DgiiResponseXml = errors;
+                                await _db.SaveChangesAsync();
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error intentando reconciliar documento Uncertain {ENcf}", doc.ENcf);
+                }
+            }
 
             return Ok(new
             {
@@ -942,7 +1029,7 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <RNCEmisor>{doc.RncEmisor}</RNCEmisor>");
             var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
             sb.AppendLine($"      <RazonSocialEmisor>{EscapeXml(safeEmisorName)}</RazonSocialEmisor>");
-            var fechaEmision = NormalizeFechaDgii(dto?.Header?.FechaEmision);
+            var fechaEmision = NormalizeFechaDgii(dto?.Header?.FechaEmision ?? doc.CreatedAt.ToString("yyyy-MM-dd"));
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
             sb.AppendLine("    <Comprador>");
