@@ -14,6 +14,11 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpPost("send")]
         public async Task<ActionResult<EcfRecepcionResponse>> SendEcf([FromBody] SendEcfCommand command)
         {
+            if (!Request.Headers.ContainsKey("Idempotency-Key") && !Request.Headers.ContainsKey("X-Idempotency-Key"))
+            {
+                return BadRequest(new { error = "Header 'Idempotency-Key' is required for POST /api/ecf/send." });
+            }
+
             ModelState.Clear();
             var tenantId = !string.IsNullOrWhiteSpace(command.TenantId) 
                 ? command.TenantId 

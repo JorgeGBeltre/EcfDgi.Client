@@ -112,11 +112,23 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
 
                     await idempotencyStore.CompleteAsync(scopedKey, resultToCache);
                 }
+                else
+                {
+                    await idempotencyStore.FailOrReleaseAsync(scopedKey);
+                }
+            }
+            catch (Exception)
+            {
+                await idempotencyStore.FailOrReleaseAsync(scopedKey);
+                throw;
             }
             finally
             {
-                responseBuffer.Seek(0, SeekOrigin.Begin);
-                await responseBuffer.CopyToAsync(originalResponseBodyStream);
+                if (!context.Response.HasStarted)
+                {
+                    responseBuffer.Seek(0, SeekOrigin.Begin);
+                    await responseBuffer.CopyToAsync(originalResponseBodyStream);
+                }
                 context.Response.Body = originalResponseBodyStream;
             }
         }

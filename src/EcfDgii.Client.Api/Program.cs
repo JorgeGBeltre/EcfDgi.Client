@@ -26,8 +26,12 @@ using EcfDgii.Client.Api.Middleware;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Api.Infrastructure.Security;
 using EcfDgii.Client.Api.Infrastructure.Idempotency;
+using System.Globalization;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Shared.Common;
+
+CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -318,12 +322,6 @@ try
 
     app.MapHealthChecks("/health");
 
-    // Automatically apply migrations at startup for local/development environments.
-    // EnsureCreated() was used here previously: it only creates the schema when the database
-    // doesn't exist yet and never alters an existing one, so a redeployment against a database
-    // created by an earlier model version silently kept running with a stale, incomplete schema
-    // instead of failing loudly. Migrate() applies any pending migrations (including on first run,
-    // where it creates the schema from the migration history instead of the live model).
     // Automatically apply migrations at startup for relational databases.
     // Migrate() applies any pending migrations (including on first run,
     // where it creates the schema from the migration history instead of the live model).
@@ -338,7 +336,15 @@ try
     }
     catch (Exception ex)
     {
-        Log.Warning(ex, "Could not apply database migrations on startup: {Message}", ex.Message);
+        if (app.Environment.IsDevelopment())
+        {
+            Log.Warning(ex, "Could not apply database migrations on startup in Development: {Message}", ex.Message);
+        }
+        else
+        {
+            Log.Fatal(ex, "Failed to apply database migrations on startup: {Message}", ex.Message);
+            throw;
+        }
     }
 
     app.Run();

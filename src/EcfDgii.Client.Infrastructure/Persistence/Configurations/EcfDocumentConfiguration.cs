@@ -84,6 +84,9 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             builder.Property(e => e.SignedXmlContent)
                 .HasColumnName("signed_xml_content");
 
+            builder.Property(e => e.SignedRfceContent)
+                .HasColumnName("signed_rfce_content");
+
             builder.Property(e => e.DgiiResponseXml)
                 .HasColumnName("dgii_response_xml");
 

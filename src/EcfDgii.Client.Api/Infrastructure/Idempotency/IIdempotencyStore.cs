@@ -31,6 +31,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
     {
         Task<IdempotencyReservationResult> ReserveOrGetAsync(string key, string payloadHash, string workerKeyId);
         Task CompleteAsync(string key, IdempotentResult result);
+        Task FailOrReleaseAsync(string key);
     }
 
     public class DbIdempotencyStore : IIdempotencyStore
@@ -140,6 +141,19 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 existing.ContentType = result.ContentType;
                 existing.ResponseBody = result.Body;
                 existing.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync();
+            }
+        }
+
+        public async Task FailOrReleaseAsync(string key)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            var existing = await db.IdempotencyRecords.FirstOrDefaultAsync(r => r.Key == key);
+            if (existing != null && existing.Status == IdempotencyStatus.Processing)
+            {
+                db.IdempotencyRecords.Remove(existing);
                 await db.SaveChangesAsync();
             }
         }

@@ -188,6 +188,10 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("sent_to_dgii_at");
 
+                    b.Property<string>("SignedRfceContent")
+                        .HasColumnType("text")
+                        .HasColumnName("signed_rfce_content");
+
                     b.Property<string>("SignedXmlContent")
                         .HasColumnType("text")
                         .HasColumnName("signed_xml_content");

@@ -46,8 +46,17 @@ namespace EcfDgii.Client.Infrastructure.Persistence
                     ? await db.Database.BeginTransactionAsync(cancellationToken)
                     : null;
 
+                if (db.Database.IsRelational())
+                {
+                    var lockKey = $"{tenantId}:{tipoComprobante}";
+                    await db.Database.ExecuteSqlRawAsync(
+                        "SELECT pg_advisory_xact_lock(hashtext({0}))",
+                        new object[] { lockKey },
+                        cancellationToken);
+                }
+
                 var sequence = await db.Sequences
-                    .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.TipoComprobante == tipoComprobante && s.IsActive, cancellationToken);
+                    .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.TipoComprobante == tipoComprobante, cancellationToken);
 
                 if (sequence == null)
                 {
@@ -65,13 +74,14 @@ namespace EcfDgii.Client.Infrastructure.Persistence
                     if (altTenantId != null)
                     {
                         sequence = await db.Sequences
-                            .FirstOrDefaultAsync(s => s.TenantId == altTenantId && s.TipoComprobante == tipoComprobante && s.IsActive, cancellationToken);
-                        if (sequence != null)
-                        {
-                            // Adopt canonical scope
-                            sequence.TenantId = tenantId;
-                        }
+                            .FirstOrDefaultAsync(s => s.TenantId == altTenantId && s.TipoComprobante == tipoComprobante, cancellationToken);
                     }
+                }
+
+                if (sequence != null && !sequence.IsActive)
+                {
+                    throw new InvalidOperationException(
+                        $"El rango de secuencias e-NCF para el tenant '{sequence.TenantId}' y tipo '{tipoComprobante}' se encuentra inactivo. Debe activar o registrar un rango vigente autorizado por la DGII.");
                 }
 
                 if (sequence == null)
@@ -94,14 +104,28 @@ namespace EcfDgii.Client.Infrastructure.Persistence
                             FechaVencimiento = DateTimeOffset.UtcNow.AddYears(1),
                             UpdatedAt = DateTimeOffset.UtcNow
                         };
-                        db.Sequences.Add(sequence);
-                        await db.SaveChangesAsync(cancellationToken);
+                        try
+                        {
+                            db.Sequences.Add(sequence);
+                            await db.SaveChangesAsync(cancellationToken);
+                        }
+                        catch (DbUpdateException)
+                        {
+                            sequence = await db.Sequences
+                                .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.TipoComprobante == tipoComprobante, cancellationToken);
+                        }
                     }
                     else
                     {
                         throw new InvalidOperationException(
                             $"No existe un rango de secuencias e-NCF autorizado por la DGII para el tenant '{tenantId}' y tipo '{tipoComprobante}'. Debe registrar un rango autorizado antes de emitir comprobantes.");
                     }
+                }
+
+                if (sequence == null || !sequence.IsActive)
+                {
+                    throw new InvalidOperationException(
+                        $"No existe un rango de secuencias e-NCF activo para el tenant '{tenantId}' y tipo '{tipoComprobante}'.");
                 }
 
                 if (sequence.FechaVencimiento.HasValue && sequence.FechaVencimiento.Value < DateTimeOffset.UtcNow)

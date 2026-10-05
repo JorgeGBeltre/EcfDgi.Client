@@ -50,6 +50,22 @@ namespace EcfDgii.Client.Api.Controllers
         // The specific DB-level guarantee the concurrent-insert recovery below depends on.
         // Any other unique/FK/etc. violation is a real error and must not be treated as a race.
         private const string TenantSourceTxnUniqueConstraint = "uq_ecf_documents_tenant_source_txn";
+        private const string RncEmisorEncfUniqueConstraint = "uq_ecf_documents_rnc_emisor_encf";
+
+        private static bool ComputeIsDefaultFallback(string tenantId, CanonicalDocumentDto? dto, string? rawEnv, bool hasTenantHeader)
+        {
+            return tenantId == "default-tenant"
+                && string.IsNullOrWhiteSpace(rawEnv)
+                && !hasTenantHeader
+                && string.IsNullOrWhiteSpace(dto?.TenantId);
+        }
+
+        private static string? ExtractRazonSocialEmisor(string? xml)
+        {
+            if (string.IsNullOrWhiteSpace(xml)) return null;
+            var match = System.Text.RegularExpressions.Regex.Match(xml, @"<RazonSocialEmisor>(.*?)</RazonSocialEmisor>", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return match.Success ? match.Groups[1].Value.Trim() : null;
+        }
 
         // DGII's status query does not necessarily reflect a transmission the instant it lands —
         // there is a processing window where the e-CF was received but doesn't show up yet on
@@ -462,7 +478,7 @@ namespace EcfDgii.Client.Api.Controllers
             var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
             var ambiente = ResolveAmbienteEnum(rawEnv);
 
-            var isDefaultFallback = tenantId == "default-tenant" && string.IsNullOrWhiteSpace(rawEnv) && !Request.Headers.ContainsKey("X-Tenant-Id") && string.IsNullOrWhiteSpace(dto.TenantId);
+            var isDefaultFallback = ComputeIsDefaultFallback(tenantId, dto, rawEnv, Request.Headers.ContainsKey("X-Tenant-Id"));
             var sequenceScope = isDefaultFallback ? "default-tenant" : $"{tenantId}:{ambiente}";
 
             var editSequence = dto.SourceReference.EditSequence ?? string.Empty;
@@ -473,7 +489,7 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (existingDoc != null)
             {
-                return await HandleExistingDocumentAsync(existingDoc, dto, editSequence, ambiente);
+                return await HandleExistingDocumentAsync(existingDoc, dto, editSequence, ambiente, isDefaultFallback);
             }
 
             // HIGH-016: Pre-validar longitudes de cadenas para no quemar la secuencia e-NCF si SaveChanges falla por MaxLength
@@ -529,60 +545,57 @@ namespace EcfDgii.Client.Api.Controllers
             }
             catch (DbUpdateException ex) when (IsTenantTxnUniqueViolation(ex))
             {
-                // Another request for the same (TenantId, SourceTxnId, Ambiente) won the race and committed
-                // between our SELECT and this INSERT. Our eNCF is wasted — a gap in the sequence,
-                // not a duplicate — but we must not create a second document for this invoice.
+                // Another request for the same (TenantId, SourceTxnId, Ambiente) won the race.
                 // Detach our losing attempt and defer to the winner.
                 _db.Entry(doc).State = EntityState.Detached;
 
                 var winner = await _db.EcfDocuments
-                    .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == dto.SourceReference.TxnId && (d.Ambiente == null || d.Ambiente == ambiente.ToString()));
+                    .FirstOrDefaultAsync(d => d.TenantId == tenantId
+                                           && d.SourceTxnId == dto.SourceReference.TxnId
+                                           && (d.Ambiente == null || d.Ambiente == ambiente.ToString()));
                 if (winner == null)
                 {
-                    // Genuinely unexpected: the constraint fired, so a conflicting row must exist,
-                    // but it isn't visible to this re-query. Don't let this surface as a bare NRE
-                    // three layers down — log the real cause and fail with a clear, specific error.
                     _logger.LogError(ex,
-                        "Unique constraint {Constraint} violated for TenantId={TenantId} SourceTxnId={TxnId}, " +
-                        "but no conflicting document was found on re-fetch.",
-                        TenantSourceTxnUniqueConstraint, tenantId, dto.SourceReference.TxnId);
+                        "Unique constraint violated during e-CF insert for TenantId={TenantId} TxnId={TxnId}, but winner not found.",
+                        tenantId, dto.SourceReference.TxnId);
                     throw new InvalidOperationException(
-                        $"Unique constraint {TenantSourceTxnUniqueConstraint} was violated for TxnId " +
-                        $"'{dto.SourceReference.TxnId}', but no conflicting document could be found. " +
-                        "This should be impossible; investigate before retrying.", ex);
+                        $"Unique constraint '{TenantSourceTxnUniqueConstraint}' was violated for TenantId={tenantId} TxnId={dto.SourceReference.TxnId}, " +
+                        "but no matching document was found in the database. Concurrent transaction state may be inconsistent.",
+                        ex);
                 }
 
-                return await HandleExistingDocumentAsync(winner, dto, editSequence, ambiente);
+                return await HandleExistingDocumentAsync(winner, dto, editSequence, ambiente, isDefaultFallback);
             }
 
-            return await SignAndSendAsync(doc, dto, ambiente);
+            return await SignAndSendAsync(doc, dto, ambiente, isDefaultFallback);
         }
 
         private static bool IsTenantTxnUniqueViolation(DbUpdateException ex) =>
             ex.InnerException is PostgresException { SqlState: "23505" } pg
-            && pg.ConstraintName == TenantSourceTxnUniqueConstraint;
+            && (pg.ConstraintName == TenantSourceTxnUniqueConstraint
+                || pg.ConstraintName?.Contains("tenant_source_txn", StringComparison.OrdinalIgnoreCase) == true);
 
         /// <summary>
         /// Decides what to do with a document that already exists for this TxnId, based on how far
         /// the prior attempt got. Shared by the normal lookup path and by the concurrent-insert
         /// recovery path above, so both go through identical never-transmitted/uncertain/terminal logic.
         /// </summary>
-        private async Task<IActionResult> HandleExistingDocumentAsync(EcfDocument existingDoc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null)
+        private async Task<IActionResult> HandleExistingDocumentAsync(EcfDocument existingDoc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null, bool? isDefaultFallbackParam = null)
         {
-            var isDefaultFallback = existingDoc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto.Environment) && string.IsNullOrWhiteSpace(dto.TenantId);
+            var isDefaultFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(existingDoc.TenantId, dto, dto.Environment, false);
             if (NeverTransmittedStates.Contains(existingDoc.State))
             {
                 // Nothing was ever handed to DGII for this eNCF. Safe to reapply the incoming
                 // content — whether or not it changed — and retry under the same eNCF.
                 ApplyCanonicalContent(existingDoc, dto, editSequence, isDefaultFallback);
                 await _db.SaveChangesAsync();
-                return await SignAndSendAsync(existingDoc, dto, ambiente);
+                return await SignAndSendAsync(existingDoc, dto, ambiente, isDefaultFallback);
             }
 
             if (existingDoc.State == "Uncertain")
             {
                 // We don't know if the prior attempt reached DGII. Ask before doing anything else.
-                return await ReconcileUncertainAsync(existingDoc, dto, editSequence, ambiente);
+                return await ReconcileUncertainAsync(existingDoc, dto, editSequence, ambiente, isDefaultFallback);
             }
 
             if (existingDoc.State == "RejectedByDgii")
@@ -597,7 +610,7 @@ namespace EcfDgii.Client.Api.Controllers
 
                 var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
                 var effectiveAmbiente = ambiente ?? ResolveAmbienteEnum(rawEnv);
-                var isFallback = tenantId == "default-tenant" && string.IsNullOrWhiteSpace(rawEnv) && !Request.Headers.ContainsKey("X-Tenant-Id") && string.IsNullOrWhiteSpace(dto.TenantId);
+                var isFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(tenantId, dto, rawEnv, Request.Headers.ContainsKey("X-Tenant-Id"));
                 var sequenceScope = isFallback ? "default-tenant" : $"{tenantId}:{effectiveAmbiente}";
                 string newEncf;
                 try
@@ -621,7 +634,7 @@ namespace EcfDgii.Client.Api.Controllers
                 ApplyCanonicalContent(existingDoc, dto, editSequence, isFallback);
                 await _db.SaveChangesAsync();
 
-                return await SignAndSendAsync(existingDoc, dto, effectiveAmbiente);
+                return await SignAndSendAsync(existingDoc, dto, effectiveAmbiente, isFallback);
             }
 
             // Terminal / known-transmitted states (AwaitingTransmission, Signed, RejectedByDgii, ...).
@@ -688,7 +701,7 @@ namespace EcfDgii.Client.Api.Controllers
         /// received it. Ask DGII directly instead of guessing: resending blindly risks a duplicate
         /// e-CF under the same eNCF, and silently giving up risks losing one DGII never got.
         /// </summary>
-        private async Task<IActionResult> ReconcileUncertainAsync(EcfDocument doc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null)
+        private async Task<IActionResult> ReconcileUncertainAsync(EcfDocument doc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null, bool? isDefaultFallbackParam = null)
         {
             var uncertainSince = doc.UpdatedAt.HasValue
                 ? new DateTimeOffset(doc.UpdatedAt.Value, TimeSpan.Zero)
@@ -709,7 +722,7 @@ namespace EcfDgii.Client.Api.Controllers
             }
 
             var effectiveAmbiente = ambiente ?? _defaultAmbiente;
-            var isDefaultFallback = doc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto.Environment) && string.IsNullOrWhiteSpace(dto.TenantId);
+            var isDefaultFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(doc.TenantId, dto, dto.Environment, false);
             var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, dto.Certificate, isDefaultFallback);
             var effectiveClient = ResolveEcfClient(doc.RncEmisor, effectiveSigner, effectiveAmbiente, isDefaultFallback);
 
@@ -749,7 +762,7 @@ namespace EcfDgii.Client.Api.Controllers
             // DGII confirms it never received the prior attempt: safe to treat as never-transmitted.
             ApplyCanonicalContent(doc, dto, editSequence, isDefaultFallback);
             await _db.SaveChangesAsync();
-            return await SignAndSendAsync(doc, dto, ambiente);
+            return await SignAndSendAsync(doc, dto, ambiente, isDefaultFallback);
         }
 
         private static bool IsNotFoundByDgii(ConsultaEstadoResponse status) =>
@@ -760,10 +773,10 @@ namespace EcfDgii.Client.Api.Controllers
         /// (either just-allocated, or an existing document being retried). Safe to call
         /// repeatedly for the same document: it never touches sequence allocation.
         /// </summary>
-        private async Task<IActionResult> SignAndSendAsync(EcfDocument doc, CanonicalDocumentDto? dto = null, AmbienteEnum? ambiente = null)
+        private async Task<IActionResult> SignAndSendAsync(EcfDocument doc, CanonicalDocumentDto? dto = null, AmbienteEnum? ambiente = null, bool? isDefaultFallbackParam = null)
         {
             var effectiveAmbiente = ambiente ?? _defaultAmbiente;
-            var isDefaultFallback = doc.TenantId == "default-tenant" && string.IsNullOrWhiteSpace(dto?.Environment) && string.IsNullOrWhiteSpace(dto?.TenantId);
+            var isDefaultFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(doc.TenantId, dto, dto?.Environment, false);
             var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, dto?.Certificate, isDefaultFallback);
             var effectiveClient = ResolveEcfClient(doc.RncEmisor, effectiveSigner, effectiveAmbiente, isDefaultFallback);
 
@@ -854,16 +867,43 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     var emisorRazon = !isDefaultFallback && !string.IsNullOrWhiteSpace(dto?.Header?.RazonSocialEmisor)
                         ? dto.Header.RazonSocialEmisor
-                        : _emisorRazonSocial;
+                        : (ExtractRazonSocialEmisor(doc.XmlContent) ?? _emisorRazonSocial);
 
                     var rfceXml = BuildRfceXml(doc, dto, emisorRazon);
                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
-                    var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+                    var secCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedRfce);
 
+                    doc.SignedRfceContent = signedRfce;
+                    doc.SecurityCode = secCode;
+
+                    if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
+                    {
+                        var xsdFileName = EcfXsdFileNameResolver.Resolve(signedRfce);
+                        if (!string.IsNullOrEmpty(xsdFileName))
+                        {
+                            var xsdPath = Path.Combine(_ecfClientOptions.XsdDirectoryPath, xsdFileName);
+                            var xsdResult = _schemaValidator.Validate(signedRfce, xsdPath);
+                            if (!xsdResult.IsValid)
+                            {
+                                doc.State = "SchemaInvalid";
+                                await _db.SaveChangesAsync();
+                                _logger.LogError(
+                                    "RFCE {ENcf} (TxnId {TxnId}) falló validación XSD local: {Errors}",
+                                    doc.ENcf, doc.SourceTxnId, string.Join(" | ", xsdResult.Errors));
+                                return BadRequest(new
+                                {
+                                    error = "El XML RFCE firmado no es válido contra el esquema DGII (validación local).",
+                                    details = xsdResult.Errors,
+                                });
+                            }
+                        }
+                    }
+
+                    var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
                     var rfceResp = await effectiveClient.SendRfceAsync(signedRfce, rfceFileName);
                     if (rfceResp != null && (rfceResp.Codigo == 1 || string.Equals(rfceResp.Estado?.Trim(), "Aceptado", StringComparison.OrdinalIgnoreCase)))
                     {
-                        doc.TrackId = doc.SecurityCode;
+                        doc.TrackId = null; // RecepcionFC issues no TrackId
                         doc.State = "AcceptedByDgii";
                         doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                         doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
@@ -872,6 +912,7 @@ namespace EcfDgii.Client.Api.Controllers
                     else if (rfceResp != null && string.Equals(rfceResp.Estado?.Trim(), "Rechazado", StringComparison.OrdinalIgnoreCase))
                     {
                         doc.State = "RejectedByDgii";
+                        doc.TrackId = null;
                         var errors = rfceResp.Mensajes != null && rfceResp.Mensajes.Count > 0
                             ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
                             : (rfceResp.Estado ?? "Rechazado por RecepcionFC");
@@ -882,6 +923,7 @@ namespace EcfDgii.Client.Api.Controllers
                     {
                         // HIGH-041: Respuesta nula o no concluyente de transporte NO es un veredicto de rechazo DGII; debe ser Uncertain
                         doc.State = "Uncertain";
+                        doc.TrackId = null;
                         doc.DgiiResponseXml = rfceResp?.Estado ?? "Respuesta nula o no concluyente de transporte RFCE";
                         _logger.LogWarning("e-CF de Consumo {ENcf} no obtuvo respuesta concluyente de RFCE. Marcado como 'Uncertain'.", doc.ENcf);
                     }
@@ -958,7 +1000,7 @@ namespace EcfDgii.Client.Api.Controllers
                 state = doc.State,
                 trackId = doc.TrackId,
                 securityCode = doc.SecurityCode,
-                signedXml = doc.SignedXmlContent,
+                signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml
             });
         }
@@ -995,7 +1037,7 @@ namespace EcfDgii.Client.Api.Controllers
                 trackId = doc.TrackId,
                 securityCode = doc.SecurityCode,
                 receiptDate = doc.ReceiptDate,
-                signedXml = doc.SignedXmlContent,
+                signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml
             });
         }
@@ -1091,7 +1133,7 @@ namespace EcfDgii.Client.Api.Controllers
                                     string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase) ||
                                     status.Codigo == "1")
                                 {
-                                    doc.TrackId = doc.SecurityCode;
+                                    doc.TrackId = null; // RecepcionFC issues no TrackId
                                     doc.State = "AcceptedByDgii";
                                     doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                                     doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {status.Estado ?? "Aceptado"}";
@@ -1100,20 +1142,44 @@ namespace EcfDgii.Client.Api.Controllers
                                 else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
                                 {
                                     doc.State = "RejectedByDgii";
+                                    doc.TrackId = null;
                                     doc.DgiiResponseXml = $"Rechazado por DGII (RecepcionFC): {status.Estado}";
                                     await _db.SaveChangesAsync();
                                 }
                                 else if (IsNotFoundByDgii(status))
                                 {
-                                    var emisorRazon = _emisorRazonSocial;
+                                    var emisorRazon = ExtractRazonSocialEmisor(doc.XmlContent) ?? _emisorRazonSocial;
                                     var rfceXml = BuildRfceXml(doc, null, emisorRazon);
                                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
-                                    var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+                                    doc.SignedRfceContent = signedRfce;
+                                    doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedRfce);
 
+                                    // Local XSD check for RFCE
+                                    if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
+                                    {
+                                        var xsdFileName = EcfXsdFileNameResolver.Resolve(signedRfce);
+                                        if (!string.IsNullOrEmpty(xsdFileName))
+                                        {
+                                            var xsdPath = Path.Combine(_ecfClientOptions.XsdDirectoryPath, xsdFileName);
+                                            var xsdResult = _schemaValidator.Validate(signedRfce, xsdPath);
+                                            if (!xsdResult.IsValid)
+                                            {
+                                                doc.State = "SchemaInvalid";
+                                                await _db.SaveChangesAsync();
+                                                return BadRequest(new
+                                                {
+                                                    error = "El XML RFCE firmado no es válido contra el esquema DGII.",
+                                                    details = xsdResult.Errors
+                                                });
+                                            }
+                                        }
+                                    }
+
+                                    var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
                                     var rfceResp = await client.SendRfceAsync(signedRfce, rfceFileName);
                                     if (rfceResp != null && (rfceResp.Codigo == 1 || string.Equals(rfceResp.Estado?.Trim(), "Aceptado", StringComparison.OrdinalIgnoreCase)))
                                     {
-                                        doc.TrackId = doc.SecurityCode;
+                                        doc.TrackId = null;
                                         doc.State = "AcceptedByDgii";
                                         doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                                         doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
@@ -1123,6 +1189,7 @@ namespace EcfDgii.Client.Api.Controllers
                                     else if (rfceResp != null)
                                     {
                                         doc.State = "RejectedByDgii";
+                                        doc.TrackId = null;
                                         var errors = rfceResp.Mensajes != null && rfceResp.Mensajes.Count > 0
                                             ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
                                             : (rfceResp.Estado ?? "Rechazado por RecepcionFC");
@@ -1173,7 +1240,7 @@ namespace EcfDgii.Client.Api.Controllers
                 trackId = doc.TrackId,
                 securityCode = doc.SecurityCode,
                 receiptDate = doc.ReceiptDate,
-                signedXml = doc.SignedXmlContent,
+                signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml
             });
         }
@@ -1191,13 +1258,14 @@ namespace EcfDgii.Client.Api.Controllers
             var doc = await _db.EcfDocuments
                 .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
 
-            if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+            if (doc == null || (string.IsNullOrWhiteSpace(doc.SignedXmlContent) && string.IsNullOrWhiteSpace(doc.SignedRfceContent)))
             {
                 return NotFound(new { error = $"Document with source TxnId '{txnId}' not found or has no XML." });
             }
 
             var fileName = $"{doc.RncEmisor}-{doc.ENcf}.xml";
-            return File(Encoding.UTF8.GetBytes(doc.SignedXmlContent), "application/xml", fileName);
+            var xmlToReturn = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent!;
+            return File(Encoding.UTF8.GetBytes(xmlToReturn), "application/xml", fileName);
         }
 
         [HttpGet("{id:guid}/xml")]
@@ -1213,16 +1281,17 @@ namespace EcfDgii.Client.Api.Controllers
             var doc = await _db.EcfDocuments
                 .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == id);
 
-            if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+            if (doc == null || (string.IsNullOrWhiteSpace(doc.SignedXmlContent) && string.IsNullOrWhiteSpace(doc.SignedRfceContent)))
             {
                 return NotFound(new { error = $"Document '{id}' not found or has no XML." });
             }
 
             var fileName = $"{doc.RncEmisor}-{doc.ENcf}.xml";
-            return File(Encoding.UTF8.GetBytes(doc.SignedXmlContent), "application/xml", fileName);
+            var xmlToReturn = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent!;
+            return File(Encoding.UTF8.GetBytes(xmlToReturn), "application/xml", fileName);
         }
 
-        private static string BuildRfceXml(EcfDocument doc, CanonicalDocumentDto? dto, string emisorRazonSocial)
+        private string BuildRfceXml(EcfDocument doc, CanonicalDocumentDto? dto, string emisorRazonSocial)
         {
             var sb = new StringBuilder();
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
@@ -1239,7 +1308,7 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <RNCEmisor>{doc.RncEmisor}</RNCEmisor>");
             var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
             sb.AppendLine($"      <RazonSocialEmisor>{EscapeXml(safeEmisorName)}</RazonSocialEmisor>");
-            var fechaEmision = NormalizeFechaDgii(dto?.Header?.FechaEmision ?? doc.CreatedAt.ToString("yyyy-MM-dd"));
+            var fechaEmision = NormalizeFechaDgii(dto?.Header?.FechaEmision);
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
             sb.AppendLine("    <Comprador>");
@@ -1261,16 +1330,16 @@ namespace EcfDgii.Client.Api.Controllers
             if (doc.ItbisAmount > 0)
             {
                 var montoGravado = Math.Max(0m, doc.TotalAmount - doc.ItbisAmount);
-                sb.AppendLine($"      <MontoGravadoTotal>{montoGravado:F2}</MontoGravadoTotal>");
-                sb.AppendLine($"      <MontoGravadoI1>{montoGravado:F2}</MontoGravadoI1>");
-                sb.AppendLine($"      <TotalITBIS>{doc.ItbisAmount:F2}</TotalITBIS>");
-                sb.AppendLine($"      <TotalITBIS1>{doc.ItbisAmount:F2}</TotalITBIS1>");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{montoGravado:F2}</MontoGravadoTotal>");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI1>{montoGravado:F2}</MontoGravadoI1>");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{doc.ItbisAmount:F2}</TotalITBIS>");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS1>{doc.ItbisAmount:F2}</TotalITBIS1>");
             }
             else
             {
-                sb.AppendLine($"      <MontoExento>{doc.TotalAmount:F2}</MontoExento>");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{doc.TotalAmount:F2}</MontoExento>");
             }
-            sb.AppendLine($"      <MontoTotal>{doc.TotalAmount:F2}</MontoTotal>");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{doc.TotalAmount:F2}</MontoTotal>");
             sb.AppendLine("    </Totales>");
             sb.AppendLine($"    <CodigoSeguridadeCF>{doc.SecurityCode}</CodigoSeguridadeCF>");
             sb.AppendLine("  </Encabezado>");
@@ -1278,7 +1347,7 @@ namespace EcfDgii.Client.Api.Controllers
             return sb.ToString().Trim();
         }
 
-        private static string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial)
+        private string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial)
         {
             var sb = new StringBuilder();
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
@@ -1478,21 +1547,21 @@ namespace EcfDgii.Client.Api.Controllers
                     // El esquema solo admite MontoExento y MontoTotal (prohíbe MontoGravadoTotal y TotalITBIS).
                     if (total > 0)
                     {
-                        sb.AppendLine($"      <MontoExento>{total:F2}</MontoExento>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{total:F2}</MontoExento>");
                     }
-                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
                 }
                 else if (tipoEcf == "47")
                 {
                     // Tipo 47 (Pagos al Exterior): exento de ITBIS local, retención de ISR.
                     if (total > 0)
                     {
-                        sb.AppendLine($"      <MontoExento>{total:F2}</MontoExento>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{total:F2}</MontoExento>");
                     }
-                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
                     if (dto.Retention?.MontoIsrRetenido is { } isrTotal && isrTotal > 0)
                     {
-                        sb.AppendLine($"      <TotalISRRetencion>{isrTotal:F2}</TotalISRRetencion>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalISRRetencion>{isrTotal:F2}</TotalISRRetencion>");
                     }
                 }
                 else if (tipoEcf == "46")
@@ -1501,13 +1570,13 @@ namespace EcfDgii.Client.Api.Controllers
                     // El esquema XSD 46 solo admite MontoGravadoTotal, MontoGravadoI3, ITBIS3, TotalITBIS, TotalITBIS3, MontoTotal.
                     if (total > 0)
                     {
-                        sb.AppendLine($"      <MontoGravadoTotal>{total:F2}</MontoGravadoTotal>");
-                        sb.AppendLine($"      <MontoGravadoI3>{total:F2}</MontoGravadoI3>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{total:F2}</MontoGravadoTotal>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI3>{total:F2}</MontoGravadoI3>");
                         sb.AppendLine("      <ITBIS3>0</ITBIS3>");
                         sb.AppendLine("      <TotalITBIS>0.00</TotalITBIS>");
                         sb.AppendLine("      <TotalITBIS3>0.00</TotalITBIS3>");
                     }
-                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
                 }
                 else
                 {
@@ -1517,7 +1586,7 @@ namespace EcfDgii.Client.Api.Controllers
                     // buckets this codebase doesn't populate is valid — misplacing one is not.
                     if (gravado > 0)
                     {
-                        sb.AppendLine($"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
                     }
 
                     // Slot 1..3 = DGII's 18% / 16% / 0% ITBIS buckets. A caller that sends no buckets
@@ -1549,12 +1618,12 @@ namespace EcfDgii.Client.Api.Controllers
                     {
                         if (slotBase[slot] is { } montoGravado)
                         {
-                            sb.AppendLine($"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
                         }
                     }
                     if (exento > 0)
                     {
-                        sb.AppendLine($"      <MontoExento>{exento:F2}</MontoExento>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{exento:F2}</MontoExento>");
                     }
                     // ITBIS1/2/3 declare the RATE of each bucket (Integer2ValidationType — a 1-2 digit
                     // integer, not an amount); TotalITBIS1/2/3 further down carry the amounts.
@@ -1565,24 +1634,24 @@ namespace EcfDgii.Client.Api.Controllers
                             sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
                         }
                     }
-                    sb.AppendLine($"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
                     for (var slot = 1; slot <= 3; slot++)
                     {
                         if (slotTax[slot] is { } montoItbis)
                         {
-                            sb.AppendLine($"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
                         }
                     }
-                    sb.AppendLine($"      <MontoTotal>{total:F2}</MontoTotal>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
                     if (tipoEcf is "31" or "33" or "34" or "41")
                     {
                         if (dto.Retention?.MontoItbisRetenido is { } itbisRet && itbisRet > 0)
                         {
-                            sb.AppendLine($"      <TotalITBISRetenido>{itbisRet:F2}</TotalITBISRetenido>");
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBISRetenido>{itbisRet:F2}</TotalITBISRetenido>");
                         }
                         if (dto.Retention?.MontoIsrRetenido is { } isrRet && isrRet > 0)
                         {
-                            sb.AppendLine($"      <TotalISRRetencion>{isrRet:F2}</TotalISRRetencion>");
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalISRRetencion>{isrRet:F2}</TotalISRRetencion>");
                         }
                     }
                 }
@@ -1626,19 +1695,19 @@ namespace EcfDgii.Client.Api.Controllers
                     {
                         sb.AppendLine($"      <DescripcionItem>{EscapeXml(item.Description)}</DescripcionItem>");
                     }
-                    sb.AppendLine($"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
-                    sb.AppendLine($"      <PrecioUnitarioItem>{item.UnitPrice:F2}</PrecioUnitarioItem>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <PrecioUnitarioItem>{item.UnitPrice:F2}</PrecioUnitarioItem>");
                     if (tipoEcf is not "43" and not "47" && item.DiscountAmount > 0)
                     {
-                        sb.AppendLine($"      <DescuentoMonto>{item.DiscountAmount:F2}</DescuentoMonto>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <DescuentoMonto>{item.DiscountAmount:F2}</DescuentoMonto>");
                         sb.AppendLine("      <TablaSubDescuento>");
                         sb.AppendLine("        <SubDescuento>");
                         sb.AppendLine("          <TipoSubDescuento>$</TipoSubDescuento>");
-                        sb.AppendLine($"          <MontoSubDescuento>{item.DiscountAmount:F2}</MontoSubDescuento>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"          <MontoSubDescuento>{item.DiscountAmount:F2}</MontoSubDescuento>");
                         sb.AppendLine("        </SubDescuento>");
                         sb.AppendLine("      </TablaSubDescuento>");
                     }
-                    sb.AppendLine($"      <MontoItem>{item.MontoItem:F2}</MontoItem>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoItem>{item.MontoItem:F2}</MontoItem>");
                     sb.AppendLine("    </Item>");
                 }
             }
@@ -1652,8 +1721,8 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine($"      <IndicadorBienoServicio>{indicadorBienoServicio}</IndicadorBienoServicio>");
                 sb.AppendLine("      <CantidadItem>1.00</CantidadItem>");
                 var defaultTotal = Math.Max(0m, dto.Totals?.MontoTotal ?? 0);
-                sb.AppendLine($"      <PrecioUnitarioItem>{defaultTotal:F2}</PrecioUnitarioItem>");
-                sb.AppendLine($"      <MontoItem>{defaultTotal:F2}</MontoItem>");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <PrecioUnitarioItem>{defaultTotal:F2}</PrecioUnitarioItem>");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoItem>{defaultTotal:F2}</MontoItem>");
                 sb.AppendLine("    </Item>");
             }
             sb.AppendLine("  </DetallesItems>");
@@ -1704,7 +1773,7 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("  </InformacionReferencia>");
             }
 
-            var fechaHoraFirma = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
+            var fechaHoraFirma = _clock.GetDominicanNow().ToString("dd-MM-yyyy HH:mm:ss", CultureInfo.InvariantCulture);
             sb.AppendLine($"  <FechaHoraFirma>{fechaHoraFirma}</FechaHoraFirma>");
             sb.AppendLine("</ECF>");
             return sb.ToString();
@@ -1751,11 +1820,11 @@ namespace EcfDgii.Client.Api.Controllers
             "MM/dd/yyyy"
         };
 
-        private static string NormalizeFechaDgii(string? value)
+        private string NormalizeFechaDgii(string? value)
         {
             if (string.IsNullOrWhiteSpace(value))
             {
-                return DateTime.Today.ToString(DgiiDateFormat, CultureInfo.InvariantCulture);
+                return _clock.GetDominicanNow().Date.ToString(DgiiDateFormat, CultureInfo.InvariantCulture);
             }
 
             var trimmed = value.Trim();

@@ -29,6 +29,7 @@ services:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
       - ASPNETCORE_URLS=http://+:8080
       - DOTNET_SYSTEM_NET_DISABLE_IPV6=1
+      - TZ=America/Santo_Domingo
       # Conexión compartida a la base de datos central ecf_db
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT:-}
       - ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf_dgii_redis:6379}

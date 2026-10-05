@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using EcfDgii.Client.Infrastructure;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Domain.Entities;
+using EcfDgii.Client.Domain.Common;
 
 namespace EcfDgii.Client.Api.Services
 {
@@ -106,12 +107,26 @@ namespace EcfDgii.Client.Api.Services
 
                 if (age >= options.MaxPollingWindow)
                 {
-                    doc.State = "RequiresManualReview";
                     doc.LastStatusCheckAt = now;
-                    logger.LogCritical(
-                        "e-CF {ENcf} (RNC {RncEmisor}) lleva {Hours}h sin confirmación definitiva de DGII " +
-                        "(ventana de {MaxHours}h agotada); requiere revisión manual.",
-                        doc.ENcf, doc.RncEmisor, age.TotalHours, options.MaxPollingWindow.TotalHours);
+                    var isTest = !string.IsNullOrWhiteSpace(doc.Ambiente) &&
+                                 EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente) == EcfEnvironment.Test;
+                    if (isTest)
+                    {
+                        // In non-production test environments (PreCertificacion / Test), stale documents have no fiscal consequence;
+                        // mark Expired and log at Warning rather than escalating to RequiresManualReview / LogCritical.
+                        doc.State = "Expired";
+                        logger.LogWarning(
+                            "e-CF de prueba {ENcf} (RNC {RncEmisor}, Ambiente {Ambiente}) no se confirmó tras {Hours}h; marcado como Expired.",
+                            doc.ENcf, doc.RncEmisor, doc.Ambiente, age.TotalHours);
+                    }
+                    else
+                    {
+                        doc.State = "RequiresManualReview";
+                        logger.LogCritical(
+                            "e-CF {ENcf} (RNC {RncEmisor}) lleva {Hours}h sin confirmación definitiva de DGII " +
+                            "(ventana de {MaxHours}h agotada); requiere revisión manual.",
+                            doc.ENcf, doc.RncEmisor, age.TotalHours, options.MaxPollingWindow.TotalHours);
+                    }
                     continue;
                 }
 
@@ -123,9 +138,7 @@ namespace EcfDgii.Client.Api.Services
                         try
                         {
                             var dynamicSigner = await signerResolver.ResolveSignerAsync(doc.RncEmisor, ct);
-                            var isProd = string.Equals(doc.Ambiente, "Produccion", StringComparison.OrdinalIgnoreCase) ||
-                                         string.Equals(doc.Ambiente, "Ecf", StringComparison.OrdinalIgnoreCase);
-                            var env = isProd ? EcfEnvironment.Prod : EcfEnvironment.Cert;
+                            var env = EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente);
 
                             var clientOpts = new EcfClientOptions
                             {

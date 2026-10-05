@@ -10,9 +10,10 @@ using EcfDgii.Client.Domain.Exceptions;
 
 namespace EcfDgii.Client.Infrastructure.Security
 {
-    public class EcfXmlSigner : IEcfXmlSigner
+    public class EcfXmlSigner : IEcfXmlSigner, IDisposable
     {
         private readonly X509Certificate2 _certificate;
+        private bool _disposed;
 
         /// <inheritdoc />
         public bool UsesFallbackCertificate { get; }
@@ -50,7 +51,8 @@ namespace EcfDgii.Client.Infrastructure.Security
             doc.LoadXml(xmlContent);
 
             var signedXml = new SignedXml(doc);
-            signedXml.SigningKey = _certificate.GetRSAPrivateKey() ?? throw new EcfSigningException("El certificado no contiene una clave privada RSA válida.");
+            using var rsa = _certificate.GetRSAPrivateKey() ?? throw new EcfSigningException("El certificado no contiene una clave privada RSA válida.");
+            signedXml.SigningKey = rsa;
             if (signedXml.SignedInfo != null)
             {
                 signedXml.SignedInfo.SignatureMethod = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
@@ -150,6 +152,16 @@ namespace EcfDgii.Client.Infrastructure.Security
                 if (s[j] != i[j]) return false;
             }
             return true;
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _disposed = true;
+                _certificate.Dispose();
+                GC.SuppressFinalize(this);
+            }
         }
     }
 }

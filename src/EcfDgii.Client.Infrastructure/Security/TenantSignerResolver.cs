@@ -134,6 +134,10 @@ namespace EcfDgii.Client.Infrastructure.Security
                                 var cert = X509CertificateLoader.LoadPkcs12(rawData, password, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
                                 var signer = new EcfXmlSigner(cert);
                                 _logger.LogInformation("Certificado digital cargado dinámicamente desde BD para RNC {Rnc} ({CompanyName})", cleanRnc, companyName);
+                                if (_cache.TryRemove(cleanRnc, out var oldSigner))
+                                {
+                                    oldSigner.Signer.Dispose();
+                                }
                                 _cache[cleanRnc] = (signer, DateTime.UtcNow.Add(CacheDuration));
                                 return signer;
                             }

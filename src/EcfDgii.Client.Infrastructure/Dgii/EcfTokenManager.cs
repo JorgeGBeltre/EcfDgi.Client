@@ -116,6 +116,22 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                             return cachedTokenObj.Token;
                         }
                     }
+                    else
+                    {
+                        // MED-071: Another node holds the renewal lock. Wait and poll cache to use the winner's token.
+                        var waitDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
+                        while (DateTimeOffset.UtcNow < waitDeadline && !ct.IsCancellationRequested)
+                        {
+                            await Task.Delay(200, ct);
+                            var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                            if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                            {
+                                _cachedToken = cachedTokenObj.Token;
+                                _tokenExpiry = cachedTokenObj.Expiration;
+                                return _cachedToken;
+                            }
+                        }
+                    }
                 }
 
                 await _renewLock.WaitAsync(ct);

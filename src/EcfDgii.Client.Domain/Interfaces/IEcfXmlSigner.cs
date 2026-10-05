@@ -1,6 +1,6 @@
 namespace EcfDgii.Client.Domain.Interfaces
 {
-    public interface IEcfXmlSigner
+    public interface IEcfXmlSigner : System.IDisposable
     {
         string SignXml(string xmlContent, string rncEmisor);
         string ExtractSignatureValue(string signedXml);
@@ -15,5 +15,7 @@ namespace EcfDgii.Client.Domain.Interfaces
         /// False is the safe default for any implementation that always holds a real credential.
         /// </summary>
         bool UsesFallbackCertificate => false;
+
+        void System.IDisposable.Dispose() { }
     }
 }
