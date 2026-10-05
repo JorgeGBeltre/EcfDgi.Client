@@ -301,6 +301,15 @@ try
     // Configure the HTTP request pipeline
     app.UseMiddleware<GlobalExceptionMiddleware>();
 
+    // MED-142: Forwarded headers for reverse proxy (Traefik / Nginx) to reflect client IP and HTTPS scheme
+    var forwardedHeadersOptions = new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+    };
+    forwardedHeadersOptions.KnownIPNetworks.Clear();
+    forwardedHeadersOptions.KnownProxies.Clear();
+    app.UseForwardedHeaders(forwardedHeadersOptions);
+
     app.UseSerilogRequestLogging();
 
     if (app.Environment.IsDevelopment())
@@ -311,7 +320,12 @@ try
 
     if (!app.Environment.IsDevelopment())
     {
-        app.UseHttpsRedirection();
+        // HTTPS redirection only when port is configured or not behind TLS terminating reverse proxy
+        var httpsPort = app.Configuration["HTTPS_PORT"] ?? app.Configuration["ASPNETCORE_HTTPS_PORT"];
+        if (!string.IsNullOrWhiteSpace(httpsPort))
+        {
+            app.UseHttpsRedirection();
+        }
     }
 
     // Automatically apply migrations at startup for relational databases before serving traffic.

@@ -47,17 +47,40 @@ namespace EcfDgii.Client.Infrastructure.Dgii
         /// unbounded request storm against DGII.
         /// </summary>
         private async Task<HttpResponseMessage> SendWithReactiveAuthAsync(
-            Func<string, HttpRequestMessage> buildRequest, CancellationToken ct)
+            Func<string, HttpRequestMessage> buildRequest, CancellationToken ct, bool isIdempotentQuery = false)
         {
             var token = _tokenManager != null ? await _tokenManager.GetTokenAsync(ct) : string.Empty;
-            var response = await _httpClient.SendAsync(buildRequest(token), ct);
+            HttpResponseMessage response;
+            int retryCount = 0;
+            const int maxRetries = 2;
 
-            if (response.StatusCode == HttpStatusCode.Unauthorized && _tokenManager != null)
+            while (true)
             {
-                response.Dispose();
-                await _tokenManager.InvalidateAsync(ct);
-                var freshToken = await _tokenManager.GetTokenAsync(ct);
-                response = await _httpClient.SendAsync(buildRequest(freshToken), ct);
+                response = await _httpClient.SendAsync(buildRequest(token), ct);
+
+                if (response.StatusCode == HttpStatusCode.Unauthorized && _tokenManager != null)
+                {
+                    response.Dispose();
+                    await _tokenManager.InvalidateAsync(ct);
+                    var freshToken = await _tokenManager.GetTokenAsync(ct);
+                    response = await _httpClient.SendAsync(buildRequest(freshToken), ct);
+                    break;
+                }
+
+                // MED-144: Retry on transient 5xx/gateway timeouts for idempotent queries only (never for document submissions)
+                if (isIdempotentQuery && 
+                    (response.StatusCode == HttpStatusCode.BadGateway || 
+                     response.StatusCode == HttpStatusCode.ServiceUnavailable || 
+                     response.StatusCode == HttpStatusCode.GatewayTimeout) && 
+                    retryCount < maxRetries)
+                {
+                    retryCount++;
+                    response.Dispose();
+                    await Task.Delay(TimeSpan.FromMilliseconds(150 * Math.Pow(2, retryCount)), ct);
+                    continue;
+                }
+
+                break;
             }
 
             if (!response.IsSuccessStatusCode)
@@ -124,7 +147,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<ConsultaResultadoResponse>(responseBody, JsonOptions)!;
@@ -142,7 +165,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<ConsultaEstadoResponse>(responseBody, JsonOptions)!;
@@ -156,7 +179,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<List<TrackIdDetalle>>(responseBody, JsonOptions)!;
@@ -170,7 +193,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<RfceConsultaResponse>(responseBody, JsonOptions)!;

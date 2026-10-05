@@ -46,7 +46,7 @@ namespace EcfDgii.Client
                 return;
             }
 
-            var httpClient = new HttpClient();
+            var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
 
             if (_options.Mode == IntegrationMode.DgiiDirect)
             {
