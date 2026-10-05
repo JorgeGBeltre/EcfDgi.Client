@@ -241,7 +241,7 @@ namespace EcfDgii.Client.UnitTests.Services
             using var db = NewDb();
             db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "RejectedByDgii"));
             db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "AcceptedByDgii"));
-            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "Uncertain"));
+            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "Received"));
             await db.SaveChangesAsync();
 
             var ecfClientMock = new Mock<IEcfClient>();
@@ -249,6 +249,23 @@ namespace EcfDgii.Client.UnitTests.Services
 
             ecfClientMock.Verify(c => c.ConsultarEstadoAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task ReconcileAsync_SweepsUncertainDocuments_AndReconcilesThem()
+        {
+            using var db = NewDb();
+            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "Uncertain"));
+            await db.SaveChangesAsync();
+
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync(
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaEstadoResponse { Estado = "Aceptado" });
+
+            await MakeReconciler(db, ecfClientMock).ReconcileAsync(CancellationToken.None);
+
+            Assert.Equal("AcceptedByDgii", db.EcfDocuments.Single().State);
         }
 
         [Fact]

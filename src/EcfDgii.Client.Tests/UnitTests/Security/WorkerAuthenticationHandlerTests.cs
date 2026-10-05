@@ -131,6 +131,43 @@ namespace UnitTests.Security
             Assert.Equal("worker", result.Principal.FindFirst("client_type")?.Value);
             Assert.Equal("worker-key-1", result.Principal.FindFirst("worker_key_id")?.Value);
             Assert.Equal("tenant-abc", result.Principal.FindFirst("tenant_id")?.Value);
+            Assert.Equal("101010101", result.Principal.FindFirst("allowed_rncs")?.Value);
+        }
+
+        [Fact]
+        public async Task WorkerAuth_WildcardAllowedRncs_EmitsWildcardClaim()
+        {
+            _keyResolverMock.Setup(r => r.GetKeyInfoAsync("worker-wildcard"))
+                .ReturnsAsync(new WorkerKeyInfo
+                {
+                    KeyId = "worker-wildcard",
+                    Secret = "SuperSecretKey123!",
+                    TenantId = "tenant-wildcard",
+                    AllowedRncs = new List<string> { "*" },
+                    IsActive = true
+                });
+
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+            var nonce = Guid.NewGuid().ToString("N");
+            var bodyStr = "{}";
+            var canonicalString = CanonicalRequestHelper.BuildCanonicalString("GET", "/api/test", timestamp, nonce, bodyStr);
+            var signature = CanonicalRequestHelper.ComputeHmacSha256("SuperSecretKey123!", canonicalString);
+
+            var context = new DefaultHttpContext();
+            context.Request.Method = "GET";
+            context.Request.Path = "/api/test";
+            context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(bodyStr));
+
+            context.Request.Headers[WorkerAuthenticationHandler.KeyIdHeader] = "worker-wildcard";
+            context.Request.Headers[WorkerAuthenticationHandler.TimestampHeader] = timestamp;
+            context.Request.Headers[WorkerAuthenticationHandler.NonceHeader] = nonce;
+            context.Request.Headers[WorkerAuthenticationHandler.SignatureHeader] = signature;
+
+            var handler = CreateHandler(context);
+            var result = await handler.AuthenticateAsync();
+
+            Assert.True(result.Succeeded);
+            Assert.Equal("*", result.Principal?.FindFirst("allowed_rncs")?.Value);
         }
 
         private WorkerAuthenticationHandler CreateHandler(HttpContext context)

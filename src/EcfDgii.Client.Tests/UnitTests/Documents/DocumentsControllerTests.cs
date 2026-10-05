@@ -976,5 +976,33 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("Produccion", docs[1].Ambiente);
             Assert.Equal("E310000000001", docs[1].ENcf);
         }
+
+        [Fact]
+        public void EcfDocument_UniqueIndexes_IncludeAmbiente_ToPreventCrossEnvironmentCollisions()
+        {
+            var db = NewDb();
+            var entityType = db.Model.FindEntityType(typeof(EcfDocument));
+            Assert.NotNull(entityType);
+
+            // 1. Verify uq_ecf_documents_rnc_emisor_encf includes Ambiente
+            var rncEncfIndex = entityType.GetIndexes()
+                .FirstOrDefault(i => i.GetDatabaseName() == "uq_ecf_documents_rnc_emisor_encf");
+            Assert.NotNull(rncEncfIndex);
+            Assert.True(rncEncfIndex.IsUnique);
+            var rncEncfProps = rncEncfIndex.Properties.Select(p => p.Name).ToList();
+            Assert.Contains("RncEmisor", rncEncfProps);
+            Assert.Contains("ENcf", rncEncfProps);
+            Assert.Contains("Ambiente", rncEncfProps);
+
+            // 2. Verify uq_ecf_documents_tenant_source_txn includes Ambiente
+            var tenantTxnIndex = entityType.GetIndexes()
+                .FirstOrDefault(i => i.GetDatabaseName() == "uq_ecf_documents_tenant_source_txn");
+            Assert.NotNull(tenantTxnIndex);
+            Assert.True(tenantTxnIndex.IsUnique);
+            var tenantTxnProps = tenantTxnIndex.Properties.Select(p => p.Name).ToList();
+            Assert.Contains("TenantId", tenantTxnProps);
+            Assert.Contains("SourceTxnId", tenantTxnProps);
+            Assert.Contains("Ambiente", tenantTxnProps);
+        }
     }
 }

@@ -27,5 +27,10 @@ namespace EcfDgii.Client.Infrastructure.Configuration
         /// enforced RNC.
         /// </summary>
         public string RazonSocial { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The fiscal address of this emisor instance emitted in &lt;DireccionEmisor&gt;.
+        /// </summary>
+        public string Direccion { get; set; } = string.Empty;
     }
 }

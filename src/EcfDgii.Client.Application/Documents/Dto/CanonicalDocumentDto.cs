@@ -13,7 +13,9 @@ namespace EcfDgii.Client.Application.Documents.Dto
     {
         public string RncEmisor { get; set; } = string.Empty;
         public string RazonSocialEmisor { get; set; } = string.Empty;
+        public string? DireccionEmisor { get; set; }
         public string RncComprador { get; set; } = string.Empty;
+        public string? IdentificadorExtranjero { get; set; }
         public string RazonSocialComprador { get; set; } = string.Empty;
         public string? CorreoComprador { get; set; }
         /// <summary>
@@ -22,6 +24,8 @@ namespace EcfDgii.Client.Application.Documents.Dto
         /// the XML; a value already in dd-MM-yyyy is accepted and passed through unchanged.
         /// </summary>
         public string FechaEmision { get; set; } = string.Empty;
+        /// <summary>Deprecated: Use root-level CanonicalDocumentDto.FechaVencimientoSecuencia instead.</summary>
+        [System.Obsolete("Use root-level CanonicalDocumentDto.FechaVencimientoSecuencia instead (LOW-049).")]
         public string? FechaVencimientoSecuencia { get; set; }
     }
 
@@ -145,6 +149,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
     {
         public string? CertificateBase64 { get; set; }
         public string? Password { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore]
         public string? CertificatePath { get; set; }
     }
 
@@ -165,7 +170,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         /// <summary>Required (obligatorio) only for TipoComprobante "E41". Null for every other type.</summary>
         public CanonicalRetentionDto? Retention { get; set; }
 
-        /// <summary>Optional DGII sequence expiration date (dd-MM-yyyy or yyyy-MM-dd). Default 31-12-2027.</summary>
+        /// <summary>Optional DGII sequence expiration date (dd-MM-yyyy or yyyy-MM-dd). Normative default: 31-12-2028 in Test/Cert; 31-12 of next year (min 2027) in Production.</summary>
         public string? FechaVencimientoSecuencia { get; set; }
     }
 }

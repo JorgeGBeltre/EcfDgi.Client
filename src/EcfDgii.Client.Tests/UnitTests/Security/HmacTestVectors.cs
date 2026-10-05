@@ -27,7 +27,7 @@ namespace UnitTests.Security
             Secret = "SharedTestSecretKey123",
             Body = "",
             ExpectedCanonicalString = "GET\n/api/ecf/status?rncEmisor=101010101&eNcf=E310000000001\n1740000000\na1b2c3d4e5f6\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            ExpectedSignature = CanonicalRequestHelper.ComputeHmacSha256("SharedTestSecretKey123", "GET\n/api/ecf/status?rncEmisor=101010101&eNcf=E310000000001\n1740000000\na1b2c3d4e5f6\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+            ExpectedSignature = "16KDtr5DsTBGFXoKMUf74vsl4hwXGnwObsQhApC629E="
         };
 
         public static readonly HmacTestVector Vector2_PostWithBody = new HmacTestVector
@@ -38,8 +38,8 @@ namespace UnitTests.Security
             Nonce = "f6e5d4c3b2a1",
             Secret = "SharedTestSecretKey123",
             Body = "{\"rncEmisor\":\"101010101\"}",
-            ExpectedCanonicalString = "POST\n/api/ecf/send-rfce\n1740000000\nf6e5d4c3b2a1\n" + CanonicalRequestHelper.ComputeSha256Hex("{\"rncEmisor\":\"101010101\"}"),
-            ExpectedSignature = CanonicalRequestHelper.ComputeHmacSha256("SharedTestSecretKey123", "POST\n/api/ecf/send-rfce\n1740000000\nf6e5d4c3b2a1\n" + CanonicalRequestHelper.ComputeSha256Hex("{\"rncEmisor\":\"101010101\"}"))
+            ExpectedCanonicalString = "POST\n/api/ecf/send-rfce\n1740000000\nf6e5d4c3b2a1\n25efdacd9924cb16b77d213780b7823c3ff08514f89fd664b54f095443d6b871",
+            ExpectedSignature = "+6fW0WNMr3Ap81QcqviylMrN20KJHTU/KieShCvkBxM="
         };
 
         [Fact]

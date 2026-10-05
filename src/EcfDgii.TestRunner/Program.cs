@@ -15,7 +15,7 @@ namespace EcfDgii.TestRunner
     public class Program
     {
         private static readonly string PfxPath = @"C:\Users\Jorge\Desktop\Ecf\scratch\ceramic_chic.pfx";
-        private static readonly string PfxPassword = "Fy7g6Q9W";
+        private static readonly string PfxPassword = Environment.GetEnvironmentVariable("TEST_PFX_PASSWORD") ?? string.Empty;
         private static readonly string RncEmisor = "133664692";
         private static readonly string UnsignedXmlsDir = @"C:\Users\Jorge\Desktop\Ecf\scratch\generated_xmls";
         private static readonly string SignedXmlsDir = @"C:\Users\Jorge\Desktop\Ecf\scratch\signed_xmls";
@@ -43,7 +43,7 @@ namespace EcfDgii.TestRunner
             Directory.CreateDirectory(SignedXmlsDir);
 
             // 1. Initialize Signer & DGII Transport
-            var cert = new X509Certificate2(PfxPath, PfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            using var cert = X509CertificateLoader.LoadPkcs12FromFile(PfxPath, PfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
             Console.WriteLine($"[INFO] Certificate loaded: {cert.Subject}");
             Console.WriteLine($"[INFO] Valid from {cert.NotBefore} to {cert.NotAfter}");
 

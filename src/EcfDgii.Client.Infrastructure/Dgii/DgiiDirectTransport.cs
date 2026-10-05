@@ -47,23 +47,56 @@ namespace EcfDgii.Client.Infrastructure.Dgii
         /// unbounded request storm against DGII.
         /// </summary>
         private async Task<HttpResponseMessage> SendWithReactiveAuthAsync(
-            Func<string, HttpRequestMessage> buildRequest, CancellationToken ct)
+            Func<string, HttpRequestMessage> buildRequest, CancellationToken ct, bool isIdempotentQuery = false)
         {
             var token = _tokenManager != null ? await _tokenManager.GetTokenAsync(ct) : string.Empty;
-            var response = await _httpClient.SendAsync(buildRequest(token), ct);
+            HttpResponseMessage response;
+            int retryCount = 0;
+            const int maxRetries = 2;
 
-            if (response.StatusCode == HttpStatusCode.Unauthorized && _tokenManager != null)
+            while (true)
             {
-                response.Dispose();
-                await _tokenManager.InvalidateAsync(ct);
-                var freshToken = await _tokenManager.GetTokenAsync(ct);
-                response = await _httpClient.SendAsync(buildRequest(freshToken), ct);
+                response = await _httpClient.SendAsync(buildRequest(token), ct);
+
+                if (response.StatusCode == HttpStatusCode.Unauthorized && _tokenManager != null)
+                {
+                    response.Dispose();
+                    await _tokenManager.InvalidateAsync(ct);
+                    var freshToken = await _tokenManager.GetTokenAsync(ct);
+                    response = await _httpClient.SendAsync(buildRequest(freshToken), ct);
+                    break;
+                }
+
+                // MED-144: Retry on transient 5xx/gateway timeouts for idempotent queries only (never for document submissions)
+                if (isIdempotentQuery && 
+                    (response.StatusCode == HttpStatusCode.BadGateway || 
+                     response.StatusCode == HttpStatusCode.ServiceUnavailable || 
+                     response.StatusCode == HttpStatusCode.GatewayTimeout) && 
+                    retryCount < maxRetries)
+                {
+                    retryCount++;
+                    response.Dispose();
+                    await Task.Delay(TimeSpan.FromMilliseconds(150 * Math.Pow(2, retryCount)), ct);
+                    continue;
+                }
+
+                break;
             }
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync(ct);
-                throw new HttpRequestException($"DGII Error ({(int)response.StatusCode} {response.ReasonPhrase}): {errorBody}");
+                var sanitized = System.Text.RegularExpressions.Regex.Replace(errorBody, @"<[^>]+>|[\r\n\t]+", " ").Trim();
+                if (sanitized.Length > 150)
+                {
+                    sanitized = sanitized[..150] + "...";
+                }
+                throw new HttpRequestException(
+                    string.IsNullOrWhiteSpace(sanitized)
+                        ? $"DGII request failed with status {(int)response.StatusCode} ({response.ReasonPhrase})."
+                        : $"DGII request failed with status {(int)response.StatusCode} ({response.ReasonPhrase}): {sanitized}",
+                    null,
+                    response.StatusCode);
             }
             return response;
         }
@@ -124,7 +157,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<ConsultaResultadoResponse>(responseBody, JsonOptions)!;
@@ -142,7 +175,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<ConsultaEstadoResponse>(responseBody, JsonOptions)!;
@@ -156,7 +189,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<List<TrackIdDetalle>>(responseBody, JsonOptions)!;
@@ -170,7 +203,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 return request;
-            }, ct);
+            }, ct, isIdempotentQuery: true);
 
             var responseBody = await response.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<RfceConsultaResponse>(responseBody, JsonOptions)!;
@@ -221,15 +254,35 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             return JsonSerializer.Deserialize<AnulacionResponse>(responseBody, JsonOptions)!;
         }
 
-        public async Task<List<DirectorioContribuyente>> ConsultarDirectorioAsync(CancellationToken ct = default)
+        private async Task<T> SendUnauthenticatedGetAsync<T>(string url, CancellationToken ct) where T : new()
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.DirectorioUrl}/api/consultas/listado");
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var response = await _httpClient.SendAsync(request, ct);
-            var responseBody = await response.Content.ReadAsStringAsync(ct);
+            using var response = await _httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
+                var truncated = errorBody.Length > 200 ? errorBody[..200] : errorBody;
+                throw new HttpRequestException($"DGII Error ({(int)response.StatusCode} {response.ReasonPhrase}): {truncated}");
+            }
 
-            return JsonSerializer.Deserialize<List<DirectorioContribuyente>>(responseBody, JsonOptions)!;
+            var responseBody = await response.Content.ReadAsStringAsync(ct);
+            try
+            {
+                var result = JsonSerializer.Deserialize<T>(responseBody, JsonOptions);
+                return result ?? new T();
+            }
+            catch (JsonException ex)
+            {
+                var truncated = responseBody.Length > 200 ? responseBody[..200] : responseBody;
+                throw new HttpRequestException($"Error deserializando respuesta DGII ({(int)response.StatusCode}): {truncated}", ex);
+            }
+        }
+
+        public async Task<List<DirectorioContribuyente>> ConsultarDirectorioAsync(CancellationToken ct = default)
+        {
+            return await SendUnauthenticatedGetAsync<List<DirectorioContribuyente>>($"{_config.DirectorioUrl}/api/consultas/listado", ct);
         }
 
         public async Task<DirectorioContribuyente> ConsultarDirectorioPorRncAsync(string rnc, CancellationToken ct = default)
@@ -237,58 +290,52 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.DirectorioUrl}/api/consultas/obtenerdirectorioporrnc?RNC={rnc}");
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var response = await _httpClient.SendAsync(request, ct);
-            var responseBody = await response.Content.ReadAsStringAsync(ct);
+            using var response = await _httpClient.SendAsync(request, ct);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                return new DirectorioContribuyente { Rnc = rnc, Nombre = "No encontrado" };
+            }
 
-            return JsonSerializer.Deserialize<DirectorioContribuyente>(responseBody, JsonOptions)!;
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
+                var truncated = errorBody.Length > 200 ? errorBody[..200] : errorBody;
+                throw new HttpRequestException($"DGII Error ({(int)response.StatusCode} {response.ReasonPhrase}): {truncated}");
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync(ct);
+            try
+            {
+                var result = JsonSerializer.Deserialize<DirectorioContribuyente>(responseBody, JsonOptions);
+                return result ?? new DirectorioContribuyente { Rnc = rnc, Nombre = "No encontrado" };
+            }
+            catch (JsonException ex)
+            {
+                var truncated = responseBody.Length > 200 ? responseBody[..200] : responseBody;
+                throw new HttpRequestException($"Error deserializando respuesta DGII ({(int)response.StatusCode}): {truncated}", ex);
+            }
         }
 
         public async Task<TimbreResponse> ConsultarTimbreAsync(TimbreEcfRequest req, CancellationToken ct = default)
         {
             var url = EcfSecurityUtils.BuildTimbreUrl(_config.TimbreUrl, req);
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-            var response = await _httpClient.SendAsync(request, ct);
-            var responseBody = await response.Content.ReadAsStringAsync(ct);
-
-            return JsonSerializer.Deserialize<TimbreResponse>(responseBody, JsonOptions)!;
+            return await SendUnauthenticatedGetAsync<TimbreResponse>(url, ct);
         }
 
         public async Task<TimbreFcResponse> ConsultarTimbreFcAsync(TimbreFcRequest req, CancellationToken ct = default)
         {
             var url = EcfSecurityUtils.BuildTimbreFcUrl(_config.TimbreFcUrl, req);
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-            var response = await _httpClient.SendAsync(request, ct);
-            var responseBody = await response.Content.ReadAsStringAsync(ct);
-
-            return JsonSerializer.Deserialize<TimbreFcResponse>(responseBody, JsonOptions)!;
+            return await SendUnauthenticatedGetAsync<TimbreFcResponse>(url, ct);
         }
 
         public async Task<List<EstatusServicio>> ConsultarEstatusServiciosAsync(CancellationToken ct = default)
         {
-            // Nota: Este servicio requiere API Key según el MD.
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerestatus");
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            // TODO: Agregar API Key si está disponible en opciones.
-
-            var response = await _httpClient.SendAsync(request, ct);
-            var responseBody = await response.Content.ReadAsStringAsync(ct);
-
-            return JsonSerializer.Deserialize<List<EstatusServicio>>(responseBody, JsonOptions)!;
+            return await SendUnauthenticatedGetAsync<List<EstatusServicio>>($"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerestatus", ct);
         }
 
         public async Task<List<VentanaMantenimiento>> ConsultarVentanasMantenimientoAsync(CancellationToken ct = default)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerventanasmantenimiento");
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-            var response = await _httpClient.SendAsync(request, ct);
-            var responseBody = await response.Content.ReadAsStringAsync(ct);
-
-            return JsonSerializer.Deserialize<List<VentanaMantenimiento>>(responseBody, JsonOptions)!;
+            return await SendUnauthenticatedGetAsync<List<VentanaMantenimiento>>($"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerventanasmantenimiento", ct);
         }
 
         public async Task<string> VerificarEstadoAmbienteAsync(AmbienteEnum ambiente, CancellationToken ct = default)
@@ -302,7 +349,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             };
 
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.EstatusServiciosUrl}/api/estatusservicios/verificarestado?ambiente={ambienteId}");
-            var response = await _httpClient.SendAsync(request, ct);
+            using var response = await _httpClient.SendAsync(request, ct);
             return await response.Content.ReadAsStringAsync(ct);
         }
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Serialization;
@@ -270,8 +271,8 @@ namespace EcfDgii.Client.Domain.Entities
         {
             if (reader.TokenType == JsonTokenType.Number)
             {
-                if (reader.TryGetInt64(out long l)) return l.ToString();
-                if (reader.TryGetDouble(out double d)) return d.ToString();
+                if (reader.TryGetInt64(out long l)) return l.ToString(CultureInfo.InvariantCulture);
+                if (reader.TryGetDouble(out double d)) return d.ToString(CultureInfo.InvariantCulture);
             }
             return reader.GetString() ?? string.Empty;
         }

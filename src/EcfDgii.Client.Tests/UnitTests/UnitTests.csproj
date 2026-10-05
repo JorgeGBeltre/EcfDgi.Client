@@ -34,6 +34,10 @@
     <None Include="Security\hmac_test_vectors.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\..\Documentación Técnica (XSD)\*.xsd">
+      <Link>XSD\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <ItemGroup>

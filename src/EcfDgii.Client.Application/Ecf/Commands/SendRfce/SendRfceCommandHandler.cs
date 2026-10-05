@@ -39,9 +39,22 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendRfce
                 // Serialize locally to save the original XML generated
                 var xmlContent = _serializer.Serialize(rfce);
 
+                var tenantId = !string.IsNullOrWhiteSpace(request.TenantId) 
+                    ? request.TenantId 
+                    : (rfce.Encabezado?.Emisor?.RncEmisor ?? "default-tenant");
+                var sourceTxnId = !string.IsNullOrWhiteSpace(request.SourceTxnId) 
+                    ? request.SourceTxnId 
+                    : (!string.IsNullOrWhiteSpace(rfce.Encabezado?.IdDoc?.ENcf) ? rfce.Encabezado.IdDoc.ENcf : Guid.NewGuid().ToString("N"));
+                var editSequence = !string.IsNullOrWhiteSpace(request.EditSequence) ? request.EditSequence : "1";
+                var ambiente = request.Ambiente;
+
                 // Save submission status in database
                 var doc = new EcfDocument
                 {
+                    TenantId = tenantId,
+                    SourceTxnId = sourceTxnId,
+                    EditSequence = editSequence,
+                    Ambiente = ambiente,
                     ENcf = rfce.Encabezado.IdDoc.ENcf,
                     RncEmisor = rfce.Encabezado.Emisor.RncEmisor,
                     RncComprador = rfce.Encabezado.Comprador?.RncComprador,

@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
 using EcfDgii.Client.Domain.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace EcfDgii.Client.Api.Controllers
 {
     [ApiController]
+    [Authorize(Policy = "UserOrWorker")]
     public class EmisorReceptorController : ControllerBase
     {
         private readonly ITenantSignerResolver _signerResolver;
@@ -27,6 +29,7 @@ namespace EcfDgii.Client.Api.Controllers
             _logger = logger;
         }
 
+        [AllowAnonymous]
         [HttpPost("fe/recepcion/api/ecf")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RecepcioneCF(IFormFile xml)
@@ -42,8 +45,7 @@ namespace EcfDgii.Client.Api.Controllers
                 var xmlContent = await reader.ReadToEndAsync();
 
                 // Parse XML to extract rncemisor, rnccomprador, encf
-                var doc = new XmlDocument();
-                doc.PreserveWhitespace = true;
+                var doc = new XmlDocument { PreserveWhitespace = true, XmlResolver = null };
                 doc.LoadXml(xmlContent);
 
                 var ns = new XmlNamespaceManager(doc.NameTable);
@@ -51,9 +53,23 @@ namespace EcfDgii.Client.Api.Controllers
                 var rncComprador = doc.SelectSingleNode("//RNCComprador", ns)?.InnerText?.Trim() ?? string.Empty;
                 var encf = doc.SelectSingleNode("//eNCF", ns)?.InnerText?.Trim() ?? string.Empty;
 
-                if (string.IsNullOrEmpty(rncEmisor) || string.IsNullOrEmpty(encf))
+                if (string.IsNullOrEmpty(rncEmisor) || string.IsNullOrEmpty(encf) || string.IsNullOrEmpty(rncComprador))
                 {
-                    return BadRequest("El XML de e-CF provisto no contiene las etiquetas obligatorias RNCEmisor o eNCF.");
+                    return BadRequest("El XML de e-CF provisto no contiene las etiquetas obligatorias RNCEmisor, RNCComprador o eNCF.");
+                }
+
+                if (!System.Text.RegularExpressions.Regex.IsMatch(rncEmisor, @"^\d{9,11}$") ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(rncComprador, @"^\d{9,11}$") ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(encf, @"^[EBF]\d{10,12}$"))
+                {
+                    return BadRequest("Formato inválido de RNCEmisor, RNCComprador o eNCF en el XML provisto.");
+                }
+
+                // Resolver el firmador dinámicamente para el RNC del comprador/receptor
+                var signer = await _signerResolver.ResolveSignerAsync(rncComprador);
+                if (signer == null || (signer == _defaultSigner && !signer.ValidateCertificateSn(rncComprador)))
+                {
+                    return BadRequest($"RNC Comprador '{rncComprador}' no corresponde a ningún tenant registrado en este sistema.");
                 }
 
                 // Build ARECF (Acuse de Recibo) XML string
@@ -62,9 +78,9 @@ namespace EcfDgii.Client.Api.Controllers
                 arecfBuilder.AppendLine("<ARECF>");
                 arecfBuilder.AppendLine("  <DetalleAcusedeRecibo>");
                 arecfBuilder.AppendLine("    <Version>1.0</Version>");
-                arecfBuilder.AppendLine($"    <RNCEmisor>{rncEmisor}</RNCEmisor>");
-                arecfBuilder.AppendLine($"    <RNCComprador>{rncComprador}</RNCComprador>");
-                arecfBuilder.AppendLine($"    <eNCF>{encf}</eNCF>");
+                arecfBuilder.AppendLine($"    <RNCEmisor>{System.Security.SecurityElement.Escape(rncEmisor)}</RNCEmisor>");
+                arecfBuilder.AppendLine($"    <RNCComprador>{System.Security.SecurityElement.Escape(rncComprador)}</RNCComprador>");
+                arecfBuilder.AppendLine($"    <eNCF>{System.Security.SecurityElement.Escape(encf)}</eNCF>");
                 arecfBuilder.AppendLine("    <Estado>0</Estado>"); // 0 = Aceptado/Recibido
                 var fechaHora = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
                 arecfBuilder.AppendLine($"    <FechaHoraAcuseRecibo>{fechaHora}</FechaHoraAcuseRecibo>");
@@ -72,9 +88,6 @@ namespace EcfDgii.Client.Api.Controllers
                 arecfBuilder.AppendLine("</ARECF>");
 
                 var unsignedArecf = arecfBuilder.ToString();
-                
-                // Resolver el firmador dinámicamente para el RNC del comprador/receptor
-                var signer = await _signerResolver.ResolveSignerAsync(rncComprador);
 
                 // Sign the ARECF XML using the resolved tenant signer certificate
                 var signedArecf = signer.SignXml(unsignedArecf, rncComprador);
@@ -86,10 +99,11 @@ namespace EcfDgii.Client.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al procesar la recepción de e-CF");
-                return BadRequest($"Error al procesar la recepción de e-CF: {ex.Message}");
+                return BadRequest("Error al procesar la recepción de e-CF.");
             }
         }
 
+        [AllowAnonymous]
         [HttpPost("fe/aprobacioncomercial/api/ecf")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> AprobacionComercial(IFormFile xml)
@@ -105,14 +119,15 @@ namespace EcfDgii.Client.Api.Controllers
                 var xmlContent = await reader.ReadToEndAsync();
 
                 // Validate it parses as XML
-                var doc = new XmlDocument();
+                var doc = new XmlDocument { XmlResolver = null };
                 doc.LoadXml(xmlContent);
 
                 return Ok();
             }
             catch (Exception ex)
             {
-                return BadRequest($"Error al procesar la aprobación comercial: {ex.Message}");
+                _logger.LogError(ex, "Error al procesar la aprobación comercial");
+                return BadRequest("Error al procesar la aprobación comercial.");
             }
         }
 
@@ -144,7 +159,7 @@ namespace EcfDgii.Client.Api.Controllers
                 using var reader = new StreamReader(xml.OpenReadStream(), Encoding.UTF8);
                 var xmlContent = await reader.ReadToEndAsync();
 
-                var doc = new XmlDocument();
+                var doc = new XmlDocument { XmlResolver = null };
                 doc.LoadXml(xmlContent);
 
                 var token = Guid.NewGuid().ToString().Replace("-", "");
@@ -167,7 +182,8 @@ namespace EcfDgii.Client.Api.Controllers
             }
             catch (Exception ex)
             {
-                return BadRequest($"Fallo en validación de certificado: {ex.Message}");
+                _logger.LogError(ex, "Fallo en validación de certificado");
+                return BadRequest("Fallo en validación de certificado.");
             }
         }
     }

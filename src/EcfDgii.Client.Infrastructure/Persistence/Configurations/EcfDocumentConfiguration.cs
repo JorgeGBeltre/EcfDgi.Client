@@ -84,6 +84,9 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             builder.Property(e => e.SignedXmlContent)
                 .HasColumnName("signed_xml_content");
 
+            builder.Property(e => e.SignedRfceContent)
+                .HasColumnName("signed_rfce_content");
+
             builder.Property(e => e.DgiiResponseXml)
                 .HasColumnName("dgii_response_xml");
 
@@ -148,6 +151,9 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             // Other indexes
             builder.HasIndex(e => e.TrackId)
                 .HasDatabaseName("ix_ecf_documents_track_id");
+
+            builder.HasIndex(e => e.ENcf)
+                .HasDatabaseName("ix_ecf_documents_encf");
 
             builder.HasIndex(e => e.State)
                 .HasDatabaseName("ix_ecf_documents_state");

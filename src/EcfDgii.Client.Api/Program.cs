@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,8 +28,12 @@ using EcfDgii.Client.Api.Middleware;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Api.Infrastructure.Security;
 using EcfDgii.Client.Api.Infrastructure.Idempotency;
+using System.Globalization;
 using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Shared.Common;
+
+CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -44,7 +50,28 @@ try
     Log.Information("Starting web host");
 
     // Add services to the container
-    builder.Services.AddMemoryCache();
+    builder.Services.AddMemoryCache(options =>
+    {
+        options.SizeLimit = 100_000;
+    });
+    builder.Services.AddResponseCompression();
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        {
+            var key = httpContext.User.FindFirst("worker_key_id")?.Value
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous";
+            return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 600,
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 20
+            });
+        });
+    });
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
     builder.Services.AddSingleton<IClock, SystemClock>();
@@ -54,10 +81,14 @@ try
     // Values are configurable (EcfStatusPolling section) because MaxPollingWindowHours in particular
     // is a conservative stand-in, not a confirmed DGII deadline — see EcfStatusPollingOptions.Default.
     var pollingSection = builder.Configuration.GetSection("EcfStatusPolling");
+    var pollingIntervalSeconds = pollingSection.GetValue<int?>("PollingIntervalSeconds")
+        ?? (pollingSection.GetValue<int?>("PollingIntervalMinutes") * 60)
+        ?? 60;
     var pollingOptions = new EcfStatusPollingOptions(
-        PollingInterval: TimeSpan.FromMinutes(pollingSection.GetValue("PollingIntervalMinutes", 15)),
+        PollingInterval: TimeSpan.FromSeconds(Math.Max(5, pollingIntervalSeconds)),
         MinDocumentAge: TimeSpan.FromMinutes(pollingSection.GetValue("MinDocumentAgeMinutes", 2)),
-        MaxPollingWindow: TimeSpan.FromHours(pollingSection.GetValue("MaxPollingWindowHours", 72)));
+        MaxPollingWindow: TimeSpan.FromHours(pollingSection.GetValue("MaxPollingWindowHours", 72)),
+        BatchSize: pollingSection.GetValue("BatchSize", 50));
     builder.Services.AddSingleton(pollingOptions);
     builder.Services.AddHostedService<EcfStatusPollingBackgroundService>();
 
@@ -73,7 +104,12 @@ try
         .ValidateOnStart();
 
     // Register Security, Anti-Replay, Key Resolution & Durable Idempotency
-    builder.Services.AddSingleton<INonceCache, MemoryNonceCache>();
+    builder.Services.AddSingleton<INonceCache>(sp =>
+    {
+        var memCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>();
+        var redis = sp.GetService<StackExchange.Redis.IConnectionMultiplexer>();
+        return new MemoryNonceCache(memCache, redis);
+    });
     builder.Services.AddScoped<IWorkerKeyResolver, ConfigurationWorkerKeyResolver>();
     builder.Services.AddSingleton<IIdempotencyStore, DbIdempotencyStore>();
 
@@ -88,10 +124,32 @@ try
     // empty string, not absent/null) so the check has something to fail loudly against outside
     // Development. ?? only substitutes on null, so an empty string silently produced a zero-length
     // HMAC key here instead of falling back to the default.
-    var jwtSecretForKey = string.IsNullOrWhiteSpace(jwtSettings?.Secret)
-        ? "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!"
-        : jwtSettings.Secret;
-    var key = Encoding.ASCII.GetBytes(jwtSecretForKey);
+    var jwtSecretForKey = builder.Configuration["JwtSettings:Secret"]
+        ?? builder.Configuration["JWT_SECRET"]
+        ?? builder.Configuration["Jwt:SecretKey"]
+        ?? jwtSettings?.Secret;
+    if (string.IsNullOrWhiteSpace(jwtSecretForKey))
+    {
+        jwtSecretForKey = "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!";
+    }
+    var key = Encoding.UTF8.GetBytes(jwtSecretForKey);
+
+    var validIssuers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "EcfDgiiClientIssuer",
+        "Ecf.API"
+    };
+    if (!string.IsNullOrWhiteSpace(jwtSettings?.Issuer)) validIssuers.Add(jwtSettings.Issuer);
+    if (!string.IsNullOrWhiteSpace(builder.Configuration["JWT_ISSUER"])) validIssuers.Add(builder.Configuration["JWT_ISSUER"]!);
+
+    var validAudiences = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "EcfDgiiClientAudience",
+        "Ecf.Clients",
+        "EcfDgiiClient"
+    };
+    if (!string.IsNullOrWhiteSpace(jwtSettings?.Audience)) validAudiences.Add(jwtSettings.Audience);
+    if (!string.IsNullOrWhiteSpace(builder.Configuration["JWT_AUDIENCE"])) validAudiences.Add(builder.Configuration["JWT_AUDIENCE"]!);
 
     builder.Services.AddAuthentication(options =>
     {
@@ -107,10 +165,10 @@ try
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(key),
             ValidateIssuer = true,
-            ValidIssuer = jwtSettings?.Issuer ?? "EcfDgiiClientIssuer",
+            ValidIssuers = validIssuers,
             ValidateAudience = true,
-            ValidAudience = jwtSettings?.Audience ?? "EcfDgiiClientAudience",
-            ClockSkew = TimeSpan.Zero
+            ValidAudiences = validAudiences,
+            ClockSkew = TimeSpan.FromMinutes(5)
         };
     })
     .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, EcfDgii.Client.Api.Infrastructure.Security.WorkerAuthenticationHandler>("WorkerAuth", null);
@@ -129,7 +187,58 @@ try
             policy.AuthenticationSchemes.Add("WorkerAuth");
             policy.RequireAssertion(context =>
                 context.User.HasClaim("client_type", "worker") ||
-                context.User.Identity?.IsAuthenticated == true);
+                (context.User.Identity?.IsAuthenticated == true &&
+                 (context.User.IsInRole("Admin") ||
+                  context.User.IsInRole("FiscalOperator") ||
+                  context.User.IsInRole("SuperAdmin") ||
+                  context.User.HasClaim(System.Security.Claims.ClaimTypes.Role, "Admin") ||
+                  context.User.HasClaim(System.Security.Claims.ClaimTypes.Role, "FiscalOperator") ||
+                  context.User.HasClaim(System.Security.Claims.ClaimTypes.Role, "SuperAdmin") ||
+                  context.User.HasClaim("role", "Admin") ||
+                  context.User.HasClaim("role", "FiscalOperator") ||
+                  context.User.HasClaim("role", "SuperAdmin"))));
+        });
+    });
+
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.OnRejected = async (context, token) =>
+        {
+            context.HttpContext.Response.ContentType = "application/problem+json";
+            await context.HttpContext.Response.WriteAsync("{\"title\":\"Too Many Requests\",\"status\":429,\"detail\":\"Límite de tasa de solicitudes excedido.\"}", token);
+        };
+        options.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        {
+            var partitionKey = httpContext.User.FindFirst("worker_key_id")?.Value
+                ?? httpContext.User.FindFirst("tenant_id")?.Value
+                ?? httpContext.User.FindFirst("TenantId")?.Value
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous";
+
+            return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 600,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 20,
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst
+            });
+        });
+        options.AddPolicy("FiscalEmissionLimiter", httpContext =>
+        {
+            var partitionKey = httpContext.User.FindFirst("worker_key_id")?.Value
+                ?? httpContext.User.FindFirst("tenant_id")?.Value
+                ?? httpContext.User.FindFirst("TenantId")?.Value
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous";
+
+            return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 120,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 10,
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst
+            });
         });
     });
 
@@ -175,6 +284,7 @@ try
                 .AddAspNetCoreInstrumentation()
                 .AddOtlpExporter();
         });
+
 
     var app = builder.Build();
 
@@ -247,7 +357,7 @@ try
 
         try
         {
-            using var cert = new X509Certificate2(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            using var cert = X509CertificateLoader.LoadPkcs12FromFile(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
             var now = DateTime.Now; // X509Certificate2.NotBefore/NotAfter are local time
             if (now < cert.NotBefore || now > cert.NotAfter)
             {
@@ -283,6 +393,15 @@ try
     // Configure the HTTP request pipeline
     app.UseMiddleware<GlobalExceptionMiddleware>();
 
+    // MED-142: Forwarded headers for reverse proxy (Traefik / Nginx) to reflect client IP and HTTPS scheme
+    var forwardedHeadersOptions = new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+    };
+    forwardedHeadersOptions.KnownIPNetworks.Clear();
+    forwardedHeadersOptions.KnownProxies.Clear();
+    app.UseForwardedHeaders(forwardedHeadersOptions);
+
     app.UseSerilogRequestLogging();
 
     if (app.Environment.IsDevelopment())
@@ -293,8 +412,42 @@ try
 
     if (!app.Environment.IsDevelopment())
     {
-        app.UseHttpsRedirection();
+        // HTTPS redirection only when port is configured or not behind TLS terminating reverse proxy
+        var httpsPort = app.Configuration["HTTPS_PORT"] ?? app.Configuration["ASPNETCORE_HTTPS_PORT"];
+        if (!string.IsNullOrWhiteSpace(httpsPort))
+        {
+            app.UseHttpsRedirection();
+        }
     }
+
+    // Automatically apply migrations at startup for relational databases before serving traffic.
+    // MED-127: Migrate before mapping endpoints and fail fast on migration failure without swallowing.
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        if (context.Database.IsRelational())
+        {
+            EnsureMigrationHistoryBaseline(context);
+            try
+            {
+                context.Database.Migrate();
+            }
+            catch (Exception ex) when (IsRelationAlreadyExists(ex))
+            {
+                Log.Warning(ex, "Database objects already exist. Marking baseline migrations as reconciled.");
+                EnsureMigrationHistoryBaseline(context);
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Log.Fatal(ex, "Failed to apply database migrations on startup: {Message}", ex.Message);
+        throw;
+    }
+
+    app.UseResponseCompression();
+    app.UseRateLimiter();
 
     app.UseAuthentication();
     app.UseAuthorization();
@@ -303,29 +456,6 @@ try
     app.MapControllers();
 
     app.MapHealthChecks("/health");
-
-    // Automatically apply migrations at startup for local/development environments.
-    // EnsureCreated() was used here previously: it only creates the schema when the database
-    // doesn't exist yet and never alters an existing one, so a redeployment against a database
-    // created by an earlier model version silently kept running with a stale, incomplete schema
-    // instead of failing loudly. Migrate() applies any pending migrations (including on first run,
-    // where it creates the schema from the migration history instead of the live model).
-    // Automatically apply migrations at startup for relational databases.
-    // Migrate() applies any pending migrations (including on first run,
-    // where it creates the schema from the migration history instead of the live model).
-    try
-    {
-        using var scope = app.Services.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        if (context.Database.IsRelational())
-        {
-            context.Database.Migrate();
-        }
-    }
-    catch (Exception ex)
-    {
-        Log.Warning(ex, "Could not apply database migrations on startup: {Message}", ex.Message);
-    }
 
     app.Run();
 }
@@ -337,6 +467,83 @@ catch (Exception ex)
 finally
 {
     Log.CloseAndFlush();
+}
+
+static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
+{
+    try
+    {
+        context.Database.ExecuteSqlRaw(@"
+            CREATE TABLE IF NOT EXISTS ""__EFMigrationsHistory"" (
+                ""MigrationId"" character varying(150) NOT NULL,
+                ""ProductVersion"" character varying(32) NOT NULL,
+                CONSTRAINT ""PK___EFMigrationsHistory"" PRIMARY KEY (""MigrationId"")
+            );
+
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = 'customers'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20260805214117_InitialCreate', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20260806123843_RotateSeededAdminPasswordHash', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'last_status_check_at'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20260806141616_AddEcfStatusPollingColumns', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'ambiente'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20261005000000_AddAmbienteColumnAndUniqueIndexes', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'signed_rfce_content'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20261005010000_AddSignedRfceContentColumn', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+            END $$;
+        ");
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Could not run pre-migration baseline check: {Message}", ex.Message);
+    }
+}
+
+static bool IsRelationAlreadyExists(Exception ex)
+{
+    for (var current = ex; current != null; current = current.InnerException!)
+    {
+        if (current is Npgsql.PostgresException pex && (pex.SqlState == "42P07" || pex.SqlState == "42701"))
+        {
+            return true;
+        }
+        if (current.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 public partial class Program { }

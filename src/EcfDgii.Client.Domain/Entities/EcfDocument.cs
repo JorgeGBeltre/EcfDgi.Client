@@ -28,6 +28,7 @@ namespace EcfDgii.Client.Domain.Entities
         public string? SecurityCode { get; set; }
         public string XmlContent { get; set; } = string.Empty;
         public string? SignedXmlContent { get; set; }
+        public string? SignedRfceContent { get; set; }
         public string? DgiiResponseXml { get; set; }
         public DateTime? ReceiptDate { get; set; }
 

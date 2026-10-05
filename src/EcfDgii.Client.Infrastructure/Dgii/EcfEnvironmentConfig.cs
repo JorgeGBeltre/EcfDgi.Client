@@ -7,7 +7,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 {
     public class EcfEnvironmentConfig
     {
-        public AmbienteEnum Ambiente { get; set; } = AmbienteEnum.Produccion;
+        public AmbienteEnum Ambiente { get; set; } = AmbienteEnum.PreCertificacion;
         public string AutenticacionUrl { get; set; } = string.Empty;
         public string RecepcionUrl { get; set; } = string.Empty;
         public string RecepcionFcUrl { get; set; } = string.Empty;

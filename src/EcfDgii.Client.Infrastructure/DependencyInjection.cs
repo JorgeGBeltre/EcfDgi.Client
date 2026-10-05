@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Domain.Entities;
+using EcfDgii.Client.Domain.Common;
 using EcfDgii.Client.Application.Common.Interfaces;
 using EcfDgii.Client.Infrastructure.Caching;
 using EcfDgii.Client.Infrastructure.Dgii;
@@ -31,16 +32,23 @@ namespace EcfDgii.Client.Infrastructure
                     ?? configuration["DB_CONNECTION_STRING"];
             }
 
-            if (connectionString == "InMemory")
+            if (!string.IsNullOrWhiteSpace(connectionString) && (connectionString == "InMemory" || connectionString.StartsWith("InMemory:")))
             {
+                var dbName = connectionString.StartsWith("InMemory:") && connectionString.Length > 9
+                    ? connectionString[9..]
+                    : $"InMemoryDb_{Guid.NewGuid():N}";
+
                 services.AddDbContext<ApplicationDbContext>(options =>
-                    options.UseInMemoryDatabase("InMemoryDbForTesting"));
+                    options.UseInMemoryDatabase(dbName));
             }
             else
             {
                 services.AddDbContext<ApplicationDbContext>(options =>
+                {
                     options.UseNpgsql(connectionString,
-                        b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName)));
+                        b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName));
+                    options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+                });
             }
 
             // Redis Infrastructure Setup
@@ -66,7 +74,8 @@ namespace EcfDgii.Client.Infrastructure
                     }
                     catch (System.Exception ex)
                     {
-                        logger.LogWarning(ex, "Could not connect to Redis server at '{ConnectionString}'. Cache will operate in bypass/fallback mode.", redisConnectionString);
+                        var sanitizedConn = System.Text.RegularExpressions.Regex.Replace(redisConnectionString, @"password=[^,;]+", "password=***", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        logger.LogWarning(ex, "Could not connect to Redis server at '{ConnectionString}'. Cache will operate in bypass/fallback mode.", sanitizedConn);
                         return null!;
                     }
                 });
@@ -97,6 +106,12 @@ namespace EcfDgii.Client.Infrastructure
             // anywhere in this repo's config, so the validation code existed but silently never ran.
             services.PostConfigure<EcfClientOptions>(options =>
             {
+                var flatAmbiente = configuration["Ambiente"] ?? configuration["AMBIENTE"];
+                if (!string.IsNullOrWhiteSpace(flatAmbiente))
+                {
+                    options.Environment = EcfEnvironmentHelper.ResolveEcfEnvironment(flatAmbiente, options.Environment);
+                }
+
                 if (string.IsNullOrWhiteSpace(options.XsdDirectoryPath))
                 {
                     options.XsdDirectoryPath = System.IO.Path.Combine(AppContext.BaseDirectory, "XSD");

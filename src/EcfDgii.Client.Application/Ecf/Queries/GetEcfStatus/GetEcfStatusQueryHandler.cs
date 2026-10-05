@@ -28,9 +28,9 @@ namespace EcfDgii.Client.Application.Ecf.Queries.GetEcfStatus
         {
             try
             {
-                // 1. Try local DB search
-                var localDoc = await _documentRepository.GetByENcfAsync(request.ENcf, cancellationToken);
-                if (localDoc != null && localDoc.State == "Aceptado")
+                // 1. Try local DB search scoped by eNCF and RncEmisor
+                var localDoc = await _documentRepository.GetByENcfAsync(request.ENcf, request.RncEmisor, cancellationToken);
+                if (localDoc != null && (localDoc.State is "AcceptedByDgii" or "Accepted" or "Aceptado") && (string.IsNullOrWhiteSpace(request.RncEmisor) || localDoc.RncEmisor == request.RncEmisor))
                 {
                     // Map to response model
                     var localResponse = new ConsultaEstadoResponse

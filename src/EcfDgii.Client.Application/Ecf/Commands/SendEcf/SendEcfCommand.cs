@@ -11,6 +11,10 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
         string ENcf,
         string? RncComprador,
         decimal TotalAmount,
-        decimal ItbisAmount
+        decimal ItbisAmount,
+        string? TenantId = null,
+        string? SourceTxnId = null,
+        string? Ambiente = null,
+        string? EditSequence = null
     ) : IRequest<Result<EcfRecepcionResponse>>;
 }

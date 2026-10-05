@@ -14,8 +14,25 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpPost("send")]
         public async Task<ActionResult<EcfRecepcionResponse>> SendEcf([FromBody] SendEcfCommand command)
         {
-            ModelState.Clear();
-            var result = await Mediator.Send(command);
+            if (command == null)
+            {
+                return BadRequest(new { error = "El cuerpo de la solicitud no puede estar vacío o malformado." });
+            }
+
+            if (!Request.Headers.ContainsKey("Idempotency-Key") && !Request.Headers.ContainsKey("X-Idempotency-Key"))
+            {
+                return BadRequest(new { error = "Header 'Idempotency-Key' is required for POST /api/ecf/send." });
+            }
+
+            var tenantId = !string.IsNullOrWhiteSpace(command.TenantId) 
+                ? command.TenantId 
+                : (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null);
+            var env = !string.IsNullOrWhiteSpace(command.Ambiente) 
+                ? command.Ambiente 
+                : (Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            var updatedCommand = command with { TenantId = tenantId, Ambiente = env };
+            var result = await Mediator.Send(updatedCommand);
 
             if (result.IsFailure)
             {
@@ -28,7 +45,20 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpPost("send-rfce")]
         public async Task<ActionResult<RfceRecepcionResponse>> SendRfce([FromBody] SendRfceCommand command)
         {
-            ModelState.Clear();
+            if (command == null)
+            {
+                return BadRequest(new { error = "El cuerpo de la solicitud no puede estar vacío o malformado." });
+            }
+
+            if (string.IsNullOrWhiteSpace(command.TenantId) && Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant))
+            {
+                command.TenantId = hTenant.ToString();
+            }
+            if (string.IsNullOrWhiteSpace(command.Ambiente) && Request.Headers.TryGetValue("X-Environment", out var hEnv))
+            {
+                command.Ambiente = hEnv.ToString();
+            }
+
             var result = await Mediator.Send(command);
 
             if (result.IsFailure)

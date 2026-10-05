@@ -582,7 +582,7 @@ namespace EcfDgii.TestRunner
 
         private void ParseTotalsAndItems(SimulationCase c)
         {
-            var doc = new XmlDocument();
+            var doc = new XmlDocument { XmlResolver = null };
             doc.LoadXml(c.SignedXml);
 
             var totalNode = doc.SelectSingleNode("//Totales/MontoTotal");
@@ -637,7 +637,7 @@ namespace EcfDgii.TestRunner
             foreach (var xmlPath in xmlFiles)
             {
                 var xmlContent = File.ReadAllText(xmlPath, Encoding.UTF8);
-                var doc = new XmlDocument();
+                var doc = new XmlDocument { XmlResolver = null };
                 doc.LoadXml(xmlContent);
 
                 var encf = doc.SelectSingleNode("//IdDoc/eNCF")?.InnerText?.Trim() ?? Path.GetFileNameWithoutExtension(xmlPath).Replace(_rncEmisor, "");

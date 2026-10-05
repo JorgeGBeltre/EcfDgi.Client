@@ -85,7 +85,7 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 Id = Guid.Parse("9f3c7e09-e85d-452f-9877-c93d90fcb32d"),
                 Username = "admin",
                 Email = "admin@ecfdgii.client.com",
-                PasswordHash = "$2a$11$TrZocoksYo3ZzpTKy5XdZuw6LBumk7obuD5Viyzo/dTsdAA3ikkDW",
+                PasswordHash = Environment.GetEnvironmentVariable("INITIAL_ADMIN_PASSWORD_HASH") ?? "$2a$11$TrZocoksYo3ZzpTKy5XdZuw6LBumk7obuD5Viyzo/dTsdAA3ikkDW",
                 Role = "Admin",
                 CreatedAt = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
                 CreatedBy = "System",

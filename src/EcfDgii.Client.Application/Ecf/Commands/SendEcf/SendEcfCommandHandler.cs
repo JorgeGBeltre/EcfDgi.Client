@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
@@ -26,42 +27,90 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
 
         public async Task<Result<EcfRecepcionResponse>> Handle(SendEcfCommand request, CancellationToken cancellationToken)
         {
+            var tenantId = !string.IsNullOrWhiteSpace(request.TenantId) ? request.TenantId : request.RncEmisor;
+            var sourceTxnId = !string.IsNullOrWhiteSpace(request.SourceTxnId)
+                ? request.SourceTxnId
+                : (!string.IsNullOrWhiteSpace(request.ENcf) ? request.ENcf : Guid.NewGuid().ToString("N"));
+            var editSequence = !string.IsNullOrWhiteSpace(request.EditSequence) ? request.EditSequence : "1";
+            var ambiente = !string.IsNullOrWhiteSpace(request.Ambiente) ? request.Ambiente : "Certificacion";
+
+            // 1. Pre-commit document before transmitting to DGII to ensure idempotency and unique index protection
+            var doc = new EcfDocument
+            {
+                TenantId = tenantId,
+                SourceTxnId = sourceTxnId,
+                EditSequence = editSequence,
+                Ambiente = ambiente,
+                ENcf = request.ENcf,
+                RncEmisor = request.RncEmisor,
+                RncComprador = request.RncComprador,
+                State = "PreSend",
+                TotalAmount = request.TotalAmount,
+                ItbisAmount = request.ItbisAmount,
+                XmlContent = request.XmlContent,
+                CreatedAt = DateTime.UtcNow
+            };
+
             try
             {
-                // Send via SDK
-                var response = await _ecfClient.SendEcfAsync(request.XmlContent, request.FileName, cancellationToken);
-
-                // Check error returned in response payload (if any)
-                var hasError = !string.IsNullOrEmpty(response.Error);
-
-                // Save submission in database
-                var doc = new EcfDocument
-                {
-                    ENcf = request.ENcf,
-                    RncEmisor = request.RncEmisor,
-                    RncComprador = request.RncComprador,
-                    TrackId = response.TrackId,
-                    State = hasError ? "Rechazado" : "Recibido",
-                    TotalAmount = request.TotalAmount,
-                    ItbisAmount = request.ItbisAmount,
-                    XmlContent = request.XmlContent,
-                    ReceiptDate = DateTime.UtcNow
-                };
-
                 await _documentRepository.AddAsync(doc, cancellationToken);
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception dbEx)
+            {
+                return Result<EcfRecepcionResponse>.Failure($"Failed to persist pre-send document record: {dbEx.Message}");
+            }
 
-                if (hasError)
-                {
-                    return Result<EcfRecepcionResponse>.Failure(response.Mensaje ?? response.Error);
-                }
-
-                return Result<EcfRecepcionResponse>.Success(response);
+            // 2. Transmit to DGII
+            EcfRecepcionResponse response;
+            try
+            {
+                doc.SentToDgiiAt = DateTime.UtcNow;
+                response = await _ecfClient.SendEcfAsync(request.XmlContent, request.FileName, cancellationToken);
             }
             catch (Exception ex)
             {
-                return Result<EcfRecepcionResponse>.Failure($"Failed to send e-CF: {ex.Message}");
+                // Network or transport fault: Mark state Uncertain so reconciler can poll and clarify
+                doc.State = "Uncertain";
+                doc.DgiiResponseXml = $"Error de transmisión: {ex.Message}";
+                try
+                {
+                    _documentRepository.Update(doc);
+                    await _unitOfWork.SaveChangesAsync(cancellationToken);
+                }
+                catch { /* Ignore fallback update error */ }
+
+                return Result<EcfRecepcionResponse>.Failure($"Transmission fault while sending e-CF: {ex.Message}");
             }
+
+            // 3. Process DGII response
+            var hasError = !string.IsNullOrEmpty(response.Error);
+            doc.TrackId = response.TrackId;
+            doc.State = hasError ? "Rechazado" : "Recibido";
+            doc.ReceiptDate = DateTime.UtcNow;
+            if (!string.IsNullOrEmpty(response.Mensaje))
+            {
+                doc.DgiiResponseXml = response.Mensaje;
+            }
+
+            // 4. Update local document; if post-transmission persistence fails, do NOT fail the send result
+            // because DGII has already processed and issued TrackId!
+            try
+            {
+                _documentRepository.Update(doc);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception)
+            {
+                // Swallow post-transmission DB persistence exception; reconciler will sync state via TrackId/eNCF
+            }
+
+            if (hasError)
+            {
+                return Result<EcfRecepcionResponse>.Failure(response.Mensaje ?? response.Error);
+            }
+
+            return Result<EcfRecepcionResponse>.Success(response);
         }
     }
 }

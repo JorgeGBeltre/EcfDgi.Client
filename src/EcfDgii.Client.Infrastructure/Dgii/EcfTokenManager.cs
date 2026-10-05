@@ -116,14 +116,63 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                             return cachedTokenObj.Token;
                         }
                     }
+                    else
+                    {
+                        // MED-071: Another node holds the renewal lock. Wait and poll cache to use the winner's token.
+                        var waitDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
+                        while (DateTimeOffset.UtcNow < waitDeadline && !ct.IsCancellationRequested)
+                        {
+                            await Task.Delay(200, ct);
+                            var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                            if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                            {
+                                _cachedToken = cachedTokenObj.Token;
+                                _tokenExpiry = cachedTokenObj.Expiration;
+                                return _cachedToken;
+                            }
+                        }
+                    }
                 }
 
                 await _renewLock.WaitAsync(ct);
                 try
                 {
+                    // Re-check distributed cache inside semaphore in case another node or local task renewed it
+                    if (_cacheService != null)
+                    {
+                        var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                        if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                        {
+                            _cachedToken = cachedTokenObj.Token;
+                            _tokenExpiry = cachedTokenObj.Expiration;
+                            return _cachedToken;
+                        }
+                    }
+
                     if (!string.IsNullOrEmpty(_cachedToken) && (_tokenExpiry - DateTimeOffset.UtcNow).TotalMinutes > 5)
                     {
                         return _cachedToken;
+                    }
+
+                    // If distributed lock was not acquired earlier, attempt to acquire it now under local semaphore
+                    if (!acquiredDistributedLock && _cacheService != null)
+                    {
+                        acquiredDistributedLock = await _cacheService.AcquireLockAsync(lockKey, lockValue, TimeSpan.FromSeconds(30), ct);
+                        if (!acquiredDistributedLock)
+                        {
+                            // Another node is renewing right now; poll winner's token up to 3 seconds before fallback
+                            for (int i = 0; i < 15 && !ct.IsCancellationRequested; i++)
+                            {
+                                await Task.Delay(200, ct);
+                                var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                                if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                                {
+                                    _cachedToken = cachedTokenObj.Token;
+                                    _tokenExpiry = cachedTokenObj.Expiration;
+                                    return _cachedToken;
+                                }
+                            }
+                        }
                     }
 
                     await RenewTokenAsync(cacheKey, ct);
@@ -164,8 +213,10 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             if (responseBody.TrimStart().StartsWith("<"))
             {
                 var doc = XDocument.Parse(responseBody);
-                token = doc.Root?.Element("token")?.Value;
-                expira = doc.Root?.Element("expira")?.Value;
+                token = doc.Root?.Element("token")?.Value
+                    ?? doc.Descendants().FirstOrDefault(e => e.Name.LocalName.Equals("token", StringComparison.OrdinalIgnoreCase))?.Value;
+                expira = doc.Root?.Element("expira")?.Value
+                    ?? doc.Descendants().FirstOrDefault(e => e.Name.LocalName.Equals("expira", StringComparison.OrdinalIgnoreCase))?.Value;
             }
             else
             {
@@ -176,7 +227,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             }
 
             if (string.IsNullOrWhiteSpace(token))
-                throw new EcfException($"Respuesta de autenticación inválida de DGII: falta token. Cuerpo: {responseBody}");
+                throw new EcfException("Respuesta de autenticación inválida de DGII: falta el elemento token.");
 
             _cachedToken = token;
 

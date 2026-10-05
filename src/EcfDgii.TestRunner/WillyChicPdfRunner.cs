@@ -110,7 +110,7 @@ namespace EcfDgii.TestRunner
         private InvoiceData ParseXml(string xmlPath)
         {
             var content = File.ReadAllText(xmlPath, Encoding.UTF8);
-            var doc = new XmlDocument();
+            var doc = new XmlDocument { XmlResolver = null };
             doc.LoadXml(content);
 
             var encf = doc.SelectSingleNode("//IdDoc/eNCF")?.InnerText?.Trim() ?? Path.GetFileNameWithoutExtension(xmlPath).Replace(RncEmisor, "");

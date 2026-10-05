@@ -16,7 +16,7 @@ namespace EcfDgii.Client.Infrastructure.Serialization
         {
             try
             {
-                var doc = new XmlDocument();
+                var doc = new XmlDocument { XmlResolver = null };
                 doc.LoadXml(xmlContent);
                 var rootName = doc.DocumentElement?.LocalName;
 
