@@ -132,7 +132,7 @@ try
     {
         jwtSecretForKey = "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!";
     }
-    var key = Encoding.ASCII.GetBytes(jwtSecretForKey);
+    var key = Encoding.UTF8.GetBytes(jwtSecretForKey);
 
     var validIssuers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
