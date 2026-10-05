@@ -29,6 +29,9 @@ jobs:
       - name: Restaurar dependencias
         run: dotnet restore EcfDgii.Client.slnx
 
+      - name: Escaneo de vulnerabilidades en dependencias NuGet
+        run: dotnet list EcfDgii.Client.slnx package --vulnerable --include-transitive
+
       - name: Compilar solución
         run: dotnet build EcfDgii.Client.slnx -c Release --no-restore
 
