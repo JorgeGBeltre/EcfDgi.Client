@@ -437,6 +437,14 @@ try
             {
                 Log.Warning(ex, "Database objects already exist. Marking baseline migrations as reconciled.");
                 EnsureMigrationHistoryBaseline(context);
+                try
+                {
+                    context.Database.Migrate();
+                }
+                catch (Exception retryEx)
+                {
+                    Log.Warning(retryEx, "Second migration attempt after baseline reconciliation: {Message}", retryEx.Message);
+                }
             }
         }
     }
@@ -482,6 +490,18 @@ static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
 
             DO $$
             BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = 'ecf_documents'
+                ) THEN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'signed_rfce_content'
+                    ) THEN
+                        ALTER TABLE ecf_documents ADD COLUMN signed_rfce_content text;
+                    END IF;
+                END IF;
+
                 IF EXISTS (
                     SELECT 1 FROM information_schema.tables 
                     WHERE table_schema = 'public' AND table_name = 'customers'
