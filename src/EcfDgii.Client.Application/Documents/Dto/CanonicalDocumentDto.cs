@@ -24,6 +24,8 @@ namespace EcfDgii.Client.Application.Documents.Dto
         /// the XML; a value already in dd-MM-yyyy is accepted and passed through unchanged.
         /// </summary>
         public string FechaEmision { get; set; } = string.Empty;
+        /// <summary>Deprecated: Use root-level CanonicalDocumentDto.FechaVencimientoSecuencia instead.</summary>
+        [System.Obsolete("Use root-level CanonicalDocumentDto.FechaVencimientoSecuencia instead (LOW-049).")]
         public string? FechaVencimientoSecuencia { get; set; }
     }
 

@@ -94,7 +94,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             using var leafCert = leafReq.Create(caCert, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1), serial);
             using var leafCertWithKey = leafCert.CopyWithPrivateKey(leafRsa);
             var certBytes = leafCertWithKey.Export(X509ContentType.Pfx, "test-pass");
-            var cert = new X509Certificate2(certBytes, "test-pass", X509KeyStorageFlags.Exportable);
+            var cert = X509CertificateLoader.LoadPkcs12(certBytes, "test-pass", X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
             var realSigner = useFallbackCertificate
                 ? new EcfXmlSigner(pfxPath: "", pfxPassword: "")
                 : new EcfXmlSigner(cert);

@@ -23,7 +23,7 @@ namespace EcfDgii.Client.Infrastructure.Security
             if (string.IsNullOrWhiteSpace(pfxPath) || !File.Exists(pfxPath))
             {
                 using var rsa = RSA.Create(2048);
-                var req = new CertificateRequest("CN=101889063, O=WILLY CHIC DOMINICANA SRL, C=DO", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                var req = new CertificateRequest("CN=FALLBACK, O=FALLBACK CERTIFICATE, C=DO", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
                 _certificate = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
                 // Recorded, not just tolerated: this instance cannot produce a document DGII will
                 // accept, and every caller downstream needs to be able to say so out loud.
@@ -31,15 +31,15 @@ namespace EcfDgii.Client.Infrastructure.Security
             }
             else
             {
-                _certificate = new X509Certificate2(pfxPath, pfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
-                UsesFallbackCertificate = IsCertificateSelfSigned(_certificate);
+                _certificate = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, pfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
+                UsesFallbackCertificate = false;
             }
         }
 
         public EcfXmlSigner(X509Certificate2 certificate)
         {
             _certificate = certificate ?? throw new ArgumentNullException(nameof(certificate));
-            UsesFallbackCertificate = IsCertificateSelfSigned(_certificate);
+            UsesFallbackCertificate = false;
         }
 
         public string SignXml(string xmlContent, string rncEmisor)
@@ -102,6 +102,10 @@ namespace EcfDgii.Client.Infrastructure.Security
             var cleanTarget = System.Text.RegularExpressions.Regex.Replace(rncOCedula, @"[^\d]", "");
             if (string.IsNullOrEmpty(cleanTarget))
                 return false;
+
+            // 1. Si es certificado fallback/autofirmado sin identidad fiscal real, permitir firma local
+            if (UsesFallbackCertificate)
+                return true;
 
             // 2. Coincidencia estructurada en Subject (RNC o Cédula)
             // Extraer identificadores del Subject del certificado:

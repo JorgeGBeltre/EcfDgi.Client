@@ -357,7 +357,7 @@ try
 
         try
         {
-            using var cert = new X509Certificate2(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+            using var cert = X509CertificateLoader.LoadPkcs12FromFile(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
             var now = DateTime.Now; // X509Certificate2.NotBefore/NotAfter are local time
             if (now < cert.NotBefore || now > cert.NotAfter)
             {

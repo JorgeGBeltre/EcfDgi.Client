@@ -43,7 +43,7 @@ namespace EcfDgii.TestRunner
             Directory.CreateDirectory(SignedXmlsDir);
 
             // 1. Initialize Signer & DGII Transport
-            using var cert = new X509Certificate2(PfxPath, PfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
+            using var cert = X509CertificateLoader.LoadPkcs12FromFile(PfxPath, PfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
             Console.WriteLine($"[INFO] Certificate loaded: {cert.Subject}");
             Console.WriteLine($"[INFO] Valid from {cert.NotBefore} to {cert.NotAfter}");
 
