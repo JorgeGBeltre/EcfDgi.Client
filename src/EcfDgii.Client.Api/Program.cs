@@ -428,7 +428,16 @@ try
         var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         if (context.Database.IsRelational())
         {
-            context.Database.Migrate();
+            EnsureMigrationHistoryBaseline(context);
+            try
+            {
+                context.Database.Migrate();
+            }
+            catch (Exception ex) when (IsRelationAlreadyExists(ex))
+            {
+                Log.Warning(ex, "Database objects already exist. Marking baseline migrations as reconciled.");
+                EnsureMigrationHistoryBaseline(context);
+            }
         }
     }
     catch (Exception ex)
@@ -458,6 +467,83 @@ catch (Exception ex)
 finally
 {
     Log.CloseAndFlush();
+}
+
+static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
+{
+    try
+    {
+        context.Database.ExecuteSqlRaw(@"
+            CREATE TABLE IF NOT EXISTS ""__EFMigrationsHistory"" (
+                ""MigrationId"" character varying(150) NOT NULL,
+                ""ProductVersion"" character varying(32) NOT NULL,
+                CONSTRAINT ""PK___EFMigrationsHistory"" PRIMARY KEY (""MigrationId"")
+            );
+
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = 'customers'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20260805214117_InitialCreate', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20260806123843_RotateSeededAdminPasswordHash', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'last_status_check_at'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20260806141616_AddEcfStatusPollingColumns', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'ambiente'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20261005000000_AddAmbienteColumnAndUniqueIndexes', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'signed_rfce_content'
+                ) THEN
+                    INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
+                    VALUES ('20261005010000_AddSignedRfceContentColumn', '10.0.10')
+                    ON CONFLICT (""MigrationId"") DO NOTHING;
+                END IF;
+            END $$;
+        ");
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Could not run pre-migration baseline check: {Message}", ex.Message);
+    }
+}
+
+static bool IsRelationAlreadyExists(Exception ex)
+{
+    for (var current = ex; current != null; current = current.InnerException!)
+    {
+        if (current is Npgsql.PostgresException pex && (pex.SqlState == "42P07" || pex.SqlState == "42701"))
+        {
+            return true;
+        }
+        if (current.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 public partial class Program { }
