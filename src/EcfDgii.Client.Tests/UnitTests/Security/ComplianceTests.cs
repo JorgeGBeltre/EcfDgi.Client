@@ -95,9 +95,7 @@ namespace EcfDgii.Client.UnitTests.Security
 
             var validator = new EcfSchemaValidator();
             
-            // Resolve path robustly by walking up the directory tree
-            var xsdDir = ResolveXsdDirectory();
-            var xsdPath = ResolveXsdFile(xsdDir, "*RFCE*32*.xsd");
+            var xsdPath = ResolveXsdFile("RFCE 32 v.1.0.xsd");
 
             // Act
             var result = validator.Validate(signedXml, xsdPath);
@@ -171,8 +169,7 @@ namespace EcfDgii.Client.UnitTests.Security
 </ANECF>";
 
             var validator = new EcfSchemaValidator();
-            var xsdDir = ResolveXsdDirectory();
-            var xsdPath = ResolveXsdFile(xsdDir, "*ANECF*.xsd");
+            var xsdPath = ResolveXsdFile("ANECF v.1.0.xsd");
 
             // Act
             var result = validator.Validate(anecfXml, xsdPath);
@@ -200,8 +197,7 @@ namespace EcfDgii.Client.UnitTests.Security
 </ACECF>";
 
             var validator = new EcfSchemaValidator();
-            var xsdDir = ResolveXsdDirectory();
-            var xsdPath = ResolveXsdFile(xsdDir, "*ACECF*.xsd");
+            var xsdPath = ResolveXsdFile("ACECF v.1.0.xsd");
 
             // Act
             var result = validator.Validate(acecfXml, xsdPath);
@@ -210,33 +206,25 @@ namespace EcfDgii.Client.UnitTests.Security
             Assert.True(result.IsValid, string.Join("; ", result.Errors));
         }
 
-        private static string ResolveXsdDirectory()
+        private static string ResolveXsdFile(string exactFileName)
         {
+            var testOutputDir = Path.Combine(AppContext.BaseDirectory, "XSD", exactFileName);
+            if (File.Exists(testOutputDir))
+            {
+                return testOutputDir;
+            }
+
             var currentDir = new DirectoryInfo(AppContext.BaseDirectory);
             while (currentDir != null)
             {
-                var subDirs = currentDir.GetDirectories();
-                foreach (var subDir in subDirs)
+                var candidate = Path.Combine(currentDir.FullName, "Documentación Técnica (XSD)", exactFileName);
+                if (File.Exists(candidate))
                 {
-                    if (subDir.Name.Contains("XSD", StringComparison.OrdinalIgnoreCase) && 
-                        subDir.Name.Contains("Document", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return subDir.FullName;
-                    }
+                    return candidate;
                 }
                 currentDir = currentDir.Parent;
             }
-            throw new DirectoryNotFoundException("XSD directory containing 'XSD' and 'Document' not found in parent path.");
-        }
-
-        private static string ResolveXsdFile(string xsdDir, string searchPattern)
-        {
-            var files = Directory.GetFiles(xsdDir, searchPattern, new EnumerationOptions { MatchCasing = MatchCasing.CaseInsensitive });
-            if (files.Length == 0)
-            {
-                throw new FileNotFoundException($"XSD file matching '{searchPattern}' not found in {xsdDir}");
-            }
-            return files[0];
+            throw new FileNotFoundException($"XSD file '{exactFileName}' not found.");
         }
     }
 }

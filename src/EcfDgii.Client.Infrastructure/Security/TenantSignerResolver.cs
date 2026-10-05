@@ -148,6 +148,12 @@ namespace EcfDgii.Client.Infrastructure.Security
 
                             if (rawData != null && rawData.Length > 0)
                             {
+                                if (rawData.Length > 2 * 1024 * 1024)
+                                {
+                                    _logger.LogError("El certificado para Tenant {Code} en base de datos excede 2 MB.", code);
+                                    throw new EcfSigningException($"El certificado digital para el tenant {code} excede el límite de 2 MB.");
+                                }
+
                                 try
                                 {
                                     var cert = X509CertificateLoader.LoadPkcs12(rawData, password, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);

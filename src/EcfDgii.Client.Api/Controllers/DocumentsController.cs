@@ -201,7 +201,15 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 try
                 {
+                    if (certDto.CertificateBase64.Length > 3 * 1024 * 1024)
+                    {
+                        throw new EcfSigningException("El tamaño del certificado digital provisto excede el límite máximo permitido de 2 MB.");
+                    }
                     var bytes = Convert.FromBase64String(certDto.CertificateBase64);
+                    if (bytes.Length > 2 * 1024 * 1024)
+                    {
+                        throw new EcfSigningException("El tamaño del certificado digital provisto excede el límite máximo permitido de 2 MB.");
+                    }
                     var pwd = certDto.Password ?? string.Empty;
                     var cert = X509CertificateLoader.LoadPkcs12(bytes, pwd, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
                     var loadedSigner = new EcfXmlSigner(cert);
@@ -1064,38 +1072,6 @@ namespace EcfDgii.Client.Api.Controllers
                         doc.TrackId = response.TrackId;
                         doc.State = "Signed";
                         doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
-
-                        // Verificación inmediata: DGII usualmente procesa la validación del e-CF en 1-2 segundos.
-                        // Si DGII ya dictaminó estado, transicionar sincrónicamente para feedback inmediato.
-                        try
-                        {
-                            await Task.Delay(1500);
-                            var resultado = await effectiveClient.ConsultarResultadoAsync(doc.TrackId);
-                            if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
-                            {
-                                var estado = resultado.Estado.Trim();
-                                if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
-                                    string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    doc.State = "AcceptedByDgii";
-                                    doc.DgiiResponseXml = $"Aceptado por DGII: {estado}";
-                                    _logger.LogInformation("e-CF {ENcf}: DGII confirmó '{Estado}' de inmediato.", doc.ENcf, estado);
-                                }
-                                else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    doc.State = "RejectedByDgii";
-                                    var errors = resultado.Mensajes != null 
-                                        ? string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
-                                        : "Rechazado por DGII";
-                                    doc.DgiiResponseXml = errors;
-                                    _logger.LogWarning("e-CF {ENcf}: DGII rechazó de inmediato: {Errors}", doc.ENcf, errors);
-                                }
-                            }
-                        }
-                        catch (Exception checkEx)
-                        {
-                            _logger.LogDebug(checkEx, "Consulta inmediata DGII para {TrackId} no completó; se conciliará en segundo plano.", doc.TrackId);
-                        }
                     }
                     else if (response != null && (!string.IsNullOrWhiteSpace(response.Error) || (response.Mensaje != null && response.Mensaje.Contains("rechazado", StringComparison.OrdinalIgnoreCase))))
                     {
