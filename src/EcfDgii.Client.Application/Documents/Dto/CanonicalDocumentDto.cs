@@ -14,6 +14,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string RncEmisor { get; set; } = string.Empty;
         public string RazonSocialEmisor { get; set; } = string.Empty;
         public string RncComprador { get; set; } = string.Empty;
+        public string? IdentificadorExtranjero { get; set; }
         public string RazonSocialComprador { get; set; } = string.Empty;
         public string? CorreoComprador { get; set; }
         /// <summary>
@@ -166,7 +167,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         /// <summary>Required (obligatorio) only for TipoComprobante "E41". Null for every other type.</summary>
         public CanonicalRetentionDto? Retention { get; set; }
 
-        /// <summary>Optional DGII sequence expiration date (dd-MM-yyyy or yyyy-MM-dd). Default 31-12-2027.</summary>
+        /// <summary>Optional DGII sequence expiration date (dd-MM-yyyy or yyyy-MM-dd). Normative default: 31-12-2028 in Test/Cert; 31-12 of next year (min 2027) in Production.</summary>
         public string? FechaVencimientoSecuencia { get; set; }
     }
 }

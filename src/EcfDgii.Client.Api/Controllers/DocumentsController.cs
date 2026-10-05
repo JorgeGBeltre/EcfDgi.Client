@@ -420,6 +420,15 @@ namespace EcfDgii.Client.Api.Controllers
                     return BadRequest(new { error = "Retention is required for TipoComprobante E47." });
                 }
             }
+            // MED-099: Si se enviaron líneas pero todas son informativas (valor 0 y precio 0), rechazar
+            if (dto.Lines != null && dto.Lines.Count > 0)
+            {
+                var billableLines = dto.Lines.Where(l => !(l.Amount == 0m && l.UnitPrice == 0m)).ToList();
+                if (billableLines.Count == 0)
+                {
+                    return BadRequest(new { error = "El comprobante no posee líneas facturables con importe mayor a cero." });
+                }
+            }
 
             // Checked here, with the other pre-allocation guards: a rate DGII has no bucket for can
             // never produce a truthful document, so it must not cost an eNCF to find that out.
@@ -1457,7 +1466,13 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 else if (tipoEcf == "46")
                 {
-                    if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                    if (!string.IsNullOrWhiteSpace(dto.Header?.IdentificadorExtranjero))
+                    {
+                        var foreignId = dto.Header.IdentificadorExtranjero.Trim();
+                        if (foreignId.Length > 20) foreignId = foreignId[..20];
+                        sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
+                    }
+                    else if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                     {
                         if (System.Text.RegularExpressions.Regex.IsMatch(dto.Header.RncComprador, @"[A-Za-z]"))
                         {
@@ -1486,7 +1501,13 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 else
                 {
-                    if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                    if (!string.IsNullOrWhiteSpace(dto.Header?.IdentificadorExtranjero) && tipoEcf is "32" or "33" or "34" or "44")
+                    {
+                        var foreignId = dto.Header.IdentificadorExtranjero.Trim();
+                        if (foreignId.Length > 20) foreignId = foreignId[..20];
+                        sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
+                    }
+                    else if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                     {
                         if (System.Text.RegularExpressions.Regex.IsMatch(dto.Header.RncComprador, @"[A-Za-z]") && tipoEcf is "32" or "33" or "34" or "44")
                         {
@@ -1731,22 +1752,7 @@ namespace EcfDgii.Client.Api.Controllers
             // Obligatorio para 33 y 34; opcional para los demás si dto.References != null.
             if ((tipoEcf is "33" or "34" || dto.References != null) && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
             {
-                var ncfMod = refs.CorrectsENcf.Trim();
-                if (ncfMod.Length < 11)
-                {
-                    if ((ncfMod.StartsWith("1") || ncfMod.StartsWith("2") || ncfMod.StartsWith("4")) && ncfMod.Length == 9)
-                    {
-                        ncfMod = "B0" + ncfMod;
-                    }
-                    else if (ncfMod.StartsWith("0") && ncfMod.Length == 10)
-                    {
-                        ncfMod = "B" + ncfMod;
-                    }
-                    else if (ncfMod.Length == 8 && ncfMod.All(char.IsDigit))
-                    {
-                        ncfMod = "B02" + ncfMod;
-                    }
-                }
+                var ncfMod = NcfNormalizer.Normalize(refs.CorrectsENcf);
 
                 sb.AppendLine("  <InformacionReferencia>");
                 sb.AppendLine($"    <NCFModificado>{EscapeXml(ncfMod)}</NCFModificado>");
@@ -1952,15 +1958,7 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (result.Count == 0)
             {
-                result.Add(new ProcessedLineItem
-                {
-                    LineNumber = 1,
-                    Name = "Item General",
-                    Quantity = 1.00m,
-                    UnitPrice = 0m,
-                    DiscountAmount = 0m,
-                    MontoItem = 0m
-                });
+                throw new InvalidOperationException("El comprobante no posee líneas facturables con importe mayor a cero.");
             }
 
             return result;
