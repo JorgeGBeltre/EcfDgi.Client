@@ -15,6 +15,7 @@ using EcfDgii.Client.Infrastructure.Configuration;
 using EcfDgii.Client.Infrastructure.Security;
 using EcfDgii.Client.Infrastructure.Serialization;
 using EcfDgii.Client.Shared.Common;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,7 @@ namespace EcfDgii.Client.Api.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [Authorize(Policy = "UserOrWorker")]
     public class DocumentsController : ControllerBase
     {
         // States where the eNCF was allocated and persisted but nothing has left this process yet
@@ -141,7 +143,15 @@ namespace EcfDgii.Client.Api.Controllers
                     var bytes = Convert.FromBase64String(certDto.CertificateBase64);
                     var pwd = certDto.Password ?? string.Empty;
                     var cert = X509CertificateLoader.LoadPkcs12(bytes, pwd, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
-                    return new EcfXmlSigner(cert);
+                    var loadedSigner = new EcfXmlSigner(cert);
+                    if (!string.IsNullOrWhiteSpace(rncEmisor) && !loadedSigner.ValidateCertificateSn(rncEmisor))
+                    {
+                        _logger.LogWarning("Certificado base64 provisto para Tenant {TenantId} no corresponde al RNC emisor {RncEmisor}.", tenantId, rncEmisor);
+                    }
+                    else
+                    {
+                        return loadedSigner;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -149,17 +159,7 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(certDto?.CertificatePath) && System.IO.File.Exists(certDto.CertificatePath))
-            {
-                try
-                {
-                    return new EcfXmlSigner(certDto.CertificatePath, certDto.Password ?? string.Empty);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "No se pudo cargar certificado en ruta {Path}. Se utilizará respaldo.", certDto.CertificatePath);
-                }
-            }
+            // Arbitrary CertificatePath from client body is forbidden for security (HIGH-100)
 
             // Cargar certificado dinámico real desde PostgreSQL (Tenants)
             if (_signerResolver != null && !string.IsNullOrWhiteSpace(rncEmisor))
@@ -181,24 +181,42 @@ namespace EcfDgii.Client.Api.Controllers
             var defaultCertDir = "/app/certificates";
             if (Directory.Exists(defaultCertDir))
             {
-                var tenantCertFile = Path.Combine(defaultCertDir, $"{tenantId}.pfx");
-                if (System.IO.File.Exists(tenantCertFile))
-                {
-                    try
-                    {
-                        return new EcfXmlSigner(tenantCertFile, certDto?.Password ?? "EcfTestPassword123!");
-                    }
-                    catch { }
-                }
+                var fullBaseDir = Path.GetFullPath(defaultCertDir);
+                var safePassword = certDto?.Password ?? _ecfClientOptions.CertificatePassword;
 
-                var rncCertFile = Path.Combine(defaultCertDir, $"{rncEmisor}.pfx");
-                if (System.IO.File.Exists(rncCertFile))
+                if (!string.IsNullOrWhiteSpace(safePassword))
                 {
-                    try
+                    if (System.Text.RegularExpressions.Regex.IsMatch(tenantId, @"^[a-zA-Z0-9_-]{1,100}$"))
                     {
-                        return new EcfXmlSigner(rncCertFile, certDto?.Password ?? "EcfTestPassword123!");
+                        var tenantCertFile = Path.GetFullPath(Path.Combine(defaultCertDir, $"{tenantId}.pfx"));
+                        if (tenantCertFile.StartsWith(fullBaseDir + Path.DirectorySeparatorChar) && System.IO.File.Exists(tenantCertFile))
+                        {
+                            try
+                            {
+                                return new EcfXmlSigner(tenantCertFile, safePassword);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Error al cargar certificado en disco para Tenant {TenantId}.", tenantId);
+                            }
+                        }
                     }
-                    catch { }
+
+                    if (System.Text.RegularExpressions.Regex.IsMatch(rncEmisor, @"^\d{9,11}$"))
+                    {
+                        var rncCertFile = Path.GetFullPath(Path.Combine(defaultCertDir, $"{rncEmisor}.pfx"));
+                        if (rncCertFile.StartsWith(fullBaseDir + Path.DirectorySeparatorChar) && System.IO.File.Exists(rncCertFile))
+                        {
+                            try
+                            {
+                                return new EcfXmlSigner(rncCertFile, safePassword);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Error al cargar certificado en disco para RNC {Rnc}.", rncEmisor);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -240,12 +258,49 @@ namespace EcfDgii.Client.Api.Controllers
             return new EcfClient(tenantOptions, signer: signer, schemaValidator: _schemaValidator);
         }
 
+        private static readonly HashSet<string> ValidTipoComprobantes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "E31", "E32", "E33", "E34", "E41", "E43", "E44", "E45", "E46", "E47"
+        };
+
         [HttpPost]
         public async Task<IActionResult> SubmitCanonicalDocument([FromBody] CanonicalDocumentDto dto)
         {
             if (dto == null || dto.SourceReference == null || string.IsNullOrWhiteSpace(dto.SourceReference.TxnId))
             {
                 return BadRequest(new { error = "SourceReference.TxnId is required." });
+            }
+
+            if (string.IsNullOrWhiteSpace(dto.TipoComprobante) || !ValidTipoComprobantes.Contains(dto.TipoComprobante))
+            {
+                return BadRequest(new { error = $"TipoComprobante '{dto.TipoComprobante}' no es soportado. Valores admitidos: E31, E32, E33, E34, E41, E43, E44, E45, E46, E47." });
+            }
+
+            if (!string.IsNullOrWhiteSpace(dto.Header?.RncEmisor))
+            {
+                var cleanEmisor = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncEmisor, @"[^\d]", "");
+                if (cleanEmisor.Length is not (9 or 11))
+                {
+                    return BadRequest(new { error = $"Header.RncEmisor '{dto.Header.RncEmisor}' es inválido. Debe tener exactamente 9 dígitos (RNC) u 11 dígitos (Cédula)." });
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(dto.Header?.FechaEmision))
+            {
+                if (!DateTime.TryParseExact(dto.Header.FechaEmision.Trim(), AllowedIncomingDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out _) &&
+                    !DateTime.TryParse(dto.Header.FechaEmision.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                {
+                    return BadRequest(new { error = $"Header.FechaEmision '{dto.Header.FechaEmision}' tiene un formato de fecha inválido. Formato requerido: dd-MM-yyyy." });
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(dto.References?.FechaNcfModificado))
+            {
+                if (!DateTime.TryParseExact(dto.References.FechaNcfModificado.Trim(), AllowedIncomingDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out _) &&
+                    !DateTime.TryParse(dto.References.FechaNcfModificado.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                {
+                    return BadRequest(new { error = $"References.FechaNcfModificado '{dto.References.FechaNcfModificado}' tiene un formato de fecha inválido. Formato requerido: dd-MM-yyyy." });
+                }
             }
 
             // Type-specific required fields per DGII's "Formato Comprobante Fiscal Electrónico (e-CF)
@@ -370,10 +425,39 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
-            var tenantId = HttpContext.Items["TenantId"]?.ToString()
-                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null)
-                ?? dto.TenantId
-                ?? "default-tenant";
+            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var clientType = User.FindFirst("client_type")?.Value;
+            var allowedRncsClaim = User.FindFirst("allowed_rncs")?.Value;
+
+            if (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+            {
+                if (Request.Headers.TryGetValue("X-Tenant-Id", out var hHeader) && !string.IsNullOrWhiteSpace(hHeader) && !string.Equals(hHeader.ToString().Trim(), tenantClaim, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Forbid();
+                }
+                if (!string.IsNullOrWhiteSpace(dto.TenantId) && !string.Equals(dto.TenantId.Trim(), tenantClaim, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Forbid();
+                }
+            }
+
+            var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+                ? tenantClaim
+                : (HttpContext.Items["TenantId"]?.ToString()
+                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null)
+                   ?? dto.TenantId
+                   ?? "default-tenant");
+
+            // Enforce worker allowed_rncs claim if configured (HIGH-107)
+            if (clientType == "worker" && !string.IsNullOrWhiteSpace(allowedRncsClaim) && allowedRncsClaim != "*")
+            {
+                var allowedList = allowedRncsClaim.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var effectiveCheckRnc = !string.IsNullOrWhiteSpace(dto.Header?.RncEmisor) ? dto.Header.RncEmisor : _emisorRnc;
+                if (!allowedList.Contains(effectiveCheckRnc, StringComparer.OrdinalIgnoreCase))
+                {
+                    return Forbid();
+                }
+            }
 
             var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
             var ambiente = ResolveAmbienteEnum(rawEnv);
@@ -392,8 +476,42 @@ namespace EcfDgii.Client.Api.Controllers
                 return await HandleExistingDocumentAsync(existingDoc, dto, editSequence, ambiente);
             }
 
+            // HIGH-016: Pre-validar longitudes de cadenas para no quemar la secuencia e-NCF si SaveChanges falla por MaxLength
+            if (tenantId.Length > 100)
+            {
+                return BadRequest(new { error = $"TenantId excede la longitud máxima permitida (100). Recibido: {tenantId.Length}" });
+            }
+            if ((dto.SourceReference?.TxnId?.Length ?? 0) > 100)
+            {
+                return BadRequest(new { error = $"SourceReference.TxnId excede la longitud máxima permitida (100). Recibido: {dto.SourceReference?.TxnId?.Length}" });
+            }
+            if (editSequence.Length > 50)
+            {
+                return BadRequest(new { error = $"EditSequence excede la longitud máxima permitida (50). Recibido: {editSequence.Length}" });
+            }
+            if ((dto.Header?.RncEmisor?.Length ?? 0) > 20)
+            {
+                return BadRequest(new { error = $"RncEmisor excede la longitud máxima permitida (20). Recibido: {dto.Header?.RncEmisor?.Length}" });
+            }
+            if ((dto.Header?.RncComprador?.Length ?? 0) > 20)
+            {
+                return BadRequest(new { error = $"RncComprador excede la longitud máxima permitida (20). Recibido: {dto.Header?.RncComprador?.Length}" });
+            }
+            if ((dto.TipoComprobante?.Length ?? 0) > 10)
+            {
+                return BadRequest(new { error = $"TipoComprobante excede la longitud máxima permitida (10). Recibido: {dto.TipoComprobante?.Length}" });
+            }
+
             // 1. Allocate eNCF Sequence
-            var eNcf = await _sequenceManager.GetNextEncfAsync(sequenceScope, dto.TipoComprobante ?? "E31");
+            string eNcf;
+            try
+            {
+                eNcf = await _sequenceManager.GetNextEncfAsync(sequenceScope, dto.TipoComprobante ?? "E31");
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
 
             var doc = new EcfDocument
             {
@@ -481,8 +599,15 @@ namespace EcfDgii.Client.Api.Controllers
                 var effectiveAmbiente = ambiente ?? ResolveAmbienteEnum(rawEnv);
                 var isFallback = tenantId == "default-tenant" && string.IsNullOrWhiteSpace(rawEnv) && !Request.Headers.ContainsKey("X-Tenant-Id") && string.IsNullOrWhiteSpace(dto.TenantId);
                 var sequenceScope = isFallback ? "default-tenant" : $"{tenantId}:{effectiveAmbiente}";
-
-                var newEncf = await _sequenceManager.GetNextEncfAsync(sequenceScope, dto.TipoComprobante ?? "E31");
+                string newEncf;
+                try
+                {
+                    newEncf = await _sequenceManager.GetNextEncfAsync(sequenceScope, dto.TipoComprobante ?? "E31");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return BadRequest(new { error = ex.Message });
+                }
                 _logger.LogInformation("Reemisión de e-CF previamente rechazado para TxnId {TxnId}: eNCF anterior '{OldEncf}' -> Nuevo eNCF '{NewEncf}'",
                     dto.SourceReference.TxnId, existingDoc.ENcf, newEncf);
 
@@ -744,14 +869,21 @@ namespace EcfDgii.Client.Api.Controllers
                         doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
                         _logger.LogInformation("e-CF de Consumo {ENcf} transmitido y aceptado por RecepcionFC (RFCE).", doc.ENcf);
                     }
-                    else
+                    else if (rfceResp != null && string.Equals(rfceResp.Estado?.Trim(), "Rechazado", StringComparison.OrdinalIgnoreCase))
                     {
                         doc.State = "RejectedByDgii";
-                        var errors = rfceResp?.Mensajes != null && rfceResp.Mensajes.Count > 0
+                        var errors = rfceResp.Mensajes != null && rfceResp.Mensajes.Count > 0
                             ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
-                            : (rfceResp?.Estado ?? "Rechazado por RecepcionFC");
+                            : (rfceResp.Estado ?? "Rechazado por RecepcionFC");
                         doc.DgiiResponseXml = errors;
                         _logger.LogWarning("e-CF de Consumo {ENcf} rechazado por RecepcionFC: {Errors}", doc.ENcf, errors);
+                    }
+                    else
+                    {
+                        // HIGH-041: Respuesta nula o no concluyente de transporte NO es un veredicto de rechazo DGII; debe ser Uncertain
+                        doc.State = "Uncertain";
+                        doc.DgiiResponseXml = rfceResp?.Estado ?? "Respuesta nula o no concluyente de transporte RFCE";
+                        _logger.LogWarning("e-CF de Consumo {ENcf} no obtuvo respuesta concluyente de RFCE. Marcado como 'Uncertain'.", doc.ENcf);
                     }
                 }
                 else
@@ -796,9 +928,18 @@ namespace EcfDgii.Client.Api.Controllers
                             _logger.LogDebug(checkEx, "Consulta inmediata DGII para {TrackId} no completó; se conciliará en segundo plano.", doc.TrackId);
                         }
                     }
-                    else
+                    else if (response != null && !string.IsNullOrWhiteSpace(response.Error))
                     {
                         doc.State = "RejectedByDgii";
+                        doc.DgiiResponseXml = response.Mensaje ?? response.Error;
+                        _logger.LogWarning("e-CF {ENcf} rechazado por DGII al recibir: {Error}", doc.ENcf, doc.DgiiResponseXml);
+                    }
+                    else
+                    {
+                        // HIGH-041: Respuesta nula o sin TrackId sin rechazo explícito de DGII es incierta (Uncertain)
+                        doc.State = "Uncertain";
+                        doc.DgiiResponseXml = "Respuesta nula o sin TrackId desde transporte DGII";
+                        _logger.LogWarning("e-CF {ENcf}: respuesta nula o sin TrackId desde DGII. Marcado como 'Uncertain'.", doc.ENcf);
                     }
                 }
             }
@@ -825,12 +966,15 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpGet("by-source/{txnId}")]
         public async Task<IActionResult> GetBySourceTxnId(string txnId)
         {
-            var tenantId = HttpContext.Items["TenantId"]?.ToString()
-                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
-                ?? "default-tenant";
+            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+                ? tenantClaim
+                : (HttpContext.Items["TenantId"]?.ToString()
+                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                   ?? "default-tenant");
 
             var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => (tenantId == "default-tenant" || d.TenantId == tenantId) && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
+                .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
 
             if (doc == null)
             {
@@ -885,47 +1029,69 @@ namespace EcfDgii.Client.Api.Controllers
                     var isRfce = doc.ENcf.StartsWith("E32", StringComparison.OrdinalIgnoreCase) && doc.TotalAmount < 250000m;
                     if (isRfce)
                     {
-                        ConsultaEstadoResponse? status = null;
-                        try
-                        {
-                            status = await client.ConsultarEstadoAsync(doc.RncEmisor, doc.ENcf);
-                        }
-                        catch { }
+                        var uncertainSince = doc.UpdatedAt.HasValue
+                            ? new DateTimeOffset(doc.UpdatedAt.Value, TimeSpan.Zero)
+                            : new DateTimeOffset(doc.CreatedAt, TimeSpan.Zero);
 
-                        if (status != null && !IsNotFoundByDgii(status))
+                        if (_clock.UtcNow - uncertainSince >= MinimumUncertainAgeBeforeReconciliation)
                         {
-                            doc.TrackId = doc.SecurityCode;
-                            doc.State = "AcceptedByDgii";
-                            doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
-                            doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {status.Estado ?? "Aceptado"}";
-                            await _db.SaveChangesAsync();
-                        }
-                        else
-                        {
-                            // DGII nunca lo recibió: seguro de retransmitir el RFCE firmado
-                            var emisorRazon = _emisorRazonSocial;
-                            var rfceXml = BuildRfceXml(doc, null, emisorRazon);
-                            var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
-                            var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
-
-                            var rfceResp = await client.SendRfceAsync(signedRfce, rfceFileName);
-                            if (rfceResp != null && (rfceResp.Codigo == 1 || string.Equals(rfceResp.Estado?.Trim(), "Aceptado", StringComparison.OrdinalIgnoreCase)))
+                            ConsultaEstadoResponse? status = null;
+                            try
                             {
-                                doc.TrackId = doc.SecurityCode;
-                                doc.State = "AcceptedByDgii";
-                                doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
-                                doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
-                                await _db.SaveChangesAsync();
-                                _logger.LogInformation("e-CF de Consumo {ENcf} retransmitido y aceptado por RecepcionFC (RFCE).", doc.ENcf);
+                                status = await client.ConsultarEstadoAsync(doc.RncEmisor, doc.ENcf);
                             }
-                            else if (rfceResp != null)
+                            catch (Exception ex)
                             {
-                                doc.State = "RejectedByDgii";
-                                var errors = rfceResp.Mensajes != null && rfceResp.Mensajes.Count > 0
-                                    ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
-                                    : (rfceResp.Estado ?? "Rechazado por RecepcionFC");
-                                doc.DgiiResponseXml = errors;
-                                await _db.SaveChangesAsync();
+                                _logger.LogWarning(ex, "Error al consultar estado DGII para reconciliación de eNCF {eNCF}. Se mantiene estado Uncertain.", doc.ENcf);
+                            }
+
+                            if (status != null)
+                            {
+                                var estado = status.Estado?.Trim() ?? string.Empty;
+                                if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase) ||
+                                    status.Codigo == "1")
+                                {
+                                    doc.TrackId = doc.SecurityCode;
+                                    doc.State = "AcceptedByDgii";
+                                    doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                                    doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {status.Estado ?? "Aceptado"}";
+                                    await _db.SaveChangesAsync();
+                                }
+                                else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    doc.State = "RejectedByDgii";
+                                    doc.DgiiResponseXml = $"Rechazado por DGII (RecepcionFC): {status.Estado}";
+                                    await _db.SaveChangesAsync();
+                                }
+                                else if (IsNotFoundByDgii(status))
+                                {
+                                    // DGII confirmó explícitamente que nunca lo recibió: seguro de retransmitir el RFCE firmado
+                                    var emisorRazon = _emisorRazonSocial;
+                                    var rfceXml = BuildRfceXml(doc, null, emisorRazon);
+                                    var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
+                                    var rfceFileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+
+                                    var rfceResp = await client.SendRfceAsync(signedRfce, rfceFileName);
+                                    if (rfceResp != null && (rfceResp.Codigo == 1 || string.Equals(rfceResp.Estado?.Trim(), "Aceptado", StringComparison.OrdinalIgnoreCase)))
+                                    {
+                                        doc.TrackId = doc.SecurityCode;
+                                        doc.State = "AcceptedByDgii";
+                                        doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                                        doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
+                                        await _db.SaveChangesAsync();
+                                        _logger.LogInformation("e-CF de Consumo {ENcf} retransmitido y aceptado por RecepcionFC (RFCE).", doc.ENcf);
+                                    }
+                                    else if (rfceResp != null)
+                                    {
+                                        doc.State = "RejectedByDgii";
+                                        var errors = rfceResp.Mensajes != null && rfceResp.Mensajes.Count > 0
+                                            ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                                            : (rfceResp.Estado ?? "Rechazado por RecepcionFC");
+                                        doc.DgiiResponseXml = errors;
+                                        await _db.SaveChangesAsync();
+                                    }
+                                }
                             }
                         }
                     }
@@ -977,12 +1143,15 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpGet("by-source/{txnId}/xml")]
         public async Task<IActionResult> GetXmlBySourceTxnId(string txnId)
         {
-            var tenantId = HttpContext.Items["TenantId"]?.ToString()
-                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
-                ?? "default-tenant";
+            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+                ? tenantClaim
+                : (HttpContext.Items["TenantId"]?.ToString()
+                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                   ?? "default-tenant");
 
             var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => (tenantId == "default-tenant" || d.TenantId == tenantId) && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
+                .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
 
             if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
             {
@@ -996,12 +1165,15 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpGet("{id:guid}/xml")]
         public async Task<IActionResult> GetXmlById(Guid id)
         {
-            var tenantId = HttpContext.Items["TenantId"]?.ToString()
-                ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
-                ?? "default-tenant";
+            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+                ? tenantClaim
+                : (HttpContext.Items["TenantId"]?.ToString()
+                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                   ?? "default-tenant");
 
             var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => (tenantId == "default-tenant" || d.TenantId == tenantId) && d.Id == id);
+                .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == id);
 
             if (doc == null || string.IsNullOrWhiteSpace(doc.SignedXmlContent))
             {
@@ -1083,7 +1255,7 @@ namespace EcfDgii.Client.Api.Controllers
                 tipoEcf = dto.TipoComprobante.Substring(1); // "E31" -> "31"
             }
             
-            sb.AppendLine($"      <TipoeCF>{tipoEcf}</TipoeCF>");
+            sb.AppendLine($"      <TipoeCF>{EscapeXml(tipoEcf)}</TipoeCF>");
             sb.AppendLine($"      <eNCF>{eNcf}</eNCF>");
 
             // Verified against the real DGII XSDs (checked into this repo under "Documentación
@@ -1153,13 +1325,13 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    <Emisor>");
             // Deliberately emisorRnc/emisorRazonSocial (this instance's configured identity), never
             // dto.Header?.RncEmisor/RazonSocialEmisor — see ApplyCanonicalContent's doc comment.
-            sb.AppendLine($"      <RNCEmisor>{emisorRnc}</RNCEmisor>");
+            sb.AppendLine($"      <RNCEmisor>{EscapeXml(emisorRnc)}</RNCEmisor>");
             var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
             var razonSocialEmisor = EscapeXml(safeEmisorName);
             sb.AppendLine($"      <RazonSocialEmisor>{razonSocialEmisor}</RazonSocialEmisor>");
             sb.AppendLine("      <DireccionEmisor>Distrito Nacional, SD</DireccionEmisor>");
             var fechaEmision = NormalizeFechaDgii(dto.Header?.FechaEmision);
-            sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
+            sb.AppendLine($"      <FechaEmision>{EscapeXml(fechaEmision)}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
 
             // <Comprador> is omitted entirely for tipo 43 (Gastos Menores) because the schema
@@ -1470,14 +1642,14 @@ namespace EcfDgii.Client.Api.Controllers
                 }
 
                 sb.AppendLine("  <InformacionReferencia>");
-                sb.AppendLine($"    <NCFModificado>{ncfMod}</NCFModificado>");
+                sb.AppendLine($"    <NCFModificado>{EscapeXml(ncfMod)}</NCFModificado>");
                 if (!string.IsNullOrWhiteSpace(refs.RncOtroContribuyente))
                 {
                     sb.AppendLine($"    <RNCOtroContribuyente>{EscapeXml(refs.RncOtroContribuyente.Trim())}</RNCOtroContribuyente>");
                 }
                 // The real XSD marks FechaNCFModificado minOccurs="1" (structurally required).
                 var fechaNcfModificado = NormalizeFechaDgii(refs.FechaNcfModificado);
-                sb.AppendLine($"    <FechaNCFModificado>{fechaNcfModificado}</FechaNCFModificado>");
+                sb.AppendLine($"    <FechaNCFModificado>{EscapeXml(fechaNcfModificado)}</FechaNCFModificado>");
                 if (refs.CodigoModificacion is { } codigo)
                 {
                     sb.AppendLine($"    <CodigoModificacion>{codigo}</CodigoModificacion>");
@@ -1560,7 +1732,12 @@ namespace EcfDgii.Client.Api.Controllers
                 return parsed.ToString(DgiiDateFormat, CultureInfo.InvariantCulture);
             }
 
-            return trimmed.Replace('/', '-');
+            if (DateTime.TryParse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.None, out var generalParsed))
+            {
+                return generalParsed.ToString(DgiiDateFormat, CultureInfo.InvariantCulture);
+            }
+
+            throw new ArgumentException($"La fecha '{value}' tiene un formato inválido para DGII.");
         }
 
         /// <summary>

@@ -81,13 +81,9 @@ namespace EcfDgii.Client.Api.Services
             var pollDueCutoff = now - options.PollingInterval;
 
             var due = await db.EcfDocuments
-                // "Signed" = DGII acknowledged receipt with a TrackId. "SentToDgii" is the previous
-                // name for the same state and is still matched so rows written before the rename are
-                // not silently stranded outside every polling pass — the one outcome worse than a
-                // wrong state name is a fiscal record nothing ever looks at again.
-                .Where(d => (d.State == "Signed" || d.State == "SentToDgii")
-                         && d.SentToDgiiAt != null
-                         && d.SentToDgiiAt <= minAgeCutoff
+                // HIGH-042: Incluir también estado "Uncertain" y soportar filas legacy con SentToDgiiAt nulo usando CreatedAt
+                .Where(d => (d.State == "Signed" || d.State == "SentToDgii" || d.State == "Uncertain")
+                         && ((d.SentToDgiiAt != null && d.SentToDgiiAt <= minAgeCutoff) || (d.SentToDgiiAt == null && d.CreatedAt <= minAgeCutoff))
                          && (d.LastStatusCheckAt == null || d.LastStatusCheckAt <= pollDueCutoff))
                 .ToListAsync(ct);
 
@@ -96,7 +92,12 @@ namespace EcfDgii.Client.Api.Services
             foreach (var doc in due)
             {
                 processed++;
-                var age = now - doc.SentToDgiiAt!.Value;
+                var sentTime = doc.SentToDgiiAt ?? doc.CreatedAt;
+                if (doc.SentToDgiiAt == null)
+                {
+                    doc.SentToDgiiAt = sentTime;
+                }
+                var age = now - sentTime;
 
                 if (age >= options.MaxPollingWindow)
                 {

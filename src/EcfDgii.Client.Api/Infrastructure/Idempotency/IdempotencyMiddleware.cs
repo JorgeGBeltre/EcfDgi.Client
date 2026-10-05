@@ -27,7 +27,16 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 return;
             }
 
-            var tenantId = context.User.FindFirst("tenant_id")?.Value ?? "default-tenant";
+            var tenantClaim = context.User.FindFirst("tenant_id")?.Value;
+            var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+                ? tenantClaim
+                : (context.Items["TenantId"]?.ToString()
+                   ?? (context.Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) && !string.IsNullOrWhiteSpace(hTenant) ? hTenant.ToString().Trim() : null)
+                   ?? "default-tenant");
+
+            // Store in context.Items so controllers and middleware share the identical tenant scope
+            context.Items["TenantId"] = tenantId;
+
             var keyId = context.User.FindFirst("worker_key_id")?.Value ?? "default-worker";
             // Key identity is Key = $"{tenantId}:{idempotencyKey}" (Independent of KeyId to safely allow key rotation without duplicating fiscal documents)
             var scopedKey = $"{tenantId}:{idempotencyKey}";

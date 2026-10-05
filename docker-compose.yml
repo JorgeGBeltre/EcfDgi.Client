@@ -5,7 +5,7 @@ services:
     image: redis:7-alpine
     container_name: ecf_dgii_redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel notice
@@ -24,18 +24,18 @@ services:
       dockerfile: Dockerfile
     container_name: ecf_dgii_api
     ports:
-      - "8085:8080"
+      - "127.0.0.1:8085:8080"
     environment:
-      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
       - ASPNETCORE_URLS=http://+:8080
       - DOTNET_SYSTEM_NET_DISABLE_IPV6=1
       # Conexión compartida a la base de datos central ecf_db
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT:-}
       - ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf_dgii_redis:6379}
-      - EcfEmisor__Rnc=101889063
-      - EcfClientOptions__RncEmisor=101889063
-      - WorkerSecretKey=${WORKER_SECRET_KEY:-}
-      - JwtSettings__Secret=${JWT_SECRET:-}
+      - EcfEmisor__Rnc=${ECF_EMISOR_RNC:-101889063}
+      - EcfClientOptions__RncEmisor=${ECF_EMISOR_RNC:-101889063}
+      - WorkerSecretKey=${WORKER_SECRET_KEY:?WORKER_SECRET_KEY is required}
+      - JwtSettings__Secret=${JWT_SECRET:?JWT_SECRET is required}
     depends_on:
       redis:
         condition: service_healthy

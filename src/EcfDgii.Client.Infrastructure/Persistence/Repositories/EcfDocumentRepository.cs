@@ -22,9 +22,14 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Repositories
             return _dbContext.EcfDocuments.FirstOrDefaultAsync(d => d.Id == id, ct);
         }
 
-        public Task<EcfDocument?> GetByENcfAsync(string eNcf, CancellationToken ct = default)
+        public Task<EcfDocument?> GetByENcfAsync(string eNcf, string? rncEmisor = null, CancellationToken ct = default)
         {
-            return _dbContext.EcfDocuments.FirstOrDefaultAsync(d => d.ENcf == eNcf, ct);
+            var query = _dbContext.EcfDocuments.AsQueryable();
+            if (!string.IsNullOrWhiteSpace(rncEmisor))
+            {
+                query = query.Where(d => d.RncEmisor == rncEmisor);
+            }
+            return query.FirstOrDefaultAsync(d => d.ENcf == eNcf, ct);
         }
 
         public Task<EcfDocument?> GetByTrackIdAsync(string trackId, CancellationToken ct = default)

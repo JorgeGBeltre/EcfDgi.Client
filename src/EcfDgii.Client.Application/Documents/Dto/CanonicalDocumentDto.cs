@@ -145,6 +145,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
     {
         public string? CertificateBase64 { get; set; }
         public string? Password { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore]
         public string? CertificatePath { get; set; }
     }
 

@@ -15,7 +15,15 @@ namespace EcfDgii.Client.Api.Controllers
         public async Task<ActionResult<EcfRecepcionResponse>> SendEcf([FromBody] SendEcfCommand command)
         {
             ModelState.Clear();
-            var result = await Mediator.Send(command);
+            var tenantId = !string.IsNullOrWhiteSpace(command.TenantId) 
+                ? command.TenantId 
+                : (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null);
+            var env = !string.IsNullOrWhiteSpace(command.Ambiente) 
+                ? command.Ambiente 
+                : (Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            var updatedCommand = command with { TenantId = tenantId, Ambiente = env };
+            var result = await Mediator.Send(updatedCommand);
 
             if (result.IsFailure)
             {
@@ -29,6 +37,15 @@ namespace EcfDgii.Client.Api.Controllers
         public async Task<ActionResult<RfceRecepcionResponse>> SendRfce([FromBody] SendRfceCommand command)
         {
             ModelState.Clear();
+            if (string.IsNullOrWhiteSpace(command.TenantId) && Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant))
+            {
+                command.TenantId = hTenant.ToString();
+            }
+            if (string.IsNullOrWhiteSpace(command.Ambiente) && Request.Headers.TryGetValue("X-Environment", out var hEnv))
+            {
+                command.Ambiente = hEnv.ToString();
+            }
+
             var result = await Mediator.Send(command);
 
             if (result.IsFailure)

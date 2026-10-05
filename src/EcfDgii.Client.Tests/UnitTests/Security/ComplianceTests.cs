@@ -69,13 +69,13 @@ namespace EcfDgii.Client.UnitTests.Security
                     },
                     Emisor = new RfceEmisor
                     {
-                        RncEmisor = "101672919",
+                        RncEmisor = "101889063",
                         RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
                         FechaEmision = "10-10-2020"
                     },
                     Comprador = new RfceComprador
                     {
-                        RncComprador = "101889063",
+                        RncComprador = "130000000",
                         RazonSocialComprador = "Cliente Test"
                     },
                     Totales = new RfceTotales
@@ -91,7 +91,7 @@ namespace EcfDgii.Client.UnitTests.Security
             var xml = serializer.Serialize(rfce);
 
             var signer = new EcfXmlSigner(string.Empty, string.Empty);
-            var signedXml = signer.SignXml(xml, "101672919");
+            var signedXml = signer.SignXml(xml, "101889063");
 
             var validator = new EcfSchemaValidator();
             

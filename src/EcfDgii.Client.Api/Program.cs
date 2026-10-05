@@ -129,7 +129,16 @@ try
             policy.AuthenticationSchemes.Add("WorkerAuth");
             policy.RequireAssertion(context =>
                 context.User.HasClaim("client_type", "worker") ||
-                context.User.Identity?.IsAuthenticated == true);
+                (context.User.Identity?.IsAuthenticated == true &&
+                 (context.User.IsInRole("Admin") ||
+                  context.User.IsInRole("FiscalOperator") ||
+                  context.User.IsInRole("SuperAdmin") ||
+                  context.User.HasClaim(System.Security.Claims.ClaimTypes.Role, "Admin") ||
+                  context.User.HasClaim(System.Security.Claims.ClaimTypes.Role, "FiscalOperator") ||
+                  context.User.HasClaim(System.Security.Claims.ClaimTypes.Role, "SuperAdmin") ||
+                  context.User.HasClaim("role", "Admin") ||
+                  context.User.HasClaim("role", "FiscalOperator") ||
+                  context.User.HasClaim("role", "SuperAdmin"))));
         });
     });
 

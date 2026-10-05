@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
 using EcfDgii.Client.Domain.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace EcfDgii.Client.Api.Controllers
 {
     [ApiController]
+    [Authorize(Policy = "UserOrWorker")]
     public class EmisorReceptorController : ControllerBase
     {
         private readonly ITenantSignerResolver _signerResolver;
@@ -27,6 +29,7 @@ namespace EcfDgii.Client.Api.Controllers
             _logger = logger;
         }
 
+        [AllowAnonymous]
         [HttpPost("fe/recepcion/api/ecf")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> RecepcioneCF(IFormFile xml)
@@ -51,9 +54,16 @@ namespace EcfDgii.Client.Api.Controllers
                 var rncComprador = doc.SelectSingleNode("//RNCComprador", ns)?.InnerText?.Trim() ?? string.Empty;
                 var encf = doc.SelectSingleNode("//eNCF", ns)?.InnerText?.Trim() ?? string.Empty;
 
-                if (string.IsNullOrEmpty(rncEmisor) || string.IsNullOrEmpty(encf))
+                if (string.IsNullOrEmpty(rncEmisor) || string.IsNullOrEmpty(encf) || string.IsNullOrEmpty(rncComprador))
                 {
-                    return BadRequest("El XML de e-CF provisto no contiene las etiquetas obligatorias RNCEmisor o eNCF.");
+                    return BadRequest("El XML de e-CF provisto no contiene las etiquetas obligatorias RNCEmisor, RNCComprador o eNCF.");
+                }
+
+                // Resolver el firmador dinámicamente para el RNC del comprador/receptor
+                var signer = await _signerResolver.ResolveSignerAsync(rncComprador);
+                if (signer == null || (signer == _defaultSigner && !signer.ValidateCertificateSn(rncComprador)))
+                {
+                    return BadRequest($"RNC Comprador '{rncComprador}' no corresponde a ningún tenant registrado en este sistema.");
                 }
 
                 // Build ARECF (Acuse de Recibo) XML string
@@ -62,9 +72,9 @@ namespace EcfDgii.Client.Api.Controllers
                 arecfBuilder.AppendLine("<ARECF>");
                 arecfBuilder.AppendLine("  <DetalleAcusedeRecibo>");
                 arecfBuilder.AppendLine("    <Version>1.0</Version>");
-                arecfBuilder.AppendLine($"    <RNCEmisor>{rncEmisor}</RNCEmisor>");
-                arecfBuilder.AppendLine($"    <RNCComprador>{rncComprador}</RNCComprador>");
-                arecfBuilder.AppendLine($"    <eNCF>{encf}</eNCF>");
+                arecfBuilder.AppendLine($"    <RNCEmisor>{System.Security.SecurityElement.Escape(rncEmisor)}</RNCEmisor>");
+                arecfBuilder.AppendLine($"    <RNCComprador>{System.Security.SecurityElement.Escape(rncComprador)}</RNCComprador>");
+                arecfBuilder.AppendLine($"    <eNCF>{System.Security.SecurityElement.Escape(encf)}</eNCF>");
                 arecfBuilder.AppendLine("    <Estado>0</Estado>"); // 0 = Aceptado/Recibido
                 var fechaHora = DateTime.Now.ToString("dd-MM-yyyy HH:mm:ss");
                 arecfBuilder.AppendLine($"    <FechaHoraAcuseRecibo>{fechaHora}</FechaHoraAcuseRecibo>");
@@ -72,9 +82,6 @@ namespace EcfDgii.Client.Api.Controllers
                 arecfBuilder.AppendLine("</ARECF>");
 
                 var unsignedArecf = arecfBuilder.ToString();
-                
-                // Resolver el firmador dinámicamente para el RNC del comprador/receptor
-                var signer = await _signerResolver.ResolveSignerAsync(rncComprador);
 
                 // Sign the ARECF XML using the resolved tenant signer certificate
                 var signedArecf = signer.SignXml(unsignedArecf, rncComprador);
@@ -90,6 +97,7 @@ namespace EcfDgii.Client.Api.Controllers
             }
         }
 
+        [AllowAnonymous]
         [HttpPost("fe/aprobacioncomercial/api/ecf")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> AprobacionComercial(IFormFile xml)

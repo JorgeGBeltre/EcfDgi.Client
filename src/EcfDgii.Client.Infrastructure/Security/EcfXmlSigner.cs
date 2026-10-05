@@ -31,12 +31,14 @@ namespace EcfDgii.Client.Infrastructure.Security
             else
             {
                 _certificate = new X509Certificate2(pfxPath, pfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+                UsesFallbackCertificate = IsCertificateSelfSigned(_certificate);
             }
         }
 
         public EcfXmlSigner(X509Certificate2 certificate)
         {
             _certificate = certificate ?? throw new ArgumentNullException(nameof(certificate));
+            UsesFallbackCertificate = IsCertificateSelfSigned(_certificate);
         }
 
         public string SignXml(string xmlContent, string rncEmisor)
@@ -90,47 +92,49 @@ namespace EcfDgii.Client.Infrastructure.Security
             if (string.IsNullOrWhiteSpace(rncOCedula))
                 return false;
 
-            // 1. Permitir bypass si se trata de un certificado autofirmado (entornos de pruebas / unit tests)
-            if (IsCertificateSelfSigned(_certificate))
-                return true;
+            var cleanTarget = System.Text.RegularExpressions.Regex.Replace(rncOCedula, @"[^\d]", "");
+            if (string.IsNullOrEmpty(cleanTarget))
+                return false;
 
-            var cleanSn = System.Text.RegularExpressions.Regex.Replace(rncOCedula, @"[^\d]", "");
-
-            // 2. Coincidencia directa por RNC o Cédula (con formato original o dígitos limpios)
-            if (_certificate.Subject.Contains(rncOCedula, StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrEmpty(cleanSn) && _certificate.Subject.Contains(cleanSn, StringComparison.OrdinalIgnoreCase)) ||
-                _certificate.Issuer.Contains(rncOCedula, StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrEmpty(cleanSn) && _certificate.Issuer.Contains(cleanSn, StringComparison.OrdinalIgnoreCase)) ||
-                _certificate.FriendlyName.Contains(rncOCedula, StringComparison.OrdinalIgnoreCase))
+            // 2. Coincidencia estructurada en Subject (RNC o Cédula)
+            // Extraer identificadores del Subject del certificado:
+            // - SERIALNUMBER (OID 2.5.4.5): ej. IDCDO-00100000001
+            // - organizationIdentifier (OID 2.5.4.97): ej. VATDO-101000001
+            // - Cédula / RNC embebido en CN o Subject
+            var subject = _certificate.Subject ?? string.Empty;
+            
+            // Buscar coincidencias exactas de dígitos del RNC/Cédula dentro del Subject
+            var matches = System.Text.RegularExpressions.Regex.Matches(subject, @"(?<=(IDCDO|VATDO|RNC|CEDULA)?[-:\s]?)(\d{9,11})");
+            foreach (System.Text.RegularExpressions.Match match in matches)
             {
-                return true;
+                if (match.Success && match.Value == cleanTarget)
+                {
+                    return true;
+                }
             }
 
-            // 3. Certificados de Persona Física para Procedimientos Tributarios (Representante Legal delegado ante DGII)
-            // En República Dominicana, las entidades jurídicas pueden firmar e-CF mediante el certificado de su representante
-            // legal o persona física delegada en la Oficina Virtual (OFV) de la DGII.
-            // Estos certificados emitidos por entidades de certificación autorizadas (Viafirma, Avansi, Cámara de Comercio, etc.)
-            // identifican a la persona física (SERIALNUMBER=IDCDO-<Cédula>) con dnQualifier de "TAX PROCEDURES" o "PROCEDIMIENTOS TRIBUTARIOS".
-            var subjectUpper = _certificate.Subject.ToUpperInvariant();
-            var issuerUpper = _certificate.Issuer.ToUpperInvariant();
-
-            var isDominicanCa = issuerUpper.Contains("VIAFIRMA") ||
-                                issuerUpper.Contains("AVANSI") ||
-                                issuerUpper.Contains("CAMARA") ||
-                                issuerUpper.Contains("DIGIFIRMA") ||
-                                issuerUpper.Contains("DOMINICANA") ||
-                                issuerUpper.Contains("C=DO") ||
-                                issuerUpper.Contains("VATDO-");
-
-            var isTaxProcedureOrNaturalPerson = subjectUpper.Contains("TAX PROCEDURES") ||
-                                                subjectUpper.Contains("PROCEDIMIENTOS TRIBUTARIOS") ||
-                                                subjectUpper.Contains("PERSONA FISICA") ||
-                                                subjectUpper.Contains("NATURAL PERSON") ||
-                                                subjectUpper.Contains("IDCDO-");
-
-            if (isDominicanCa && isTaxProcedureOrNaturalPerson)
+            // También verificar en Subject Alternative Names (SAN) si existen
+            try
             {
-                return true;
+                foreach (var ext in _certificate.Extensions)
+                {
+                    if (ext.Oid?.Value == "2.5.29.17") // Subject Alternative Name
+                    {
+                        var sanText = ext.Format(false);
+                        var sanMatches = System.Text.RegularExpressions.Regex.Matches(sanText, @"\d{9,11}");
+                        foreach (System.Text.RegularExpressions.Match sm in sanMatches)
+                        {
+                            if (sm.Success && sm.Value == cleanTarget)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignorar error al leer extensiones
             }
 
             return false;

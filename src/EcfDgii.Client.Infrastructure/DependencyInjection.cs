@@ -97,6 +97,29 @@ namespace EcfDgii.Client.Infrastructure
             // anywhere in this repo's config, so the validation code existed but silently never ran.
             services.PostConfigure<EcfClientOptions>(options =>
             {
+                var flatAmbiente = configuration["Ambiente"] ?? configuration["AMBIENTE"];
+                if (!string.IsNullOrWhiteSpace(flatAmbiente))
+                {
+                    if (string.Equals(flatAmbiente, "Produccion", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(flatAmbiente, "Prod", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(flatAmbiente, "Ecf", StringComparison.OrdinalIgnoreCase))
+                    {
+                        options.Environment = EcfEnvironment.Prod;
+                    }
+                    else if (string.Equals(flatAmbiente, "Certificacion", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(flatAmbiente, "Cert", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(flatAmbiente, "Certecf", StringComparison.OrdinalIgnoreCase))
+                    {
+                        options.Environment = EcfEnvironment.Cert;
+                    }
+                    else if (string.Equals(flatAmbiente, "Test", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(flatAmbiente, "PreCertificacion", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(flatAmbiente, "TestEcf", StringComparison.OrdinalIgnoreCase))
+                    {
+                        options.Environment = EcfEnvironment.Test;
+                    }
+                }
+
                 if (string.IsNullOrWhiteSpace(options.XsdDirectoryPath))
                 {
                     options.XsdDirectoryPath = System.IO.Path.Combine(AppContext.BaseDirectory, "XSD");

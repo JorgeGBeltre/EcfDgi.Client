@@ -14,6 +14,7 @@ namespace EcfDgii.Client.Infrastructure.Security
 {
     public class TenantSignerResolver : ITenantSignerResolver
     {
+        private readonly IConfiguration _configuration;
         private readonly string? _connectionString;
         private readonly IEcfXmlSigner _defaultSigner;
         private readonly ILogger<TenantSignerResolver> _logger;
@@ -27,6 +28,7 @@ namespace EcfDgii.Client.Infrastructure.Security
             IEcfXmlSigner defaultSigner,
             ILogger<TenantSignerResolver> logger)
         {
+            _configuration = configuration;
             _defaultSigner = defaultSigner;
             _logger = logger;
 
@@ -35,6 +37,47 @@ namespace EcfDgii.Client.Infrastructure.Security
                 ?? configuration["ConnectionStrings__DefaultConnection"]
                 ?? configuration["DATABASE_URL"]
                 ?? configuration["DB_CONNECTION_STRING"];
+        }
+
+        private string DecryptPassword(string? cipherTextOrPlain)
+        {
+            if (string.IsNullOrEmpty(cipherTextOrPlain)) return string.Empty;
+            if (!cipherTextOrPlain.StartsWith("enc:v1:")) return cipherTextOrPlain;
+
+            try
+            {
+                var secret = _configuration?["STORAGE_ENCRYPTION_KEY"]
+                    ?? "DevStorageKeyOnlyForLocalUnitTesting2026AtLeast32Bytes!";
+                using var sha256 = System.Security.Cryptography.SHA256.Create();
+                var key = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(secret));
+
+                var rawBase64 = cipherTextOrPlain.Substring("enc:v1:".Length);
+                var combined = Convert.FromBase64String(rawBase64);
+
+                var nonceSize = System.Security.Cryptography.AesGcm.NonceByteSizes.MaxSize;
+                var tagSize = System.Security.Cryptography.AesGcm.TagByteSizes.MaxSize;
+                var cipherLength = combined.Length - nonceSize - tagSize;
+                if (cipherLength < 0) return cipherTextOrPlain;
+
+                var nonce = new byte[nonceSize];
+                var tag = new byte[tagSize];
+                var cipherBytes = new byte[cipherLength];
+
+                Buffer.BlockCopy(combined, 0, nonce, 0, nonceSize);
+                Buffer.BlockCopy(combined, nonceSize, tag, 0, tagSize);
+                Buffer.BlockCopy(combined, nonceSize + tagSize, cipherBytes, 0, cipherLength);
+
+                var plainBytes = new byte[cipherLength];
+                using var aesGcm = new System.Security.Cryptography.AesGcm(key, tagSize);
+                aesGcm.Decrypt(nonce, cipherBytes, tag, plainBytes);
+
+                return System.Text.Encoding.UTF8.GetString(plainBytes);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to decrypt certificate password from database");
+                return cipherTextOrPlain;
+            }
         }
 
         public async Task<IEcfXmlSigner> ResolveSignerAsync(string? rnc, CancellationToken ct = default)
@@ -81,7 +124,8 @@ namespace EcfDgii.Client.Infrastructure.Security
                         var code = reader["Code"] as string;
                         var companyName = reader["CompanyName"] as string ?? code;
                         var rawData = reader["CertificateRawData"] as byte[];
-                        var password = reader["CertificatePasswordEncrypted"] as string ?? string.Empty;
+                        var rawPassword = reader["CertificatePasswordEncrypted"] as string ?? string.Empty;
+                        var password = DecryptPassword(rawPassword);
 
                         if (rawData != null && rawData.Length > 0)
                         {
@@ -117,7 +161,10 @@ namespace EcfDgii.Client.Infrastructure.Security
                     {
                         try
                         {
-                            var signer = new EcfXmlSigner(pfxByRnc, "Fy7g6Q9W");
+                            var diskPassword = _configuration["EcfClientOptions:CertificatePassword"]
+                                ?? _configuration["CERTIFICATE_PASSWORD"]
+                                ?? string.Empty;
+                            var signer = new EcfXmlSigner(pfxByRnc, diskPassword);
                             _logger.LogInformation("Certificado digital cargado desde archivo {Path} para RNC {Rnc}", pfxByRnc, cleanRnc);
                             _cache[cleanRnc] = (signer, DateTime.UtcNow.Add(CacheDuration));
                             return signer;

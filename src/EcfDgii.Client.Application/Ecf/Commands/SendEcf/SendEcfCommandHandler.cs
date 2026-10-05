@@ -34,9 +34,20 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
                 // Check error returned in response payload (if any)
                 var hasError = !string.IsNullOrEmpty(response.Error);
 
+                var tenantId = !string.IsNullOrWhiteSpace(request.TenantId) ? request.TenantId : request.RncEmisor;
+                var sourceTxnId = !string.IsNullOrWhiteSpace(request.SourceTxnId)
+                    ? request.SourceTxnId
+                    : (!string.IsNullOrWhiteSpace(request.ENcf) ? request.ENcf : Guid.NewGuid().ToString("N"));
+                var editSequence = !string.IsNullOrWhiteSpace(request.EditSequence) ? request.EditSequence : "1";
+                var ambiente = request.Ambiente;
+
                 // Save submission in database
                 var doc = new EcfDocument
                 {
+                    TenantId = tenantId,
+                    SourceTxnId = sourceTxnId,
+                    EditSequence = editSequence,
+                    Ambiente = ambiente,
                     ENcf = request.ENcf,
                     RncEmisor = request.RncEmisor,
                     RncComprador = request.RncComprador,

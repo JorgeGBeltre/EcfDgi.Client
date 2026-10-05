@@ -83,17 +83,21 @@ namespace EcfDgii.Client.UnitTests.Documents
             // in-memory cert's private-key handle is tied to the RSA instance's lifetime, which is
             // disposed when this factory method returns — well before the test actually signs a
             // document. Reloading from exported PFX bytes gives the signer its own independent handle.
-            using var rsa = RSA.Create(2048);
-            var req = new CertificateRequest("CN=101889063, O=WILLY CHIC DOMINICANA SRL", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            using var ephemeralCert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
-            var certBytes = ephemeralCert.Export(X509ContentType.Pfx, "test-pass");
+            using var caRsa = RSA.Create(2048);
+            var caReq = new CertificateRequest("CN=Test Root CA, O=Test CA, C=DO", caRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            caReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: true, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
+            using var caCert = caReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
+
+            using var leafRsa = RSA.Create(2048);
+            var leafReq = new CertificateRequest("CN=101889063, O=WILLY CHIC DOMINICANA SRL, C=DO", leafRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var serial = new byte[] { 1, 2, 3, 4 };
+            using var leafCert = leafReq.Create(caCert, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1), serial);
+            using var leafCertWithKey = leafCert.CopyWithPrivateKey(leafRsa);
+            var certBytes = leafCertWithKey.Export(X509ContentType.Pfx, "test-pass");
             var cert = new X509Certificate2(certBytes, "test-pass", X509KeyStorageFlags.Exportable);
-            // useFallbackCertificate exercises the no-certificate-configured path: EcfXmlSigner
-            // silently self-generates one, which is precisely the condition the Unsigned state exists
-            // to make visible.
             var realSigner = useFallbackCertificate
                 ? new EcfXmlSigner(pfxPath: "", pfxPassword: "")
-                : new EcfXmlSigner(cert); // real signer — ValidateCertificateSn's self-signed-cert bypass covers this
+                : new EcfXmlSigner(cert);
 
             // Spies on the real signer so a test can assert the pre-signature XSD gate short-circuits
             // BEFORE ever calling it — a structurally-broken document must never reach signing/DGII.
@@ -1136,7 +1140,10 @@ namespace EcfDgii.Client.UnitTests.Documents
   </DetalleAcusedeRecibo>
 </ARECF>";
 
-            var signer = new EcfXmlSigner(string.Empty, string.Empty);
+            using var arecfRsa = RSA.Create(2048);
+            var arecfReq = new CertificateRequest("CN=130000000, O=Test Comprador, C=DO", arecfRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using var arecfCert = arecfReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+            var signer = new EcfXmlSigner(arecfCert);
             var signedArecf = signer.SignXml(unsignedArecf, "130000000");
 
             var validation = new EcfSchemaValidator().Validate(signedArecf, XsdPath("ARECF v1.0.xsd"));

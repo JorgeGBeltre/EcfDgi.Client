@@ -164,8 +164,10 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             if (responseBody.TrimStart().StartsWith("<"))
             {
                 var doc = XDocument.Parse(responseBody);
-                token = doc.Root?.Element("token")?.Value;
-                expira = doc.Root?.Element("expira")?.Value;
+                token = doc.Root?.Element("token")?.Value
+                    ?? doc.Descendants().FirstOrDefault(e => e.Name.LocalName.Equals("token", StringComparison.OrdinalIgnoreCase))?.Value;
+                expira = doc.Root?.Element("expira")?.Value
+                    ?? doc.Descendants().FirstOrDefault(e => e.Name.LocalName.Equals("expira", StringComparison.OrdinalIgnoreCase))?.Value;
             }
             else
             {
@@ -176,7 +178,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             }
 
             if (string.IsNullOrWhiteSpace(token))
-                throw new EcfException($"Respuesta de autenticación inválida de DGII: falta token. Cuerpo: {responseBody}");
+                throw new EcfException("Respuesta de autenticación inválida de DGII: falta el elemento token.");
 
             _cachedToken = token;
 
