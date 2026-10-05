@@ -90,13 +90,19 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail("Worker key has expired. Code: key_expired.");
             }
 
+            // Cap nonce length to prevent unbounded memory allocation
+            if (nonce.Length > 128)
+            {
+                return AuthenticateResult.Fail("Nonce length exceeds maximum allowed limit.");
+            }
+
             // 4. Safely Read Request Body & Verify HMAC Signature FIRST (Before mutating state/nonce cache)
             if (Request.ContentLength.HasValue && Request.ContentLength.Value > MaxRequestBodySizeBytes)
             {
                 return AuthenticateResult.Fail($"Request body exceeds max allowed size of {MaxRequestBodySizeBytes} bytes.");
             }
 
-            Request.EnableBuffering();
+            Request.EnableBuffering(bufferThreshold: 64 * 1024);
             string bodyStr = string.Empty;
             if (Request.Body.CanRead)
             {
@@ -104,6 +110,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 bodyStr = await reader.ReadToEndAsync();
                 Request.Body.Position = 0; // Rewind for model binder / controller
             }
+            Context.Items["RawRequestBody"] = bodyStr;
 
             // Use RawTarget feature for literal, undecoded URI matching (preserves %7E, %2f, accents, spaces & reverse proxy prefixes byte-for-byte)
             var httpFeature = Context.Features.Get<IHttpRequestFeature>();

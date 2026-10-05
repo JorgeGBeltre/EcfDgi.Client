@@ -84,78 +84,97 @@ namespace EcfDgii.Client.Api.Services
             var pollDueCutoff = now - options.PollingInterval;
             var batchSize = options.BatchSize > 0 ? options.BatchSize : 50;
 
+            // MED-163: AsNoTracking + Select only the columns needed for reconciliation to avoid materializing unbounded XML columns
             var due = await db.EcfDocuments
-                // HIGH-042 & MED-018: Incluir también estado "Uncertain", ordenar por LastStatusCheckAt, y limitar por batchSize
+                .AsNoTracking()
                 .Where(d => (d.State == "Signed" || d.State == "SentToDgii" || d.State == "Uncertain")
                          && ((d.SentToDgiiAt != null && d.SentToDgiiAt <= minAgeCutoff) || (d.SentToDgiiAt == null && d.CreatedAt <= minAgeCutoff))
                          && (d.LastStatusCheckAt == null || d.LastStatusCheckAt <= pollDueCutoff))
-                .OrderBy(d => d.LastStatusCheckAt ?? DateTime.MinValue)
-                .Take(batchSize)
+                .OrderBy(d => d.SentToDgiiAt ?? d.CreatedAt)
+                .Take(Math.Min(batchSize, 200))
+                .Select(d => new ReconcileDocDto(
+                    d.Id,
+                    d.ENcf,
+                    d.RncEmisor,
+                    d.RncComprador,
+                    d.SecurityCode,
+                    d.TrackId,
+                    d.State,
+                    d.Ambiente,
+                    d.SentToDgiiAt,
+                    d.CreatedAt,
+                    d.LastStatusCheckAt,
+                    d.StatusCheckAttempts))
                 .ToListAsync(ct);
 
             var processed = 0;
+            var dynamicClients = new Dictionary<string, IEcfClient>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var doc in due)
             {
                 processed++;
                 var sentTime = doc.SentToDgiiAt ?? doc.CreatedAt;
-                if (doc.SentToDgiiAt == null)
-                {
-                    doc.SentToDgiiAt = sentTime;
-                }
                 var age = now - sentTime;
 
                 if (age >= options.MaxPollingWindow)
                 {
-                    doc.LastStatusCheckAt = now;
                     var isTest = !string.IsNullOrWhiteSpace(doc.Ambiente) &&
                                  EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente) == EcfEnvironment.Test;
+                    var finalState = isTest ? "Expired" : "RequiresManualReview";
+
                     if (isTest)
                     {
-                        // In non-production test environments (PreCertificacion / Test), stale documents have no fiscal consequence;
-                        // mark Expired and log at Warning rather than escalating to RequiresManualReview / LogCritical.
-                        doc.State = "Expired";
                         logger.LogWarning(
                             "e-CF de prueba {ENcf} (RNC {RncEmisor}, Ambiente {Ambiente}) no se confirmó tras {Hours}h; marcado como Expired.",
                             doc.ENcf, doc.RncEmisor, doc.Ambiente, age.TotalHours);
                     }
                     else
                     {
-                        doc.State = "RequiresManualReview";
                         logger.LogCritical(
                             "e-CF {ENcf} (RNC {RncEmisor}) lleva {Hours}h sin confirmación definitiva de DGII " +
                             "(ventana de {MaxHours}h agotada); requiere revisión manual.",
                             doc.ENcf, doc.RncEmisor, age.TotalHours, options.MaxPollingWindow.TotalHours);
                     }
+
+                    await UpdateDocStatusAsync(doc.Id, finalState, now, doc.StatusCheckAttempts, sentTime, null, ct);
                     continue;
                 }
+
+                string? dgiiResponseXml = null;
+                string? estado = null;
+                var attempts = doc.StatusCheckAttempts + 1;
+                var newState = doc.State;
 
                 try
                 {
                     var clientToUse = ecfClient;
                     if (signerResolver != null && !string.IsNullOrWhiteSpace(doc.RncEmisor))
                     {
-                        try
+                        if (!dynamicClients.TryGetValue(doc.RncEmisor, out clientToUse!))
                         {
-                            var dynamicSigner = await signerResolver.ResolveSignerAsync(doc.RncEmisor, ct);
-                            var env = EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente);
-
-                            var clientOpts = new EcfClientOptions
+                            try
                             {
-                                RncEmisor = doc.RncEmisor,
-                                Environment = env,
-                                Mode = IntegrationMode.DgiiDirect,
-                                ValidateSchemasLocal = false
-                            };
-                            clientToUse = new EcfClient(clientOpts, signer: dynamicSigner);
-                        }
-                        catch (Exception resolveEx)
-                        {
-                            logger.LogDebug(resolveEx, "No se pudo resolver signer dinámico para {Rnc}; usando ecfClient default.", doc.RncEmisor);
+                                var dynamicSigner = await signerResolver.ResolveSignerAsync(doc.RncEmisor, ct);
+                                var env = EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente);
+
+                                var clientOpts = new EcfClientOptions
+                                {
+                                    RncEmisor = doc.RncEmisor,
+                                    Environment = env,
+                                    Mode = IntegrationMode.DgiiDirect,
+                                    ValidateSchemasLocal = false
+                                };
+                                clientToUse = new EcfClient(clientOpts, signer: dynamicSigner);
+                                dynamicClients[doc.RncEmisor] = clientToUse;
+                            }
+                            catch (Exception resolveEx)
+                            {
+                                logger.LogDebug(resolveEx, "No se pudo resolver signer dinámico para {Rnc}; usando ecfClient default.", doc.RncEmisor);
+                                clientToUse = ecfClient;
+                            }
                         }
                     }
 
-                    string? estado = null;
                     if (!string.IsNullOrWhiteSpace(doc.TrackId))
                     {
                         try
@@ -166,11 +185,11 @@ namespace EcfDgii.Client.Api.Services
                                 estado = resultado.Estado.Trim();
                                 if (resultado.Mensajes != null && resultado.Mensajes.Count > 0)
                                 {
-                                    doc.DgiiResponseXml = $"[{resultado.Estado}] " + string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"));
+                                    dgiiResponseXml = $"[{resultado.Estado}] " + string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"));
                                 }
                                 else
                                 {
-                                    doc.DgiiResponseXml = $"Estado DGII: {estado}";
+                                    dgiiResponseXml = $"Estado DGII: {estado}";
                                 }
                             }
                         }
@@ -187,51 +206,93 @@ namespace EcfDgii.Client.Api.Services
                         if (response != null && !string.IsNullOrWhiteSpace(response.Estado))
                         {
                             estado = response.Estado.Trim();
-                            doc.DgiiResponseXml = $"Estado DGII: {estado}";
+                            dgiiResponseXml = $"Estado DGII: {estado}";
                         }
                     }
 
-                    doc.LastStatusCheckAt = now;
-                    doc.StatusCheckAttempts++;
-
                     if (estado != null && AcceptedEstados.Contains(estado))
                     {
-                        doc.State = "AcceptedByDgii";
+                        newState = "AcceptedByDgii";
                         logger.LogInformation("e-CF {ENcf}: DGII confirmó '{Estado}'.", doc.ENcf, estado);
                     }
                     else if (estado != null && RejectedEstados.Contains(estado))
                     {
-                        doc.State = "RejectedByDgii";
+                        newState = "RejectedByDgii";
                         logger.LogCritical(
                             "ALERTA: e-CF {ENcf} (RNC {RncEmisor}) fue aceptado en recepción y luego " +
                             "RECHAZADO por DGII tras verificación posterior. Requiere atención — el " +
                             "comprobante no tiene validez fiscal.",
                             doc.ENcf, doc.RncEmisor);
                     }
-                    // Else (No encontrado / En proceso / unrecognized): stays SentToDgii, retried next pass.
                 }
                 catch (Exception ex)
                 {
-                    // A transport failure is not a DGII verdict — advance the counters (so the
-                    // MaxPollingWindow clock still runs and this doesn't retry every single pass
-                    // forever) but leave State untouched.
-                    doc.LastStatusCheckAt = now;
-                    doc.StatusCheckAttempts++;
                     logger.LogWarning(ex, "Fallo consultando estado DGII para e-CF {ENcf}; se reintentará.", doc.ENcf);
                 }
 
-                // Checkpoint each document update so crashes or transient failures don't clobber batch progress (MED-018)
-                try
-                {
-                    await db.SaveChangesAsync(ct);
-                }
-                catch (Exception saveEx)
-                {
-                    logger.LogError(saveEx, "Error persistiendo reconciliación para comprobante {ENcf}", doc.ENcf);
-                }
+                await UpdateDocStatusAsync(doc.Id, newState, now, attempts, sentTime, dgiiResponseXml, ct);
             }
 
             return processed;
         }
+
+        private async Task UpdateDocStatusAsync(
+            Guid docId,
+            string state,
+            DateTime lastCheck,
+            int attempts,
+            DateTime sentTime,
+            string? dgiiResponseXml,
+            CancellationToken ct)
+        {
+            try
+            {
+                if (db.Database.IsRelational())
+                {
+                    await db.EcfDocuments
+                        .Where(d => d.Id == docId)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(d => d.State, state)
+                            .SetProperty(d => d.LastStatusCheckAt, lastCheck)
+                            .SetProperty(d => d.StatusCheckAttempts, attempts)
+                            .SetProperty(d => d.SentToDgiiAt, sentTime)
+                            .SetProperty(d => d.DgiiResponseXml, d => dgiiResponseXml ?? d.DgiiResponseXml), ct);
+                }
+                else
+                {
+                    var attached = await db.EcfDocuments.FindAsync(new object[] { docId }, ct);
+                    if (attached != null)
+                    {
+                        attached.State = state;
+                        attached.LastStatusCheckAt = lastCheck;
+                        attached.StatusCheckAttempts = attempts;
+                        attached.SentToDgiiAt = sentTime;
+                        if (dgiiResponseXml != null)
+                        {
+                            attached.DgiiResponseXml = dgiiResponseXml;
+                        }
+                        await db.SaveChangesAsync(ct);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error persistiendo reconciliación para comprobante {DocId}", docId);
+            }
+        }
     }
+
+    internal sealed record ReconcileDocDto(
+        Guid Id,
+        string ENcf,
+        string RncEmisor,
+        string? RncComprador,
+        string? SecurityCode,
+        string? TrackId,
+        string State,
+        string? Ambiente,
+        DateTime? SentToDgiiAt,
+        DateTime CreatedAt,
+        DateTime? LastStatusCheckAt,
+        int StatusCheckAttempts);
 }

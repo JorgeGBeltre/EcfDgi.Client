@@ -29,7 +29,11 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return false; // Nonce already seen -> replay attack
             }
 
-            _memoryCache.Set(cacheKey, true, ttl);
+            _memoryCache.Set(cacheKey, true, new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = ttl,
+                Size = 1
+            });
             return true;
         }
     }

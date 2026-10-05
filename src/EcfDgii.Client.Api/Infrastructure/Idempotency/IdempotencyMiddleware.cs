@@ -41,14 +41,21 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
             // Key identity is Key = $"{tenantId}:{idempotencyKey}" (Independent of KeyId to safely allow key rotation without duplicating fiscal documents)
             var scopedKey = $"{tenantId}:{idempotencyKey}";
 
-            // Read request body safely to compute SHA-256 payload hash
-            context.Request.EnableBuffering();
+            // Read request body safely to compute SHA-256 payload hash (reuse cached body string from worker auth if present)
             string bodyStr = string.Empty;
-            if (context.Request.Body.CanRead)
+            if (context.Items.TryGetValue("RawRequestBody", out var cachedBody) && cachedBody is string s)
             {
-                using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, true, 1024, leaveOpen: true);
-                bodyStr = await reader.ReadToEndAsync();
-                context.Request.Body.Position = 0; // Rewind for model binder / controller
+                bodyStr = s;
+            }
+            else
+            {
+                context.Request.EnableBuffering(bufferThreshold: 64 * 1024);
+                if (context.Request.Body.CanRead)
+                {
+                    using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, true, 1024, leaveOpen: true);
+                    bodyStr = await reader.ReadToEndAsync();
+                    context.Request.Body.Position = 0; // Rewind for model binder / controller
+                }
             }
 
             var payloadHash = ComputeSha256Hex(bodyStr);

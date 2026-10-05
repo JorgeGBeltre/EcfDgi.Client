@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -48,7 +50,28 @@ try
     Log.Information("Starting web host");
 
     // Add services to the container
-    builder.Services.AddMemoryCache();
+    builder.Services.AddMemoryCache(options =>
+    {
+        options.SizeLimit = 100_000;
+    });
+    builder.Services.AddResponseCompression();
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        {
+            var key = httpContext.User.FindFirst("worker_key_id")?.Value
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous";
+            return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 600,
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 20
+            });
+        });
+    });
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
     builder.Services.AddSingleton<IClock, SystemClock>();
@@ -344,6 +367,9 @@ try
         Log.Fatal(ex, "Failed to apply database migrations on startup: {Message}", ex.Message);
         throw;
     }
+
+    app.UseResponseCompression();
+    app.UseRateLimiter();
 
     app.UseAuthentication();
     app.UseAuthorization();

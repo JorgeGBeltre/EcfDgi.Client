@@ -292,6 +292,8 @@ namespace EcfDgii.Client.Api.Controllers
             return _signer;
         }
 
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, IEcfClient> _clientCache = new();
+
         private IEcfClient ResolveEcfClient(string rncEmisor, IEcfXmlSigner signer, AmbienteEnum ambiente, bool isDefaultFallback = true)
         {
             if (isDefaultFallback || (signer == _signer && rncEmisor == _emisorRnc && ambiente == _defaultAmbiente))
@@ -299,22 +301,26 @@ namespace EcfDgii.Client.Api.Controllers
                 return _ecfClient;
             }
 
-            var tenantOptions = new EcfClientOptions
+            var cacheKey = $"{rncEmisor}:{(int)ambiente}:{signer.GetHashCode()}";
+            return _clientCache.GetOrAdd(cacheKey, _ =>
             {
-                RncEmisor = rncEmisor,
-                Environment = ambiente switch
+                var tenantOptions = new EcfClientOptions
                 {
-                    AmbienteEnum.PreCertificacion => EcfEnvironment.Test,
-                    AmbienteEnum.Certificacion => EcfEnvironment.Cert,
-                    AmbienteEnum.Produccion => EcfEnvironment.Prod,
-                    _ => EcfEnvironment.Cert
-                },
-                Mode = IntegrationMode.DgiiDirect,
-                ValidateSchemasLocal = _ecfClientOptions.ValidateSchemasLocal,
-                XsdDirectoryPath = _ecfClientOptions.XsdDirectoryPath
-            };
+                    RncEmisor = rncEmisor,
+                    Environment = ambiente switch
+                    {
+                        AmbienteEnum.PreCertificacion => EcfEnvironment.Test,
+                        AmbienteEnum.Certificacion => EcfEnvironment.Cert,
+                        AmbienteEnum.Produccion => EcfEnvironment.Prod,
+                        _ => EcfEnvironment.Cert
+                    },
+                    Mode = IntegrationMode.DgiiDirect,
+                    ValidateSchemasLocal = _ecfClientOptions.ValidateSchemasLocal,
+                    XsdDirectoryPath = _ecfClientOptions.XsdDirectoryPath
+                };
 
-            return new EcfClient(tenantOptions, signer: signer, schemaValidator: _schemaValidator);
+                return new EcfClient(tenantOptions, signer: signer, schemaValidator: _schemaValidator);
+            });
         }
 
         private static readonly HashSet<string> ValidTipoComprobantes = new(StringComparer.OrdinalIgnoreCase)

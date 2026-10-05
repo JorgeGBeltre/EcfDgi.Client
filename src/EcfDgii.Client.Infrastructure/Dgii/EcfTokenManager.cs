@@ -137,9 +137,42 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 await _renewLock.WaitAsync(ct);
                 try
                 {
+                    // Re-check distributed cache inside semaphore in case another node or local task renewed it
+                    if (_cacheService != null)
+                    {
+                        var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                        if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                        {
+                            _cachedToken = cachedTokenObj.Token;
+                            _tokenExpiry = cachedTokenObj.Expiration;
+                            return _cachedToken;
+                        }
+                    }
+
                     if (!string.IsNullOrEmpty(_cachedToken) && (_tokenExpiry - DateTimeOffset.UtcNow).TotalMinutes > 5)
                     {
                         return _cachedToken;
+                    }
+
+                    // If distributed lock was not acquired earlier, attempt to acquire it now under local semaphore
+                    if (!acquiredDistributedLock && _cacheService != null)
+                    {
+                        acquiredDistributedLock = await _cacheService.AcquireLockAsync(lockKey, lockValue, TimeSpan.FromSeconds(30), ct);
+                        if (!acquiredDistributedLock)
+                        {
+                            // Another node is renewing right now; poll winner's token up to 3 seconds before fallback
+                            for (int i = 0; i < 15 && !ct.IsCancellationRequested; i++)
+                            {
+                                await Task.Delay(200, ct);
+                                var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
+                                if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
+                                {
+                                    _cachedToken = cachedTokenObj.Token;
+                                    _tokenExpiry = cachedTokenObj.Expiration;
+                                    return _cachedToken;
+                                }
+                            }
+                        }
                     }
 
                     await RenewTokenAsync(cacheKey, ct);

@@ -14,7 +14,7 @@ using EcfDgii.Client.Infrastructure.Persistence;
 
 namespace EcfDgii.Client
 {
-    public class EcfClient : IEcfClient
+    public class EcfClient : IEcfClient, IDisposable
     {
         private readonly IEcfTransport _transport;
         private readonly EcfValidator _validator;
@@ -23,6 +23,8 @@ namespace EcfDgii.Client
         private readonly EcfClientOptions _options;
         private readonly IEcfXmlSigner _signer;
         private readonly IEcfSchemaValidator _schemaValidator;
+        private readonly HttpClient? _httpClient;
+        private readonly bool _ownsHttpClient;
 
         private const decimal RfceThreshold = 250_000.00m;
 
@@ -31,7 +33,8 @@ namespace EcfDgii.Client
             IEcfTransport? transport = null, 
             IEcfSequenceProvider? sequenceProvider = null,
             IEcfXmlSigner? signer = null,
-            IEcfSchemaValidator? schemaValidator = null)
+            IEcfSchemaValidator? schemaValidator = null,
+            HttpClient? httpClient = null)
         {
             _options = options ?? new EcfClientOptions();
             _validator = new EcfValidator();
@@ -46,7 +49,16 @@ namespace EcfDgii.Client
                 return;
             }
 
-            var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            if (httpClient != null)
+            {
+                _httpClient = httpClient;
+                _ownsHttpClient = false;
+            }
+            else
+            {
+                _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                _ownsHttpClient = true;
+            }
 
             if (_options.Mode == IntegrationMode.DgiiDirect)
             {
@@ -61,13 +73,25 @@ namespace EcfDgii.Client
                     _ => AmbienteEnum.Certificacion
                 };
                 var envConfig = EcfEnvironmentConfig.GetConfig(ambiente);
-                var tokenManager = new EcfTokenManager(httpClient, _signer, envConfig, _options.RncEmisor);
+                var tokenManager = new EcfTokenManager(_httpClient, _signer, envConfig, _options.RncEmisor);
 
-                _transport = new DgiiDirectTransport(httpClient, tokenManager, envConfig);
+                _transport = new DgiiDirectTransport(_httpClient, tokenManager, envConfig);
             }
             else
             {
                 throw new NotSupportedException("Only DgiiDirect mode is supported.");
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_ownsHttpClient)
+            {
+                _httpClient?.Dispose();
+            }
+            if (_transport is IDisposable d)
+            {
+                d.Dispose();
             }
         }
 
