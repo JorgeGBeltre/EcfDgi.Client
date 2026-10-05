@@ -314,17 +314,8 @@ try
         app.UseHttpsRedirection();
     }
 
-    app.UseAuthentication();
-    app.UseAuthorization();
-    app.UseMiddleware<IdempotencyMiddleware>();
-
-    app.MapControllers();
-
-    app.MapHealthChecks("/health");
-
-    // Automatically apply migrations at startup for relational databases.
-    // Migrate() applies any pending migrations (including on first run,
-    // where it creates the schema from the migration history instead of the live model).
+    // Automatically apply migrations at startup for relational databases before serving traffic.
+    // MED-127: Migrate before mapping endpoints and fail fast on migration failure without swallowing.
     try
     {
         using var scope = app.Services.CreateScope();
@@ -336,16 +327,17 @@ try
     }
     catch (Exception ex)
     {
-        if (app.Environment.IsDevelopment())
-        {
-            Log.Warning(ex, "Could not apply database migrations on startup in Development: {Message}", ex.Message);
-        }
-        else
-        {
-            Log.Fatal(ex, "Failed to apply database migrations on startup: {Message}", ex.Message);
-            throw;
-        }
+        Log.Fatal(ex, "Failed to apply database migrations on startup: {Message}", ex.Message);
+        throw;
     }
+
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.UseMiddleware<IdempotencyMiddleware>();
+
+    app.MapControllers();
+
+    app.MapHealthChecks("/health");
 
     app.Run();
 }

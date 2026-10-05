@@ -4,11 +4,10 @@ on:
   push:
     branches:
       - develop
+  pull_request:
+    branches:
+      - develop
   workflow_dispatch:
-
-env:
-  DOTNET_ENVIRONMENT: Production
-  ASPNETCORE_ENVIRONMENT: Production
 
 permissions:
   contents: read
@@ -33,8 +32,8 @@ jobs:
       - name: Compilar solución
         run: dotnet build EcfDgii.Client.slnx -c Release --no-restore
 
-      - name: Ejecutar pruebas unitarias
-        run: dotnet test EcfDgii.Client.slnx -c Release --no-build --verbosity normal
+      - name: Ejecutar pruebas unitarias con cobertura
+        run: dotnet test EcfDgii.Client.slnx -c Release --no-build --verbosity normal --collect:"XPlat Code Coverage"
 
       - name: Publicar API EcfDgi.Client
         run: |
@@ -45,17 +44,26 @@ jobs:
           cat > publish/Dockerfile <<'EOF'
           FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
           WORKDIR /app
-          RUN apk add --no-cache icu-libs tzdata
-          COPY . .
+          RUN apk add --no-cache icu-libs tzdata && \
+              mkdir -p /app/certificates && \
+              addgroup -g 1000 appgroup && \
+              adduser -u 1000 -G appgroup -s /bin/sh -D appuser && \
+              chown -R appuser:appgroup /app
+          COPY --chown=appuser:appgroup . .
           EXPOSE 8080
-          ENV ASPNETCORE_URLS=http://+:8080
+          ENV ASPNETCORE_URLS=http://+:8080 \
+              DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+              TZ=America/Santo_Domingo
+          USER appuser
+          HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+            CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health
           ENTRYPOINT ["dotnet", "EcfDgii.Client.Api.dll"]
           EOF
           echo "Contenido generado en publish:"
           ls -la publish
 
       - name: Copiar artefactos al servidor VPS
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@v0.1.7 # v0.1.7
         with:
           host: ${{ secrets.HOSTINGER_SERVER }}
           username: ${{ secrets.HOSTINGER_USERNAME }}
@@ -67,7 +75,7 @@ jobs:
           overwrite: true
 
       - name: Desplegar contenedor Docker vía SSH
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.0 # v1.2.0
         env:
           ASPNETCORE_ENVIRONMENT: Production
           DOTNET_ENVIRONMENT: Production
@@ -76,11 +84,12 @@ jobs:
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '101889063' }}
+          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR }}
           AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Produccion' }}
           WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           CERT_PASSWORD: ${{ secrets.DGII_CERTIFICATE_PASSWORD }}
+          DEPLOY_SHA: ${{ github.sha }}
         with:
           host: ${{ secrets.HOSTINGER_SERVER }}
           username: ${{ secrets.HOSTINGER_USERNAME }}
@@ -88,17 +97,21 @@ jobs:
           port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
           timeout: 120s
           command_timeout: 10m
-          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,REDIS_PASSWORD,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET,CERT_PASSWORD
+          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,REDIS_PASSWORD,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET,CERT_PASSWORD,DEPLOY_SHA
           script: |
             set -e
 
             DEPLOY_PATH="/var/www/ecf-dgii-client"
             CONTAINER_NAME="ecf_dgii_api"
-            IMAGE_NAME="ecf-dgii-api:latest"
+            IMAGE_NAME="ecf-dgii-api:${DEPLOY_SHA:-latest}"
             ENV_FILE="$DEPLOY_PATH/.env"
 
             cd "$DEPLOY_PATH"
 
+            if [ -z "${RNC_EMISOR}" ]; then
+              echo "ERROR: RNC_EMISOR is required but not configured in vars or secrets."
+              exit 1
+            fi
             if [ -z "${WORKER_SECRET_KEY}" ]; then
               echo "ERROR: WORKER_SECRET_KEY secret is required."
               exit 1
@@ -167,6 +180,9 @@ jobs:
             docker run -d \
               --name "$CONTAINER_NAME" \
               --network netbird \
+              --security-opt no-new-privileges \
+              --memory 1g \
+              --pids-limit 100 \
               --label "traefik.enable=true" \
               --label "traefik.http.routers.ecf-dgii.rule=Host(\`dgii.app.willychicrd.com\`)" \
               --label "traefik.http.routers.ecf-dgii.entrypoints=websecure" \
@@ -178,10 +194,18 @@ jobs:
               --restart unless-stopped \
               "$IMAGE_NAME"
 
-            echo "Validando contenedor..."
-            docker ps -f "name=$CONTAINER_NAME"
-
-            echo "Últimos logs del contenedor..."
-            docker logs "$CONTAINER_NAME" --tail 30
+            echo "Verificando salud del contenedor..."
+            for i in $(seq 1 15); do
+              if docker exec "$CONTAINER_NAME" wget --spider -q http://localhost:8080/health; then
+                echo "✅ Contenedor saludable."
+                break
+              fi
+              if [ "$i" -eq 15 ]; then
+                echo "❌ ERROR: El contenedor no respondió a /health dentro del tiempo límite."
+                docker logs "$CONTAINER_NAME" --tail 50
+                exit 1
+              fi
+              sleep 3
+            done
 
             echo "✅ Despliegue de EcfDgi.Client completado exitosamente."

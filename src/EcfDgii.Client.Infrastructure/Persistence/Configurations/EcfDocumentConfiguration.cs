@@ -152,6 +152,9 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             builder.HasIndex(e => e.TrackId)
                 .HasDatabaseName("ix_ecf_documents_track_id");
 
+            builder.HasIndex(e => e.ENcf)
+                .HasDatabaseName("ix_ecf_documents_encf");
+
             builder.HasIndex(e => e.State)
                 .HasDatabaseName("ix_ecf_documents_state");
 

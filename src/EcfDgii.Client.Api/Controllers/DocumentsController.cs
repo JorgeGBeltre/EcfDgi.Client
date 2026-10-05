@@ -1137,9 +1137,66 @@ namespace EcfDgii.Client.Api.Controllers
                    ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
+            // MED-126: Separate sequential indexed probes instead of three-column OR, with AsNoTracking and projection
             var doc = await _db.EcfDocuments
                 .AsNoTracking()
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
+                .Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId)
+                .Select(d => new
+                {
+                    d.Id,
+                    d.Ncf,
+                    d.ENcf,
+                    d.State,
+                    d.TrackId,
+                    d.SecurityCode,
+                    d.ReceiptDate,
+                    d.SignedRfceContent,
+                    d.SignedXmlContent,
+                    d.DgiiResponseXml
+                })
+                .FirstOrDefaultAsync();
+
+            if (doc == null)
+            {
+                doc = await _db.EcfDocuments
+                    .AsNoTracking()
+                    .Where(d => d.TenantId == tenantId && d.TrackId == txnId)
+                    .Select(d => new
+                    {
+                        d.Id,
+                        d.Ncf,
+                        d.ENcf,
+                        d.State,
+                        d.TrackId,
+                        d.SecurityCode,
+                        d.ReceiptDate,
+                        d.SignedRfceContent,
+                        d.SignedXmlContent,
+                        d.DgiiResponseXml
+                    })
+                    .FirstOrDefaultAsync();
+            }
+
+            if (doc == null)
+            {
+                doc = await _db.EcfDocuments
+                    .AsNoTracking()
+                    .Where(d => d.TenantId == tenantId && d.ENcf == txnId)
+                    .Select(d => new
+                    {
+                        d.Id,
+                        d.Ncf,
+                        d.ENcf,
+                        d.State,
+                        d.TrackId,
+                        d.SecurityCode,
+                        d.ReceiptDate,
+                        d.SignedRfceContent,
+                        d.SignedXmlContent,
+                        d.DgiiResponseXml
+                    })
+                    .FirstOrDefaultAsync();
+            }
 
             if (doc == null)
             {
@@ -1383,8 +1440,30 @@ namespace EcfDgii.Client.Api.Controllers
                    ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
+            // MED-126: Probes in order: (TenantId, SourceTxnId), then TrackId, then ENcf
             var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
+                .AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId)
+                .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
+                .FirstOrDefaultAsync();
+
+            if (doc == null)
+            {
+                doc = await _db.EcfDocuments
+                    .AsNoTracking()
+                    .Where(d => d.TenantId == tenantId && d.TrackId == txnId)
+                    .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
+                    .FirstOrDefaultAsync();
+            }
+
+            if (doc == null)
+            {
+                doc = await _db.EcfDocuments
+                    .AsNoTracking()
+                    .Where(d => d.TenantId == tenantId && d.ENcf == txnId)
+                    .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
+                    .FirstOrDefaultAsync();
+            }
 
             if (doc == null || (string.IsNullOrWhiteSpace(doc.SignedXmlContent) && string.IsNullOrWhiteSpace(doc.SignedRfceContent)))
             {

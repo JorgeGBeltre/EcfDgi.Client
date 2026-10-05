@@ -1,16 +1,13 @@
-version: '3.8'
-
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: ecf_dgii_redis
-    ports:
-      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}", "--save", "60", "1", "--loglevel", "notice"]
     volumes:
       - redis_data:/data
-    command: redis-server --save 60 1 --loglevel notice
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -32,9 +29,9 @@ services:
       - TZ=America/Santo_Domingo
       # Conexión compartida a la base de datos central ecf_db
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT:-}
-      - ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf_dgii_redis:6379}
-      - EcfEmisor__Rnc=${ECF_EMISOR_RNC:-101889063}
-      - EcfClientOptions__RncEmisor=${ECF_EMISOR_RNC:-101889063}
+      - ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf_dgii_redis:6379,password=${REDIS_PASSWORD},abortConnect=false}
+      - EcfEmisor__Rnc=${ECF_EMISOR_RNC:?ECF_EMISOR_RNC is required}
+      - EcfClientOptions__RncEmisor=${ECF_EMISOR_RNC:?ECF_EMISOR_RNC is required}
       - WorkerSecretKey=${WORKER_SECRET_KEY:?WORKER_SECRET_KEY is required}
       - JwtSettings__Secret=${JWT_SECRET:?JWT_SECRET is required}
     depends_on:
