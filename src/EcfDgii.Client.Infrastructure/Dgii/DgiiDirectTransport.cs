@@ -86,7 +86,17 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync(ct);
-                throw new HttpRequestException($"DGII Error ({(int)response.StatusCode} {response.ReasonPhrase}): {errorBody}");
+                var sanitized = System.Text.RegularExpressions.Regex.Replace(errorBody, @"<[^>]+>|[\r\n\t]+", " ").Trim();
+                if (sanitized.Length > 150)
+                {
+                    sanitized = sanitized[..150] + "...";
+                }
+                throw new HttpRequestException(
+                    string.IsNullOrWhiteSpace(sanitized)
+                        ? $"DGII request failed with status {(int)response.StatusCode} ({response.ReasonPhrase})."
+                        : $"DGII request failed with status {(int)response.StatusCode} ({response.ReasonPhrase}): {sanitized}",
+                    null,
+                    response.StatusCode);
             }
             return response;
         }

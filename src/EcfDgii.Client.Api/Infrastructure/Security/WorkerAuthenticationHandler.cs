@@ -134,7 +134,8 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             }
 
             // 5. Verify Anti-Replay Nonce AFTER signature is proven valid (protects cache from unauthenticated DoS)
-            if (!_nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromSeconds(MaxTimeDriftSeconds)))
+            // Use 2 * MaxTimeDriftSeconds to cover the full allowable clock drift window (past and future)
+            if (!_nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromSeconds(2 * MaxTimeDriftSeconds)))
             {
                 Logger.LogWarning("Worker authentication failed: Replayed nonce detected. KeyId: {KeyId}, Nonce: {Nonce}", keyId, nonce);
                 return AuthenticateResult.Fail("Replayed nonce detected. Code: nonce_replayed.");

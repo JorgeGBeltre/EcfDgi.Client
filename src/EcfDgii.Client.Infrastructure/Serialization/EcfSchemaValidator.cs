@@ -17,15 +17,20 @@ namespace EcfDgii.Client.Infrastructure.Serialization
 
             if (!File.Exists(xsdPath))
             {
-                result.Errors.Add($"XSD schema file not found at: {xsdPath}");
+                result.Errors.Add("XSD schema file not found.");
                 return result;
             }
 
             try
             {
-                var schemas = new XmlSchemaSet();
+                var schemas = new XmlSchemaSet { XmlResolver = null };
+                var xsdSettings = new XmlReaderSettings
+                {
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
+                };
                 using (var xsdStream = File.OpenRead(xsdPath))
-                using (var xsdReader = XmlReader.Create(xsdStream))
+                using (var xsdReader = XmlReader.Create(xsdStream, xsdSettings))
                 {
                     schemas.Add(null, xsdReader);
                 }
@@ -33,7 +38,9 @@ namespace EcfDgii.Client.Infrastructure.Serialization
                 var settings = new XmlReaderSettings
                 {
                     ValidationType = ValidationType.Schema,
-                    Schemas = schemas
+                    Schemas = schemas,
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
                 };
 
                 settings.ValidationEventHandler += (sender, args) =>

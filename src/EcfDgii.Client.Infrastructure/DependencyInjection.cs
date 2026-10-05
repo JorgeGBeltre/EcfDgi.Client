@@ -66,7 +66,8 @@ namespace EcfDgii.Client.Infrastructure
                     }
                     catch (System.Exception ex)
                     {
-                        logger.LogWarning(ex, "Could not connect to Redis server at '{ConnectionString}'. Cache will operate in bypass/fallback mode.", redisConnectionString);
+                        var sanitizedConn = System.Text.RegularExpressions.Regex.Replace(redisConnectionString, @"password=[^,;]+", "password=***", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        logger.LogWarning(ex, "Could not connect to Redis server at '{ConnectionString}'. Cache will operate in bypass/fallback mode.", sanitizedConn);
                         return null!;
                     }
                 });

@@ -48,6 +48,7 @@ namespace EcfDgii.Client.Api.Middleware
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
                     problemDetails.Status = StatusCodes.Status400BadRequest;
                     problemDetails.Title = "Validation Error";
+                    problemDetails.Detail = "Se encontraron errores de validación en la solicitud.";
                     problemDetails.Type = "https://tools.ietf.org/html/rfc9457#section-6.1";
                     problemDetails.Extensions["errors"] = validationException.Errors;
                     break;
@@ -56,13 +57,23 @@ namespace EcfDgii.Client.Api.Middleware
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     problemDetails.Status = StatusCodes.Status401Unauthorized;
                     problemDetails.Title = "Unauthorized";
+                    problemDetails.Detail = "No está autorizado para realizar esta acción.";
                     problemDetails.Type = "https://tools.ietf.org/html/rfc9457#section-6.2";
+                    break;
+
+                case EcfDgii.Client.Domain.Exceptions.EcfSigningException signingException:
+                    context.Response.StatusCode = StatusCodes.Status422UnprocessableEntity;
+                    problemDetails.Status = StatusCodes.Status422UnprocessableEntity;
+                    problemDetails.Title = "Fiscal Signing Error";
+                    problemDetails.Detail = signingException.Message;
+                    problemDetails.Type = "https://tools.ietf.org/html/rfc9457#section-6.5";
                     break;
 
                 default:
                     context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                     problemDetails.Status = StatusCodes.Status500InternalServerError;
                     problemDetails.Title = "Internal Server Error";
+                    problemDetails.Detail = "Ha ocurrido un error interno al procesar la solicitud.";
                     problemDetails.Type = "https://tools.ietf.org/html/rfc9457#section-6.6";
                     break;
             }

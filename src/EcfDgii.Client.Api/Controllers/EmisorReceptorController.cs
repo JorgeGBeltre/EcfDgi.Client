@@ -45,8 +45,7 @@ namespace EcfDgii.Client.Api.Controllers
                 var xmlContent = await reader.ReadToEndAsync();
 
                 // Parse XML to extract rncemisor, rnccomprador, encf
-                var doc = new XmlDocument();
-                doc.PreserveWhitespace = true;
+                var doc = new XmlDocument { PreserveWhitespace = true, XmlResolver = null };
                 doc.LoadXml(xmlContent);
 
                 var ns = new XmlNamespaceManager(doc.NameTable);
@@ -57,6 +56,13 @@ namespace EcfDgii.Client.Api.Controllers
                 if (string.IsNullOrEmpty(rncEmisor) || string.IsNullOrEmpty(encf) || string.IsNullOrEmpty(rncComprador))
                 {
                     return BadRequest("El XML de e-CF provisto no contiene las etiquetas obligatorias RNCEmisor, RNCComprador o eNCF.");
+                }
+
+                if (!System.Text.RegularExpressions.Regex.IsMatch(rncEmisor, @"^\d{9,11}$") ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(rncComprador, @"^\d{9,11}$") ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(encf, @"^[EBF]\d{10,12}$"))
+                {
+                    return BadRequest("Formato inválido de RNCEmisor, RNCComprador o eNCF en el XML provisto.");
                 }
 
                 // Resolver el firmador dinámicamente para el RNC del comprador/receptor
@@ -93,7 +99,7 @@ namespace EcfDgii.Client.Api.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error al procesar la recepción de e-CF");
-                return BadRequest($"Error al procesar la recepción de e-CF: {ex.Message}");
+                return BadRequest("Error al procesar la recepción de e-CF.");
             }
         }
 
@@ -113,14 +119,15 @@ namespace EcfDgii.Client.Api.Controllers
                 var xmlContent = await reader.ReadToEndAsync();
 
                 // Validate it parses as XML
-                var doc = new XmlDocument();
+                var doc = new XmlDocument { XmlResolver = null };
                 doc.LoadXml(xmlContent);
 
                 return Ok();
             }
             catch (Exception ex)
             {
-                return BadRequest($"Error al procesar la aprobación comercial: {ex.Message}");
+                _logger.LogError(ex, "Error al procesar la aprobación comercial");
+                return BadRequest("Error al procesar la aprobación comercial.");
             }
         }
 
@@ -152,7 +159,7 @@ namespace EcfDgii.Client.Api.Controllers
                 using var reader = new StreamReader(xml.OpenReadStream(), Encoding.UTF8);
                 var xmlContent = await reader.ReadToEndAsync();
 
-                var doc = new XmlDocument();
+                var doc = new XmlDocument { XmlResolver = null };
                 doc.LoadXml(xmlContent);
 
                 var token = Guid.NewGuid().ToString().Replace("-", "");
@@ -175,7 +182,8 @@ namespace EcfDgii.Client.Api.Controllers
             }
             catch (Exception ex)
             {
-                return BadRequest($"Fallo en validación de certificado: {ex.Message}");
+                _logger.LogError(ex, "Fallo en validación de certificado");
+                return BadRequest("Fallo en validación de certificado.");
             }
         }
     }

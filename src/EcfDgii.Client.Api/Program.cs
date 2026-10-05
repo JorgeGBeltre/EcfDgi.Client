@@ -104,7 +104,12 @@ try
         .ValidateOnStart();
 
     // Register Security, Anti-Replay, Key Resolution & Durable Idempotency
-    builder.Services.AddSingleton<INonceCache, MemoryNonceCache>();
+    builder.Services.AddSingleton<INonceCache>(sp =>
+    {
+        var memCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>();
+        var redis = sp.GetService<StackExchange.Redis.IConnectionMultiplexer>();
+        return new MemoryNonceCache(memCache, redis);
+    });
     builder.Services.AddScoped<IWorkerKeyResolver, ConfigurationWorkerKeyResolver>();
     builder.Services.AddSingleton<IIdempotencyStore, DbIdempotencyStore>();
 
@@ -119,10 +124,32 @@ try
     // empty string, not absent/null) so the check has something to fail loudly against outside
     // Development. ?? only substitutes on null, so an empty string silently produced a zero-length
     // HMAC key here instead of falling back to the default.
-    var jwtSecretForKey = string.IsNullOrWhiteSpace(jwtSettings?.Secret)
-        ? "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!"
-        : jwtSettings.Secret;
+    var jwtSecretForKey = builder.Configuration["JwtSettings:Secret"]
+        ?? builder.Configuration["JWT_SECRET"]
+        ?? builder.Configuration["Jwt:SecretKey"]
+        ?? jwtSettings?.Secret;
+    if (string.IsNullOrWhiteSpace(jwtSecretForKey))
+    {
+        jwtSecretForKey = "DefaultSecretKeyForTesting_MustBeAtLeast32Bytes!";
+    }
     var key = Encoding.ASCII.GetBytes(jwtSecretForKey);
+
+    var validIssuers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "EcfDgiiClientIssuer",
+        "Ecf.API"
+    };
+    if (!string.IsNullOrWhiteSpace(jwtSettings?.Issuer)) validIssuers.Add(jwtSettings.Issuer);
+    if (!string.IsNullOrWhiteSpace(builder.Configuration["JWT_ISSUER"])) validIssuers.Add(builder.Configuration["JWT_ISSUER"]!);
+
+    var validAudiences = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "EcfDgiiClientAudience",
+        "Ecf.Clients",
+        "EcfDgiiClient"
+    };
+    if (!string.IsNullOrWhiteSpace(jwtSettings?.Audience)) validAudiences.Add(jwtSettings.Audience);
+    if (!string.IsNullOrWhiteSpace(builder.Configuration["JWT_AUDIENCE"])) validAudiences.Add(builder.Configuration["JWT_AUDIENCE"]!);
 
     builder.Services.AddAuthentication(options =>
     {
@@ -138,10 +165,10 @@ try
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(key),
             ValidateIssuer = true,
-            ValidIssuer = jwtSettings?.Issuer ?? "EcfDgiiClientIssuer",
+            ValidIssuers = validIssuers,
             ValidateAudience = true,
-            ValidAudience = jwtSettings?.Audience ?? "EcfDgiiClientAudience",
-            ClockSkew = TimeSpan.Zero
+            ValidAudiences = validAudiences,
+            ClockSkew = TimeSpan.FromMinutes(5)
         };
     })
     .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, EcfDgii.Client.Api.Infrastructure.Security.WorkerAuthenticationHandler>("WorkerAuth", null);
@@ -170,6 +197,48 @@ try
                   context.User.HasClaim("role", "Admin") ||
                   context.User.HasClaim("role", "FiscalOperator") ||
                   context.User.HasClaim("role", "SuperAdmin"))));
+        });
+    });
+
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.OnRejected = async (context, token) =>
+        {
+            context.HttpContext.Response.ContentType = "application/problem+json";
+            await context.HttpContext.Response.WriteAsync("{\"title\":\"Too Many Requests\",\"status\":429,\"detail\":\"Límite de tasa de solicitudes excedido.\"}", token);
+        };
+        options.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        {
+            var partitionKey = httpContext.User.FindFirst("worker_key_id")?.Value
+                ?? httpContext.User.FindFirst("tenant_id")?.Value
+                ?? httpContext.User.FindFirst("TenantId")?.Value
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous";
+
+            return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 600,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 20,
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst
+            });
+        });
+        options.AddPolicy("FiscalEmissionLimiter", httpContext =>
+        {
+            var partitionKey = httpContext.User.FindFirst("worker_key_id")?.Value
+                ?? httpContext.User.FindFirst("tenant_id")?.Value
+                ?? httpContext.User.FindFirst("TenantId")?.Value
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous";
+
+            return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 120,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 10,
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst
+            });
         });
     });
 

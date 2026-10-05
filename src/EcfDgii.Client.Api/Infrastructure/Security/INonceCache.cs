@@ -1,4 +1,6 @@
+using System;
 using Microsoft.Extensions.Caching.Memory;
+using StackExchange.Redis;
 
 namespace EcfDgii.Client.Api.Infrastructure.Security
 {
@@ -10,10 +12,13 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
     public class MemoryNonceCache : INonceCache
     {
         private readonly IMemoryCache _memoryCache;
+        private readonly IConnectionMultiplexer? _redis;
+        private readonly object _syncLock = new();
 
-        public MemoryNonceCache(IMemoryCache memoryCache)
+        public MemoryNonceCache(IMemoryCache memoryCache, IConnectionMultiplexer? redis = null)
         {
             _memoryCache = memoryCache;
+            _redis = redis;
         }
 
         public bool TryAddNonce(string keyId, string nonce, TimeSpan ttl)
@@ -24,17 +29,41 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             }
 
             var cacheKey = $"nonce:{keyId}:{nonce}";
-            if (_memoryCache.TryGetValue(cacheKey, out _))
+
+            // 1. If Redis is available, perform atomic SET with NX (When.NotExists) and TTL across instances
+            if (_redis != null && _redis.IsConnected)
             {
-                return false; // Nonce already seen -> replay attack
+                try
+                {
+                    var db = _redis.GetDatabase();
+                    bool added = db.StringSet(cacheKey, "1", ttl, When.NotExists);
+                    if (!added)
+                    {
+                        return false; // Nonce already seen -> replay attack
+                    }
+                    return true;
+                }
+                catch
+                {
+                    // Fall back to local synchronized cache on transient Redis failure
+                }
             }
 
-            _memoryCache.Set(cacheKey, true, new MemoryCacheEntryOptions
+            // 2. Thread-safe atomic in-process check-and-set
+            lock (_syncLock)
             {
-                AbsoluteExpirationRelativeToNow = ttl,
-                Size = 1
-            });
-            return true;
+                if (_memoryCache.TryGetValue(cacheKey, out _))
+                {
+                    return false; // Nonce already seen -> replay attack
+                }
+
+                _memoryCache.Set(cacheKey, true, new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = ttl,
+                    Size = 1
+                });
+                return true;
+            }
         }
     }
 }

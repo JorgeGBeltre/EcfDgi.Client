@@ -9,6 +9,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using EcfDgii.Client.Domain.Interfaces;
+using EcfDgii.Client.Domain.Exceptions;
 
 namespace EcfDgii.Client.Infrastructure.Security
 {
@@ -149,8 +150,23 @@ namespace EcfDgii.Client.Infrastructure.Security
                             {
                                 try
                                 {
-                                    var cert = X509CertificateLoader.LoadPkcs12(rawData, password, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+                                    var cert = X509CertificateLoader.LoadPkcs12(rawData, password, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
+                                    var now = DateTime.UtcNow;
+                                    if (cert.NotBefore > now || cert.NotAfter < now)
+                                    {
+                                        _logger.LogError("Certificado digital para Tenant {Code} (RNC {Rnc}) está fuera del periodo de validez ({NotBefore} - {NotAfter}).", code, cleanRnc, cert.NotBefore, cert.NotAfter);
+                                        cert.Dispose();
+                                        throw new EcfSigningException($"El certificado digital para el tenant {code} (RNC {cleanRnc}) ha expirado o aún no es válido.");
+                                    }
+
                                     var signer = new EcfXmlSigner(cert);
+                                    if (!signer.ValidateCertificateSn(cleanRnc))
+                                    {
+                                        _logger.LogError("El certificado para Tenant {Code} no contiene el RNC {Rnc} correspondiente.", code, cleanRnc);
+                                        signer.Dispose();
+                                        throw new EcfSigningException($"El certificado digital cargado para el tenant {code} no corresponde al RNC {cleanRnc}.");
+                                    }
+
                                     _logger.LogInformation("Certificado digital cargado dinámicamente desde BD para RNC {Rnc} ({CompanyName})", cleanRnc, companyName);
                                     if (_cache.TryRemove(cleanRnc, out var oldSigner))
                                     {
@@ -159,12 +175,21 @@ namespace EcfDgii.Client.Infrastructure.Security
                                     _cache[cleanRnc] = (signer, DateTime.UtcNow.Add(CacheDuration));
                                     return signer;
                                 }
+                                catch (EcfSigningException)
+                                {
+                                    throw;
+                                }
                                 catch (Exception ex)
                                 {
-                                    _logger.LogWarning(ex, "Fallo al instanciar certificado digital para Tenant {Code} (RNC {Rnc}) desde BD.", code, cleanRnc);
+                                    _logger.LogError(ex, "Fallo al instanciar certificado digital para Tenant {Code} (RNC {Rnc}) desde BD.", code, cleanRnc);
+                                    throw new EcfSigningException($"No se pudo cargar el certificado digital para el RNC {cleanRnc}: {ex.Message}", ex);
                                 }
                             }
                         }
+                    }
+                    catch (EcfSigningException)
+                    {
+                        throw;
                     }
                     catch (Exception ex)
                     {
@@ -187,6 +212,12 @@ namespace EcfDgii.Client.Infrastructure.Security
                                     ?? _configuration["CERTIFICATE_PASSWORD"]
                                     ?? string.Empty;
                                 var signer = new EcfXmlSigner(pfxByRnc, diskPassword);
+                                if (!signer.ValidateCertificateSn(cleanRnc))
+                                {
+                                    signer.Dispose();
+                                    throw new EcfSigningException($"El certificado en disco para el RNC {cleanRnc} no contiene el RNC correspondiente.");
+                                }
+
                                 _logger.LogInformation("Certificado digital cargado desde archivo {Path} para RNC {Rnc}", pfxByRnc, cleanRnc);
                                 if (_cache.TryRemove(cleanRnc, out var oldDiskSigner))
                                 {
@@ -195,9 +226,14 @@ namespace EcfDgii.Client.Infrastructure.Security
                                 _cache[cleanRnc] = (signer, DateTime.UtcNow.Add(CacheDuration));
                                 return signer;
                             }
+                            catch (EcfSigningException)
+                            {
+                                throw;
+                            }
                             catch (Exception ex)
                             {
-                                _logger.LogWarning(ex, "Error al cargar certificado desde {Path}", pfxByRnc);
+                                _logger.LogError(ex, "Error al cargar certificado desde {Path}", pfxByRnc);
+                                throw new EcfSigningException($"Error al cargar certificado desde disco para RNC {cleanRnc}.", ex);
                             }
                         }
                     }

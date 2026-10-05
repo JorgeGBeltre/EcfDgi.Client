@@ -124,6 +124,10 @@ jobs:
               echo "ERROR: POSTGRES_PASSWORD secret is required."
               exit 1
             fi
+            if [ -z "${CERT_PASSWORD}" ]; then
+              echo "ERROR: CERT_PASSWORD (DGII_CERTIFICATE_PASSWORD) secret is required."
+              exit 1
+            fi
 
             echo "Verificando archivos desplegados..."
             ls -la

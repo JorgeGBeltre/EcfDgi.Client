@@ -31,7 +31,7 @@ namespace EcfDgii.Client.Infrastructure.Security
             }
             else
             {
-                _certificate = new X509Certificate2(pfxPath, pfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+                _certificate = new X509Certificate2(pfxPath, pfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
                 UsesFallbackCertificate = IsCertificateSelfSigned(_certificate);
             }
         }
@@ -52,7 +52,7 @@ namespace EcfDgii.Client.Infrastructure.Security
             if (!ValidateCertificateSn(rncEmisor))
                 throw new EcfSigningException($"El RNC del certificado no coincide con el emisor: {rncEmisor}");
 
-            var doc = new XmlDocument { PreserveWhitespace = false };
+            var doc = new XmlDocument { PreserveWhitespace = false, XmlResolver = null };
             doc.LoadXml(xmlContent);
 
             var signedXml = new SignedXml(doc);
@@ -84,7 +84,7 @@ namespace EcfDgii.Client.Infrastructure.Security
 
         public string ExtractSignatureValue(string signedXml)
         {
-            var doc = new XmlDocument();
+            var doc = new XmlDocument { XmlResolver = null };
             doc.LoadXml(signedXml);
             var ns = new XmlNamespaceManager(doc.NameTable);
             ns.AddNamespace("ds", "http://www.w3.org/2000/09/xmldsig#");

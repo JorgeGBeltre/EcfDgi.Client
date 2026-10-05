@@ -23,7 +23,7 @@ namespace EcfDgii.Client.Infrastructure.Security
         {
             try
             {
-                var doc = new XmlDocument();
+                var doc = new XmlDocument { XmlResolver = null };
                 doc.LoadXml(signedXml);
                 var node = doc.SelectSingleNode("//FechaHoraFirma");
                 return node?.InnerText?.Trim();
@@ -36,7 +36,7 @@ namespace EcfDgii.Client.Infrastructure.Security
 
         public static string ExtractSignatureValue(string signedXml)
         {
-            var doc = new XmlDocument();
+            var doc = new XmlDocument { XmlResolver = null };
             doc.LoadXml(signedXml);
             var ns = new XmlNamespaceManager(doc.NameTable);
             ns.AddNamespace("ds", "http://www.w3.org/2000/09/xmldsig#");

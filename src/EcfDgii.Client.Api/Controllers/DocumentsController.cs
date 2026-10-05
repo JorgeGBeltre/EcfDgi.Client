@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using EcfDgii.Client.Application.Documents.Dto;
 using EcfDgii.Client.Domain.Entities;
 using EcfDgii.Client.Domain.Interfaces;
+using EcfDgii.Client.Domain.Exceptions;
 using EcfDgii.Client.Infrastructure.Dgii;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Infrastructure.Configuration;
@@ -27,6 +28,7 @@ namespace EcfDgii.Client.Api.Controllers
     [ApiController]
     [Route("api/[controller]")]
     [Authorize(Policy = "UserOrWorker")]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("FiscalEmissionLimiter")]
     public class DocumentsController : ControllerBase
     {
         // States where the eNCF was allocated and persisted but nothing has left this process yet
@@ -201,20 +203,24 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     var bytes = Convert.FromBase64String(certDto.CertificateBase64);
                     var pwd = certDto.Password ?? string.Empty;
-                    var cert = X509CertificateLoader.LoadPkcs12(bytes, pwd, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+                    var cert = X509CertificateLoader.LoadPkcs12(bytes, pwd, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
                     var loadedSigner = new EcfXmlSigner(cert);
                     if (!string.IsNullOrWhiteSpace(rncEmisor) && !loadedSigner.ValidateCertificateSn(rncEmisor))
                     {
-                        _logger.LogWarning("Certificado base64 provisto para Tenant {TenantId} no corresponde al RNC emisor {RncEmisor}.", tenantId, rncEmisor);
+                        _logger.LogError("Certificado base64 provisto para Tenant {TenantId} no corresponde al RNC emisor {RncEmisor}.", tenantId, rncEmisor);
+                        loadedSigner.Dispose();
+                        throw new EcfSigningException($"El certificado provisto para el tenant '{tenantId}' no corresponde al RNC emisor '{rncEmisor}'.");
                     }
-                    else
-                    {
-                        return loadedSigner;
-                    }
+                    return loadedSigner;
+                }
+                catch (EcfSigningException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "No se pudo cargar certificado base64 para Tenant {TenantId}. Se utilizará respaldo.", tenantId);
+                    _logger.LogError(ex, "No se pudo cargar certificado base64 para Tenant {TenantId}.", tenantId);
+                    throw new EcfSigningException($"No se pudo cargar el certificado digital provisto para el tenant '{tenantId}'.", ex);
                 }
             }
 

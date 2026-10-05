@@ -21,6 +21,7 @@ namespace EcfDgii.Client.Domain.Exceptions
     public class EcfSigningException : EcfException
     {
         public EcfSigningException(string message) : base(message) { }
+        public EcfSigningException(string message, Exception innerException) : base(message, innerException) { }
     }
 
     public class PollingMaxRetriesException : Exception

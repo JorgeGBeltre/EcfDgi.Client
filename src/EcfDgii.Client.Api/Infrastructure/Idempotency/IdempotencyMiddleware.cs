@@ -27,12 +27,35 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 return;
             }
 
-            var tenantClaim = context.User.FindFirst("tenant_id")?.Value;
-            var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
-                ? tenantClaim
-                : (context.Items["TenantId"]?.ToString()
-                   ?? (context.Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) && !string.IsNullOrWhiteSpace(hTenant) ? hTenant.ToString().Trim() : null)
-                   ?? "default-tenant");
+            var tenantClaim = context.User.FindFirst("tenant_id")?.Value
+                ?? context.User.FindFirst("TenantId")?.Value
+                ?? context.User.FindFirst("tenant")?.Value
+                ?? context.User.FindFirst("tid")?.Value;
+
+            string tenantId;
+            if (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+            {
+                tenantId = tenantClaim;
+            }
+            else if (context.Items["TenantId"] is string itemTenant && !string.IsNullOrWhiteSpace(itemTenant) && itemTenant != "default-tenant")
+            {
+                tenantId = itemTenant;
+            }
+            else if (context.Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) && !string.IsNullOrWhiteSpace(hTenant) && hTenant.ToString().Trim() != "default-tenant")
+            {
+                tenantId = hTenant.ToString().Trim();
+            }
+            else if (context.User.Identity?.IsAuthenticated == true)
+            {
+                var userId = context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                    ?? context.User.Identity.Name;
+                tenantId = !string.IsNullOrWhiteSpace(userId) ? $"user:{userId}" : "default-tenant";
+            }
+            else
+            {
+                var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                tenantId = $"anon:{ip}";
+            }
 
             // Store in context.Items so controllers and middleware share the identical tenant scope
             context.Items["TenantId"] = tenantId;
