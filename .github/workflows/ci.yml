@@ -169,6 +169,16 @@ jobs:
               DEFAULT_REDIS_CONN="ecf-redis-db:6379,abortConnect=false"
             fi
 
+            AMBIENTE_RAW="${AMBIENTE:-Produccion}"
+            AMBIENTE_LOWER=$(echo "$AMBIENTE_RAW" | tr '[:upper:]' '[:lower:]')
+            if [[ "$AMBIENTE_LOWER" == *"prod"* ]] || [[ "$AMBIENTE_LOWER" == "ecf" ]]; then
+              NORM_ENV="Prod"
+            elif [[ "$AMBIENTE_LOWER" == *"cert"* ]] || [[ "$AMBIENTE_LOWER" == *"homolog"* ]]; then
+              NORM_ENV="Cert"
+            else
+              NORM_ENV="Test"
+            fi
+
             echo "Generando archivo .env de producción de forma segura..."
             cat > "$ENV_FILE" <<EOF
             ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT}
@@ -178,7 +188,7 @@ jobs:
             ConnectionStrings__DefaultConnection=${DEFAULT_DB_CONN}
             RncEmisor=${RNC_EMISOR}
             Ambiente=${AMBIENTE}
-            EcfClientOptions__Environment=${AMBIENTE}
+            EcfClientOptions__Environment=${NORM_ENV}
             WorkerSecretKey=${WORKER_SECRET_KEY}
             WORKER_SECRET_KEY=${WORKER_SECRET_KEY}
             JwtSettings__Secret=${JWT_SECRET}

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Domain.Entities;
+using EcfDgii.Client.Domain.Common;
 using EcfDgii.Client.Application.Common.Interfaces;
 using EcfDgii.Client.Infrastructure.Caching;
 using EcfDgii.Client.Infrastructure.Dgii;
@@ -108,24 +109,7 @@ namespace EcfDgii.Client.Infrastructure
                 var flatAmbiente = configuration["Ambiente"] ?? configuration["AMBIENTE"];
                 if (!string.IsNullOrWhiteSpace(flatAmbiente))
                 {
-                    if (string.Equals(flatAmbiente, "Produccion", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(flatAmbiente, "Prod", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(flatAmbiente, "Ecf", StringComparison.OrdinalIgnoreCase))
-                    {
-                        options.Environment = EcfEnvironment.Prod;
-                    }
-                    else if (string.Equals(flatAmbiente, "Certificacion", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(flatAmbiente, "Cert", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(flatAmbiente, "Certecf", StringComparison.OrdinalIgnoreCase))
-                    {
-                        options.Environment = EcfEnvironment.Cert;
-                    }
-                    else if (string.Equals(flatAmbiente, "Test", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(flatAmbiente, "PreCertificacion", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(flatAmbiente, "TestEcf", StringComparison.OrdinalIgnoreCase))
-                    {
-                        options.Environment = EcfEnvironment.Test;
-                    }
+                    options.Environment = EcfEnvironmentHelper.ResolveEcfEnvironment(flatAmbiente, options.Environment);
                 }
 
                 if (string.IsNullOrWhiteSpace(options.XsdDirectoryPath))

@@ -12,7 +12,7 @@ namespace EcfDgii.Client.Domain.Common
             var lower = rawEnv.Trim().ToLowerInvariant();
             if (lower == "test" || lower == "testecf" || lower.Contains("precert")) return AmbienteEnum.PreCertificacion;
             if (lower == "cert" || lower == "certecf" || lower.Contains("certific") || lower.Contains("homolog")) return AmbienteEnum.Certificacion;
-            if (lower == "prod" || lower == "ecf" || lower.Contains("producc")) return AmbienteEnum.Produccion;
+            if (lower == "prod" || lower == "ecf" || lower.Contains("producc") || lower.Contains("product")) return AmbienteEnum.Produccion;
             if (Enum.TryParse<AmbienteEnum>(rawEnv, true, out var parsed)) return parsed;
             return defaultAmbiente;
         }
@@ -31,7 +31,7 @@ namespace EcfDgii.Client.Domain.Common
             var lower = rawEnv.Trim().ToLowerInvariant();
             if (lower == "test" || lower == "testecf" || lower.Contains("precert")) return EcfEnvironment.Test;
             if (lower == "cert" || lower == "certecf" || lower.Contains("certific") || lower.Contains("homolog")) return EcfEnvironment.Cert;
-            if (lower == "prod" || lower == "ecf" || lower.Contains("producc")) return EcfEnvironment.Prod;
+            if (lower == "prod" || lower == "ecf" || lower.Contains("producc") || lower.Contains("product")) return EcfEnvironment.Prod;
             if (Enum.TryParse<EcfEnvironment>(rawEnv, true, out var parsed)) return parsed;
             return defaultEnv;
         }
@@ -40,7 +40,7 @@ namespace EcfDgii.Client.Domain.Common
         {
             if (string.IsNullOrWhiteSpace(rawEnv)) return false;
             var lower = rawEnv.Trim().ToLowerInvariant();
-            return lower == "prod" || lower == "ecf" || lower.Contains("producc");
+            return lower == "prod" || lower == "ecf" || lower.Contains("producc") || lower.Contains("product");
         }
     }
 }
