@@ -193,6 +193,10 @@ namespace EcfDgii.Client.Api.Services
                                 }
                             }
                         }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                        {
+                            throw;
+                        }
                         catch
                         {
                             // Fallback to ConsultarEstadoAsync below
@@ -224,6 +228,11 @@ namespace EcfDgii.Client.Api.Services
                             "comprobante no tiene validez fiscal.",
                             doc.ENcf, doc.RncEmisor);
                     }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    logger.LogInformation("Reconciliación de e-CFs cancelada limpiamente por CancellationToken.");
+                    throw;
                 }
                 catch (Exception ex)
                 {

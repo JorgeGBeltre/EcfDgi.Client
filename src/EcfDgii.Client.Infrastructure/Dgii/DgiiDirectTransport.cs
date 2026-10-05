@@ -349,7 +349,7 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             };
 
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.EstatusServiciosUrl}/api/estatusservicios/verificarestado?ambiente={ambienteId}");
-            var response = await _httpClient.SendAsync(request, ct);
+            using var response = await _httpClient.SendAsync(request, ct);
             return await response.Content.ReadAsStringAsync(ct);
         }
     }
