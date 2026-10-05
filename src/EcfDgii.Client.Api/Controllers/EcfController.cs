@@ -14,6 +14,11 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpPost("send")]
         public async Task<ActionResult<EcfRecepcionResponse>> SendEcf([FromBody] SendEcfCommand command)
         {
+            if (command == null)
+            {
+                return BadRequest(new { error = "El cuerpo de la solicitud no puede estar vacío o malformado." });
+            }
+
             if (!Request.Headers.ContainsKey("Idempotency-Key") && !Request.Headers.ContainsKey("X-Idempotency-Key"))
             {
                 return BadRequest(new { error = "Header 'Idempotency-Key' is required for POST /api/ecf/send." });
@@ -40,6 +45,11 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpPost("send-rfce")]
         public async Task<ActionResult<RfceRecepcionResponse>> SendRfce([FromBody] SendRfceCommand command)
         {
+            if (command == null)
+            {
+                return BadRequest(new { error = "El cuerpo de la solicitud no puede estar vacío o malformado." });
+            }
+
             if (string.IsNullOrWhiteSpace(command.TenantId) && Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant))
             {
                 command.TenantId = hTenant.ToString();
