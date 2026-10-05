@@ -66,11 +66,27 @@ namespace UnitTests.Security
             }
 
             // Verify Anti-Deriva JSON File Checksum SHA-256 (MED-249)
+            // Normalizar CRLF a LF a nivel binario para inmunidad a la configuración git de fin de línea entre Windows y Linux
             using var sha256 = SHA256.Create();
-            var fileBytes = File.ReadAllBytes(jsonPath);
-            var actualChecksumHex = Convert.ToHexString(sha256.ComputeHash(fileBytes));
-            const string expectedChecksumHex = "952B3CFE8300316BB0B9B2E7B0BA3D4419B97C8388779543CFDCE153F87C4C6D";
+            var rawBytes = File.ReadAllBytes(jsonPath);
+            var normalizedBytes = NormalizeLineEndingsToLf(rawBytes);
+            var actualChecksumHex = Convert.ToHexString(sha256.ComputeHash(normalizedBytes));
+            const string expectedChecksumHex = "4D7FB984EAFC25517A2FE17548EEAB716B7BA4CBEC127C4CD568EB179EA61DC0";
             Assert.Equal(expectedChecksumHex, actualChecksumHex, ignoreCase: true);
+        }
+
+        private static byte[] NormalizeLineEndingsToLf(byte[] bytes)
+        {
+            using var ms = new MemoryStream();
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                if (bytes[i] == (byte)'\r' && i + 1 < bytes.Length && bytes[i + 1] == (byte)'\n')
+                {
+                    continue; // omit CR
+                }
+                ms.WriteByte(bytes[i]);
+            }
+            return ms.ToArray();
         }
     }
 }
