@@ -54,10 +54,14 @@ try
     // Values are configurable (EcfStatusPolling section) because MaxPollingWindowHours in particular
     // is a conservative stand-in, not a confirmed DGII deadline — see EcfStatusPollingOptions.Default.
     var pollingSection = builder.Configuration.GetSection("EcfStatusPolling");
+    var pollingIntervalSeconds = pollingSection.GetValue<int?>("PollingIntervalSeconds")
+        ?? (pollingSection.GetValue<int?>("PollingIntervalMinutes") * 60)
+        ?? 60;
     var pollingOptions = new EcfStatusPollingOptions(
-        PollingInterval: TimeSpan.FromMinutes(pollingSection.GetValue("PollingIntervalMinutes", 15)),
+        PollingInterval: TimeSpan.FromSeconds(Math.Max(5, pollingIntervalSeconds)),
         MinDocumentAge: TimeSpan.FromMinutes(pollingSection.GetValue("MinDocumentAgeMinutes", 2)),
-        MaxPollingWindow: TimeSpan.FromHours(pollingSection.GetValue("MaxPollingWindowHours", 72)));
+        MaxPollingWindow: TimeSpan.FromHours(pollingSection.GetValue("MaxPollingWindowHours", 72)),
+        BatchSize: pollingSection.GetValue("BatchSize", 50));
     builder.Services.AddSingleton(pollingOptions);
     builder.Services.AddHostedService<EcfStatusPollingBackgroundService>();
 
@@ -184,6 +188,7 @@ try
                 .AddAspNetCoreInstrumentation()
                 .AddOtlpExporter();
         });
+
 
     var app = builder.Build();
 
