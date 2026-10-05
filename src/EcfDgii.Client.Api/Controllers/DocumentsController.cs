@@ -963,8 +963,48 @@ namespace EcfDgii.Client.Api.Controllers
             });
         }
 
+        /// <summary>
+        /// Pure read-only lookup of e-CF document by TxnId, TrackId, or eNCF (MED-017).
+        /// Idempotent GET: never mutates database rows or contacts DGII.
+        /// </summary>
         [HttpGet("by-source/{txnId}")]
         public async Task<IActionResult> GetBySourceTxnId(string txnId)
+        {
+            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
+                ? tenantClaim
+                : (HttpContext.Items["TenantId"]?.ToString()
+                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                   ?? "default-tenant");
+
+            var doc = await _db.EcfDocuments
+                .AsNoTracking()
+                .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
+
+            if (doc == null)
+            {
+                return NotFound(new { error = $"Document with source TxnId '{txnId}' not found." });
+            }
+
+            return Ok(new
+            {
+                documentId = doc.Id,
+                ncf = doc.Ncf,
+                eNcf = doc.ENcf,
+                state = doc.State,
+                trackId = doc.TrackId,
+                securityCode = doc.SecurityCode,
+                receiptDate = doc.ReceiptDate,
+                signedXml = doc.SignedXmlContent,
+                dgiiResponse = doc.DgiiResponseXml
+            });
+        }
+
+        /// <summary>
+        /// Explicit command endpoint to reconcile or retransmit an Uncertain/Signed document against DGII (MED-017).
+        /// </summary>
+        [HttpPost("by-source/{txnId}/reconcile")]
+        public async Task<IActionResult> ReconcileBySourceTxnId(string txnId)
         {
             var tenantClaim = User.FindFirst("tenant_id")?.Value;
             var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
@@ -1018,7 +1058,6 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else if (doc.State == "Uncertain")
             {
-                // Si el comprobante quedó en Uncertain por caída de red, reconciliar o retransmitir
                 try
                 {
                     var isDefaultFallback = doc.TenantId == "default-tenant";
@@ -1042,7 +1081,7 @@ namespace EcfDgii.Client.Api.Controllers
                             }
                             catch (Exception ex)
                             {
-                                _logger.LogWarning(ex, "Error al consultar estado DGII para reconciliación de eNCF {eNCF}. Se mantiene estado Uncertain.", doc.ENcf);
+                                _logger.LogWarning(ex, "Error al consultar estado DGII para reconciliación de eNCF {eNCF}.", doc.ENcf);
                             }
 
                             if (status != null)
@@ -1066,7 +1105,6 @@ namespace EcfDgii.Client.Api.Controllers
                                 }
                                 else if (IsNotFoundByDgii(status))
                                 {
-                                    // DGII confirmó explícitamente que nunca lo recibió: seguro de retransmitir el RFCE firmado
                                     var emisorRazon = _emisorRazonSocial;
                                     var rfceXml = BuildRfceXml(doc, null, emisorRazon);
                                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);

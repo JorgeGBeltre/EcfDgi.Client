@@ -17,7 +17,8 @@ namespace EcfDgii.Client.Api.Services
     public sealed record EcfStatusPollingOptions(
         TimeSpan PollingInterval,
         TimeSpan MinDocumentAge,
-        TimeSpan MaxPollingWindow)
+        TimeSpan MaxPollingWindow,
+        int BatchSize = 50)
     {
         /// <summary>
         /// MaxPollingWindow defaults to 72 hours — the only concrete DGII regulatory timeframe found
@@ -31,7 +32,8 @@ namespace EcfDgii.Client.Api.Services
         public static EcfStatusPollingOptions Default => new(
             PollingInterval: TimeSpan.FromMinutes(15),
             MinDocumentAge: TimeSpan.FromMinutes(2),
-            MaxPollingWindow: TimeSpan.FromHours(72));
+            MaxPollingWindow: TimeSpan.FromHours(72),
+            BatchSize: 50);
     }
 
     /// <summary>
@@ -79,12 +81,15 @@ namespace EcfDgii.Client.Api.Services
             var now = clock.UtcNow.UtcDateTime;
             var minAgeCutoff = now - options.MinDocumentAge;
             var pollDueCutoff = now - options.PollingInterval;
+            var batchSize = options.BatchSize > 0 ? options.BatchSize : 50;
 
             var due = await db.EcfDocuments
-                // HIGH-042: Incluir también estado "Uncertain" y soportar filas legacy con SentToDgiiAt nulo usando CreatedAt
+                // HIGH-042 & MED-018: Incluir también estado "Uncertain", ordenar por LastStatusCheckAt, y limitar por batchSize
                 .Where(d => (d.State == "Signed" || d.State == "SentToDgii" || d.State == "Uncertain")
                          && ((d.SentToDgiiAt != null && d.SentToDgiiAt <= minAgeCutoff) || (d.SentToDgiiAt == null && d.CreatedAt <= minAgeCutoff))
                          && (d.LastStatusCheckAt == null || d.LastStatusCheckAt <= pollDueCutoff))
+                .OrderBy(d => d.LastStatusCheckAt ?? DateTime.MinValue)
+                .Take(batchSize)
                 .ToListAsync(ct);
 
             var processed = 0;
@@ -201,11 +206,16 @@ namespace EcfDgii.Client.Api.Services
                     doc.StatusCheckAttempts++;
                     logger.LogWarning(ex, "Fallo consultando estado DGII para e-CF {ENcf}; se reintentará.", doc.ENcf);
                 }
-            }
 
-            if (processed > 0)
-            {
-                await db.SaveChangesAsync(ct);
+                // Checkpoint each document update so crashes or transient failures don't clobber batch progress (MED-018)
+                try
+                {
+                    await db.SaveChangesAsync(ct);
+                }
+                catch (Exception saveEx)
+                {
+                    logger.LogError(saveEx, "Error persistiendo reconciliación para comprobante {ENcf}", doc.ENcf);
+                }
             }
 
             return processed;
