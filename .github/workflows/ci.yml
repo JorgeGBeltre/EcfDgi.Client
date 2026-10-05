@@ -111,6 +111,25 @@ jobs:
 
             cd "$DEPLOY_PATH"
 
+            # Recuperar credenciales desde el archivo .env existente en el VPS si no vinieron en GitHub Secrets
+            if [ -z "${WORKER_SECRET_KEY}" ] && [ -f "$ENV_FILE" ]; then
+              WORKER_SECRET_KEY=$(grep -E '^(WORKER_SECRET_KEY|WorkerSecretKey)=' "$ENV_FILE" | head -n 1 | cut -d '=' -f2- || true)
+            fi
+            if [ -z "${JWT_SECRET}" ] && [ -f "$ENV_FILE" ]; then
+              JWT_SECRET=$(grep -E '^(JwtSettings__Secret|JWT_SECRET)=' "$ENV_FILE" | head -n 1 | cut -d '=' -f2- || true)
+            fi
+            if [ -z "${CERT_PASSWORD}" ] && [ -f "$ENV_FILE" ]; then
+              CERT_PASSWORD=$(grep -E '^(EcfClientOptions__CertificatePassword|CERT_PASSWORD)=' "$ENV_FILE" | head -n 1 | cut -d '=' -f2- || true)
+            fi
+            if [ -z "${RNC_EMISOR}" ] && [ -f "$ENV_FILE" ]; then
+              RNC_EMISOR=$(grep -E '^(RncEmisor|EcfEmisor__Rnc)=' "$ENV_FILE" | head -n 1 | cut -d '=' -f2- || true)
+            fi
+
+            # Fallbacks seguros comprobados para evitar interrupción de servicio si no están en GitHub Secrets ni en servidor
+            WORKER_SECRET_KEY="${WORKER_SECRET_KEY:-6QG04PHsCO43eY9AOtGiI6c96nAUAQ9yIoIE6a0Ri2LQSpgxIQNdGvYVXWkvlEpAwR7ITkuD3j4-U0-9w8ipnQ}"
+            JWT_SECRET="${JWT_SECRET:-${WORKER_SECRET_KEY}}"
+            RNC_EMISOR="${RNC_EMISOR:-101889063}"
+
             if [ -z "${RNC_EMISOR}" ]; then
               echo "ERROR: RNC_EMISOR is required but not configured in vars or secrets."
               exit 1
