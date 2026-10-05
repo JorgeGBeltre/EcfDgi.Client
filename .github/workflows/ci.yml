@@ -87,7 +87,7 @@ jobs:
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR }}
+          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '101889063' }}
           AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Produccion' }}
           WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
@@ -203,7 +203,7 @@ jobs:
 
             echo "Verificando salud del contenedor..."
             for i in $(seq 1 15); do
-              if docker exec "$CONTAINER_NAME" wget --spider -q http://localhost:8080/health; then
+              if docker exec "$CONTAINER_NAME" wget --spider -q http://127.0.0.1:8080/health || docker exec "$CONTAINER_NAME" wget --spider -q http://localhost:8080/health; then
                 echo "✅ Contenedor saludable."
                 break
               fi
