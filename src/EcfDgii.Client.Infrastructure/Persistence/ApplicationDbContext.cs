@@ -29,6 +29,12 @@ namespace EcfDgii.Client.Infrastructure.Persistence
         public DbSet<EcfIdempotencyRecord> IdempotencyRecords => Set<EcfIdempotencyRecord>();
         public DbSet<EcfSequence> Sequences => Set<EcfSequence>();
 
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        {
+            base.OnConfiguring(optionsBuilder);
+            optionsBuilder.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+        }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);

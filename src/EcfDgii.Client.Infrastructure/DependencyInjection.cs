@@ -43,8 +43,11 @@ namespace EcfDgii.Client.Infrastructure
             else
             {
                 services.AddDbContext<ApplicationDbContext>(options =>
+                {
                     options.UseNpgsql(connectionString,
-                        b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName)));
+                        b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName));
+                    options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+                });
             }
 
             // Redis Infrastructure Setup
