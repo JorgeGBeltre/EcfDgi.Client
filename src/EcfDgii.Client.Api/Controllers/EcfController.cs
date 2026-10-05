@@ -19,7 +19,6 @@ namespace EcfDgii.Client.Api.Controllers
                 return BadRequest(new { error = "Header 'Idempotency-Key' is required for POST /api/ecf/send." });
             }
 
-            ModelState.Clear();
             var tenantId = !string.IsNullOrWhiteSpace(command.TenantId) 
                 ? command.TenantId 
                 : (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null);
@@ -41,7 +40,6 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpPost("send-rfce")]
         public async Task<ActionResult<RfceRecepcionResponse>> SendRfce([FromBody] SendRfceCommand command)
         {
-            ModelState.Clear();
             if (string.IsNullOrWhiteSpace(command.TenantId) && Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant))
             {
                 command.TenantId = hTenant.ToString();

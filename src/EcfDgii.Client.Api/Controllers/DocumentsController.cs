@@ -95,10 +95,12 @@ namespace EcfDgii.Client.Api.Controllers
         private readonly IClock _clock;
         private readonly string _emisorRnc;
         private readonly string _emisorRazonSocial;
+        private readonly string _emisorDireccion;
         private readonly IEcfSchemaValidator _schemaValidator;
         private readonly EcfClientOptions _ecfClientOptions;
         private readonly AmbienteEnum _defaultAmbiente;
         private readonly ITenantSignerResolver? _signerResolver;
+        private readonly FluentValidation.IValidator<CanonicalDocumentDto>? _dtoValidator;
 
         public DocumentsController(
             ApplicationDbContext db,
@@ -110,7 +112,8 @@ namespace EcfDgii.Client.Api.Controllers
             IOptions<EcfEmisorOptions> emisorOptions,
             IEcfSchemaValidator schemaValidator,
             IOptions<EcfClientOptions> ecfClientOptions,
-            ITenantSignerResolver? signerResolver = null)
+            ITenantSignerResolver? signerResolver = null,
+            FluentValidation.IValidator<CanonicalDocumentDto>? dtoValidator = null)
         {
             _db = db;
             _sequenceManager = sequenceManager;
@@ -122,9 +125,11 @@ namespace EcfDgii.Client.Api.Controllers
             // to trust unconditionally here.
             _emisorRnc = emisorOptions.Value.Rnc;
             _emisorRazonSocial = emisorOptions.Value.RazonSocial;
+            _emisorDireccion = emisorOptions.Value.Direccion;
             _schemaValidator = schemaValidator;
             _ecfClientOptions = ecfClientOptions.Value;
             _signerResolver = signerResolver;
+            _dtoValidator = dtoValidator;
             _defaultAmbiente = _ecfClientOptions.Environment switch
             {
                 EcfEnvironment.Test => AmbienteEnum.PreCertificacion,
@@ -134,14 +139,52 @@ namespace EcfDgii.Client.Api.Controllers
             };
         }
 
+        private bool TryResolveAmbienteEnum(string? rawEnv, out AmbienteEnum ambiente, out string? error)
+        {
+            if (string.IsNullOrWhiteSpace(rawEnv))
+            {
+                ambiente = _defaultAmbiente;
+                error = null;
+                return true;
+            }
+
+            var lower = rawEnv.Trim().ToLowerInvariant();
+            if (lower == "test" || lower == "testecf" || lower.Contains("precert"))
+            {
+                ambiente = AmbienteEnum.PreCertificacion;
+                error = null;
+                return true;
+            }
+            if (lower == "cert" || lower == "certecf" || lower.Contains("certific") || lower.Contains("homolog"))
+            {
+                ambiente = AmbienteEnum.Certificacion;
+                error = null;
+                return true;
+            }
+            if (lower == "prod" || lower == "ecf" || lower.Contains("producc"))
+            {
+                ambiente = AmbienteEnum.Produccion;
+                error = null;
+                return true;
+            }
+            if (Enum.TryParse<AmbienteEnum>(rawEnv, true, out var parsed))
+            {
+                ambiente = parsed;
+                error = null;
+                return true;
+            }
+
+            ambiente = _defaultAmbiente;
+            error = $"Ambiente '{rawEnv}' no es reconocido. Valores admitidos: TestEcf, CertEcf, Produccion (o PreCertificacion, Certificacion).";
+            return false;
+        }
+
         private AmbienteEnum ResolveAmbienteEnum(string? rawEnv)
         {
-            if (string.IsNullOrWhiteSpace(rawEnv)) return _defaultAmbiente;
-            var lower = rawEnv.ToLowerInvariant();
-            if (lower == "test" || lower == "testecf" || lower.Contains("precert")) return AmbienteEnum.PreCertificacion;
-            if (lower == "cert" || lower == "certecf" || lower.Contains("certific") || lower.Contains("homolog")) return AmbienteEnum.Certificacion;
-            if (lower == "prod" || lower == "ecf" || lower.Contains("producc")) return AmbienteEnum.Produccion;
-            if (Enum.TryParse<AmbienteEnum>(rawEnv, true, out var parsed)) return parsed;
+            if (TryResolveAmbienteEnum(rawEnv, out var parsed, out _))
+            {
+                return parsed;
+            }
             return _defaultAmbiente;
         }
 
@@ -282,7 +325,21 @@ namespace EcfDgii.Client.Api.Controllers
         [HttpPost]
         public async Task<IActionResult> SubmitCanonicalDocument([FromBody] CanonicalDocumentDto dto)
         {
-            if (dto == null || dto.SourceReference == null || string.IsNullOrWhiteSpace(dto.SourceReference.TxnId))
+            if (dto == null)
+            {
+                return BadRequest(new { error = "Request body is required." });
+            }
+
+            if (_dtoValidator != null)
+            {
+                var validationResult = await _dtoValidator.ValidateAsync(dto);
+                if (!validationResult.IsValid)
+                {
+                    return BadRequest(new { error = validationResult.Errors.First().ErrorMessage, details = validationResult.Errors.Select(e => e.ErrorMessage) });
+                }
+            }
+
+            if (dto.SourceReference == null || string.IsNullOrWhiteSpace(dto.SourceReference.TxnId))
             {
                 return BadRequest(new { error = "SourceReference.TxnId is required." });
             }
@@ -420,13 +477,55 @@ namespace EcfDgii.Client.Api.Controllers
                     return BadRequest(new { error = "Retention is required for TipoComprobante E47." });
                 }
             }
-            // MED-099: Si se enviaron líneas pero todas son informativas (valor 0 y precio 0), rechazar
+            // MED-105 & MED-107: Pre-allocation validation of amounts and lines
+            if (dto.Totals != null)
+            {
+                if (dto.Totals.MontoSubtotal < 0 || dto.Totals.MontoItbis < 0 || dto.Totals.MontoTotal < 0)
+                {
+                    return BadRequest(new { error = "Los totales del documento (Subtotal, ITBIS, Total) no pueden ser negativos." });
+                }
+
+                var effectiveSubtotal = (dto.Totals.MontoGravadoTotal ?? 0m) + (dto.Totals.MontoExento ?? 0m);
+                if (effectiveSubtotal == 0m && dto.Totals.MontoSubtotal > 0m)
+                {
+                    effectiveSubtotal = dto.Totals.MontoSubtotal;
+                }
+                else if (dto.Totals.MontoSubtotal == 0m && effectiveSubtotal > 0m)
+                {
+                    dto.Totals.MontoSubtotal = effectiveSubtotal;
+                }
+
+                if (effectiveSubtotal > 0m && Math.Abs(dto.Totals.MontoTotal - (effectiveSubtotal + dto.Totals.MontoItbis)) > 0.05m)
+                {
+                    return BadRequest(new { error = $"Discrepancia en totales: MontoTotal ({dto.Totals.MontoTotal:F2}) debe coincidir con Subtotal ({effectiveSubtotal:F2}) + ITBIS ({dto.Totals.MontoItbis:F2})." });
+                }
+            }
+
             if (dto.Lines != null && dto.Lines.Count > 0)
             {
+                // MED-107: Línea negativa inicial no puede preceder al ítem que descuenta
+                if (dto.Lines[0].Amount < 0 || dto.Lines[0].UnitPrice < 0)
+                {
+                    return BadRequest(new { error = "Una línea de descuento no puede preceder al ítem que descuenta." });
+                }
+
                 var billableLines = dto.Lines.Where(l => !(l.Amount == 0m && l.UnitPrice == 0m)).ToList();
-                if (billableLines.Count == 0)
+                if (billableLines.Count == 0 && (dto.Totals?.MontoTotal ?? 0m) > 0m)
                 {
                     return BadRequest(new { error = "El comprobante no posee líneas facturables con importe mayor a cero." });
+                }
+
+                // MED-105: Líneas deben cuadrar con la base gravada + exenta declarada
+                var linesNetSum = dto.Lines.Sum(l => l.Amount);
+                var declaredBase = dto.Totals != null 
+                    ? ((dto.Totals.MontoGravadoTotal ?? 0m) + (dto.Totals.MontoExento ?? 0m) > 0m 
+                        ? (dto.Totals.MontoGravadoTotal ?? 0m) + (dto.Totals.MontoExento ?? 0m) 
+                        : dto.Totals.MontoSubtotal)
+                    : 0m;
+
+                if (declaredBase > 0 && Math.Abs(linesNetSum - declaredBase) > 0.05m)
+                {
+                    return BadRequest(new { error = $"Discrepancia en sumatoria de líneas: La suma neta de líneas ({linesNetSum:F2}) no coincide con la base imponible declarada ({declaredBase:F2})." });
                 }
             }
 
@@ -485,7 +584,10 @@ namespace EcfDgii.Client.Api.Controllers
             }
 
             var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
-            var ambiente = ResolveAmbienteEnum(rawEnv);
+            if (!TryResolveAmbienteEnum(rawEnv, out var ambiente, out var envError))
+            {
+                return BadRequest(new { error = envError });
+            }
 
             var isDefaultFallback = ComputeIsDefaultFallback(tenantId, dto, rawEnv, Request.Headers.ContainsKey("X-Tenant-Id"));
             var sequenceScope = isDefaultFallback ? "default-tenant" : $"{tenantId}:{ambiente}";
@@ -697,11 +799,15 @@ namespace EcfDgii.Client.Api.Controllers
                 ? dto.Header.RazonSocialEmisor
                 : _emisorRazonSocial;
 
+            var effectiveDireccion = !isDefaultFallback && !string.IsNullOrWhiteSpace(dto.Header?.DireccionEmisor)
+                ? dto.Header.DireccionEmisor
+                : (!string.IsNullOrWhiteSpace(_emisorDireccion) ? _emisorDireccion : "Distrito Nacional, SD");
+
             doc.RncEmisor = effectiveRnc;
             doc.RncComprador = dto.Header?.RncComprador;
             doc.TotalAmount = dto.Totals?.MontoTotal ?? 0;
             doc.ItbisAmount = dto.Totals?.MontoItbis ?? 0;
-            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, effectiveRnc, effectiveRazonSocial);
+            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, effectiveRnc, effectiveRazonSocial, effectiveDireccion);
             doc.State = "SequenceAllocated";
         }
 
@@ -979,17 +1085,19 @@ namespace EcfDgii.Client.Api.Controllers
                             _logger.LogDebug(checkEx, "Consulta inmediata DGII para {TrackId} no completó; se conciliará en segundo plano.", doc.TrackId);
                         }
                     }
-                    else if (response != null && !string.IsNullOrWhiteSpace(response.Error))
+                    else if (response != null && (!string.IsNullOrWhiteSpace(response.Error) || (response.Mensaje != null && response.Mensaje.Contains("rechazado", StringComparison.OrdinalIgnoreCase))))
                     {
                         doc.State = "RejectedByDgii";
-                        doc.DgiiResponseXml = response.Mensaje ?? response.Error;
+                        doc.DgiiResponseXml = response.Mensaje ?? response.Error ?? "Rechazado por DGII";
                         _logger.LogWarning("e-CF {ENcf} rechazado por DGII al recibir: {Error}", doc.ENcf, doc.DgiiResponseXml);
                     }
                     else
                     {
-                        // HIGH-041: Respuesta nula o sin TrackId sin rechazo explícito de DGII es incierta (Uncertain)
+                        // MED-103 / HIGH-041: Respuesta nula o sin TrackId sin rechazo explícito de DGII es incierta (Uncertain)
                         doc.State = "Uncertain";
-                        doc.DgiiResponseXml = "Respuesta nula o sin TrackId desde transporte DGII";
+                        doc.DgiiResponseXml = response != null 
+                            ? (response.Mensaje ?? response.Error ?? "Respuesta sin TrackId desde transporte DGII")
+                            : "Respuesta nula desde transporte DGII";
                         _logger.LogWarning("e-CF {ENcf}: respuesta nula o sin TrackId desde DGII. Marcado como 'Uncertain'.", doc.ENcf);
                     }
                 }
@@ -998,6 +1106,7 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 _logger.LogError(ex, "Fallo transmitiendo e-CF {ENcf} (RNC {Rnc}) a DGII: {Message}", doc.ENcf, doc.RncEmisor, ex.Message);
                 doc.State = "Uncertain";
+                doc.DgiiResponseXml = $"Fallo de transporte / excepción: {ex.Message}";
             }
 
             await _db.SaveChangesAsync();
@@ -1195,7 +1304,7 @@ namespace EcfDgii.Client.Api.Controllers
                                         await _db.SaveChangesAsync();
                                         _logger.LogInformation("e-CF de Consumo {ENcf} retransmitido y aceptado por RecepcionFC (RFCE).", doc.ENcf);
                                     }
-                                    else if (rfceResp != null)
+                                    else if (rfceResp != null && string.Equals(rfceResp.Estado?.Trim(), "Rechazado", StringComparison.OrdinalIgnoreCase))
                                     {
                                         doc.State = "RejectedByDgii";
                                         doc.TrackId = null;
@@ -1203,6 +1312,16 @@ namespace EcfDgii.Client.Api.Controllers
                                             ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
                                             : (rfceResp.Estado ?? "Rechazado por RecepcionFC");
                                         doc.DgiiResponseXml = errors;
+                                        await _db.SaveChangesAsync();
+                                    }
+                                    else
+                                    {
+                                        // MED-103: Respuesta nula o no concluyente de transporte RFCE es incierta (Uncertain)
+                                        doc.State = "Uncertain";
+                                        doc.TrackId = null;
+                                        doc.DgiiResponseXml = rfceResp != null 
+                                            ? (rfceResp.Estado ?? "Respuesta sin estado concluyente desde RFCE") 
+                                            : "Respuesta nula desde RFCE";
                                         await _db.SaveChangesAsync();
                                     }
                                 }
@@ -1356,7 +1475,7 @@ namespace EcfDgii.Client.Api.Controllers
             return sb.ToString().Trim();
         }
 
-        private string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial)
+        private string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial, string? emisorDireccion = null)
         {
             var sb = new StringBuilder();
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
@@ -1445,7 +1564,8 @@ namespace EcfDgii.Client.Api.Controllers
             var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
             var razonSocialEmisor = EscapeXml(safeEmisorName);
             sb.AppendLine($"      <RazonSocialEmisor>{razonSocialEmisor}</RazonSocialEmisor>");
-            sb.AppendLine("      <DireccionEmisor>Distrito Nacional, SD</DireccionEmisor>");
+            var safeDireccion = !string.IsNullOrWhiteSpace(emisorDireccion) ? emisorDireccion : "Distrito Nacional, SD";
+            sb.AppendLine($"      <DireccionEmisor>{EscapeXml(safeDireccion)}</DireccionEmisor>");
             var fechaEmision = NormalizeFechaDgii(dto.Header?.FechaEmision);
             sb.AppendLine($"      <FechaEmision>{EscapeXml(fechaEmision)}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
@@ -1922,9 +2042,18 @@ namespace EcfDgii.Client.Api.Controllers
                     {
                         // Absorber como descuento en el ítem anterior
                         var prev = result[^1];
+                        if (absDiscount > prev.MontoItem)
+                        {
+                            throw new InvalidOperationException($"El descuento ({absDiscount:F2}) no puede ser mayor al monto del ítem anterior ({prev.MontoItem:F2}).");
+                        }
                         prev.DiscountAmount += absDiscount;
-                        prev.MontoItem = Math.Max(0m, prev.MontoItem - absDiscount);
+                        prev.MontoItem -= absDiscount;
                         continue;
+                    }
+                    else
+                    {
+                        // MED-107: Una línea de descuento no puede preceder al ítem que descuenta
+                        throw new InvalidOperationException("Una línea de descuento no puede preceder al ítem que descuenta.");
                     }
                 }
 
@@ -1936,8 +2065,8 @@ namespace EcfDgii.Client.Api.Controllers
                 }
 
                 var safeQty = rawQty > 0m ? rawQty : 1m;
-                var safePrice = Math.Max(0m, rawPrice);
-                var safeAmount = Math.Max(0m, line.Amount);
+                var safePrice = rawPrice;
+                var safeAmount = line.Amount;
 
                 var shortName = rawName.Length > 80 ? rawName[..80] : rawName;
                 string? extendedDesc = rawName.Length > 80

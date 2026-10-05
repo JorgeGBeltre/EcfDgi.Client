@@ -13,6 +13,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
     {
         public string RncEmisor { get; set; } = string.Empty;
         public string RazonSocialEmisor { get; set; } = string.Empty;
+        public string? DireccionEmisor { get; set; }
         public string RncComprador { get; set; } = string.Empty;
         public string? IdentificadorExtranjero { get; set; }
         public string RazonSocialComprador { get; set; } = string.Empty;
