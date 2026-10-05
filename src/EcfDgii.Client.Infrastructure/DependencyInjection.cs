@@ -31,10 +31,14 @@ namespace EcfDgii.Client.Infrastructure
                     ?? configuration["DB_CONNECTION_STRING"];
             }
 
-            if (connectionString == "InMemory")
+            if (!string.IsNullOrWhiteSpace(connectionString) && (connectionString == "InMemory" || connectionString.StartsWith("InMemory:")))
             {
+                var dbName = connectionString.StartsWith("InMemory:") && connectionString.Length > 9
+                    ? connectionString[9..]
+                    : $"InMemoryDb_{Guid.NewGuid():N}";
+
                 services.AddDbContext<ApplicationDbContext>(options =>
-                    options.UseInMemoryDatabase("InMemoryDbForTesting"));
+                    options.UseInMemoryDatabase(dbName));
             }
             else
             {

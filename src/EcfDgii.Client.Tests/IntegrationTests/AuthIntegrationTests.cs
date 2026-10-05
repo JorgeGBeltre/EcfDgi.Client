@@ -36,13 +36,17 @@ namespace EcfDgii.Client.IntegrationTests
         }
 
         [Fact]
-        public async Task Login_SeedAdmin_ReturnsToken()
+        public async Task Login_ValidUser_ReturnsToken()
         {
-            // Arrange
-            // Note: UserConfiguration seeds user "admin" with this password — rotated away from the
-            // old, long-exposed "AdminPassword123!". Still a placeholder meant to be changed before
-            // any real deployment; kept here only so this test can exercise the real login flow.
-            var command = new LoginUserCommand("admin", "rsxDE3slRF3ArrJabCxI!Aa1");
+            // Arrange (MED-248: Do not entrench static seeded passwords in tests)
+            var username = $"user_{Guid.NewGuid():N}"[..12];
+            var email = $"{username}@test.com";
+            var password = $"P@ss_{Guid.NewGuid():N}123!";
+            var registerCmd = new RegisterUserCommand(username, email, password);
+            var regResponse = await _client.PostAsJsonAsync("api/auth/register", registerCmd);
+            regResponse.EnsureSuccessStatusCode();
+
+            var command = new LoginUserCommand(username, password);
 
             // Act
             var response = await _client.PostAsJsonAsync("api/auth/login", command);
@@ -51,8 +55,8 @@ namespace EcfDgii.Client.IntegrationTests
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var result = await response.Content.ReadFromJsonAsync<AuthResponseDto>();
             Assert.NotNull(result);
-            Assert.Equal("admin", result.Username);
-            Assert.Equal("Admin", result.Role);
+            Assert.Equal(username, result.Username);
+            Assert.Equal("User", result.Role);
             Assert.False(string.IsNullOrEmpty(result.Token));
         }
     }

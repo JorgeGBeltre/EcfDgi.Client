@@ -7,6 +7,7 @@ using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Xunit;
 using EcfDgii.Client.Application.Auth.Commands.Login;
+using EcfDgii.Client.Application.Auth.Commands.Register;
 using EcfDgii.Client.Application.Auth.Common;
 using EcfDgii.Client.Application.Customers.Commands.CreateCustomer;
 using EcfDgii.Client.Application.Customers.Common;
@@ -24,9 +25,16 @@ namespace EcfDgii.Client.IntegrationTests
             _client = factory.CreateClient();
         }
 
-        private async Task AuthenticateAsync(string username, string password)
+        private async Task AuthenticateAsync(string? username = null, string? password = null)
         {
-            var loginCmd = new LoginUserCommand(username, password);
+            var user = username ?? $"cust_usr_{Guid.NewGuid():N}"[..12];
+            var pass = password ?? $"Pass_{Guid.NewGuid():N}123!";
+            var email = $"{user}@test.com";
+            var registerCmd = new RegisterUserCommand(user, email, pass);
+            var regResponse = await _client.PostAsJsonAsync("api/auth/register", registerCmd);
+            regResponse.EnsureSuccessStatusCode();
+
+            var loginCmd = new LoginUserCommand(user, pass);
             var response = await _client.PostAsJsonAsync("api/auth/login", loginCmd);
             var result = await response.Content.ReadFromJsonAsync<AuthResponseDto>();
             
@@ -50,8 +58,8 @@ namespace EcfDgii.Client.IntegrationTests
         [Fact]
         public async Task CreateCustomer_WithAuth_CreatesAndReturns()
         {
-            // Arrange
-            await AuthenticateAsync("admin", "rsxDE3slRF3ArrJabCxI!Aa1"); // rotated seed password, see UserConfiguration.cs
+            // Arrange (MED-248)
+            await AuthenticateAsync();
             var command = new CreateCustomerCommand("Integrator Client", "int@client.com", "101672919");
 
             // Act

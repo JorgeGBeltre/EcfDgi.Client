@@ -65,11 +65,12 @@ namespace UnitTests.Security
                 Assert.Equal(vec.expectedSignature, actualSig);
             }
 
-            // Verify Anti-Deriva JSON File Checksum SHA-256
+            // Verify Anti-Deriva JSON File Checksum SHA-256 (MED-249)
             using var sha256 = SHA256.Create();
             var fileBytes = File.ReadAllBytes(jsonPath);
             var actualChecksumHex = Convert.ToHexString(sha256.ComputeHash(fileBytes));
-            Assert.NotEmpty(actualChecksumHex);
+            const string expectedChecksumHex = "952B3CFE8300316BB0B9B2E7B0BA3D4419B97C8388779543CFDCE153F87C4C6D";
+            Assert.Equal(expectedChecksumHex, actualChecksumHex, ignoreCase: true);
         }
     }
 }
