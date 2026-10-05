@@ -44,6 +44,11 @@ namespace EcfDgii.Client.Infrastructure.Security
 
         public string SignXml(string xmlContent, string rncEmisor)
         {
+            if (DateTime.UtcNow < _certificate.NotBefore || DateTime.UtcNow > _certificate.NotAfter)
+            {
+                throw new EcfSigningException($"El certificado digital ha expirado o aún no es válido (Vigencia: {_certificate.NotBefore:yyyy-MM-dd} a {_certificate.NotAfter:yyyy-MM-dd}).");
+            }
+
             if (!ValidateCertificateSn(rncEmisor))
                 throw new EcfSigningException($"El RNC del certificado no coincide con el emisor: {rncEmisor}");
 
