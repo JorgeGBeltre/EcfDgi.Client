@@ -56,21 +56,48 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
             {
                 if (!string.Equals(existing.PayloadHash, payloadHash, StringComparison.OrdinalIgnoreCase))
                 {
+                    // Si el intento previo falló con error del cliente o validación (>= 400), permitir que el nuevo payload corregido sea procesado
+                    if (existing.StatusCode >= 400)
+                    {
+                        existing.PayloadHash = payloadHash;
+                        existing.Status = IdempotencyStatus.Processing;
+                        existing.StatusCode = 0;
+                        existing.ResponseBody = string.Empty;
+                        existing.CreatedAt = DateTimeOffset.UtcNow;
+                        existing.UpdatedAt = DateTimeOffset.UtcNow;
+                        existing.CreatedByWorkerKeyId = workerKeyId;
+                        await db.SaveChangesAsync();
+                        return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
+                    }
+
                     return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.PayloadMismatch };
                 }
 
                 if (existing.Status == IdempotencyStatus.Completed)
                 {
-                    return new IdempotencyReservationResult
+                    if (existing.StatusCode >= 200 && existing.StatusCode < 300)
                     {
-                        Status = IdempotencyReservationStatus.AlreadyCompleted,
-                        CompletedResult = new IdempotentResult
+                        return new IdempotencyReservationResult
                         {
-                            StatusCode = existing.StatusCode,
-                            ContentType = existing.ContentType,
-                            Body = existing.ResponseBody
-                        }
-                    };
+                            Status = IdempotencyReservationStatus.AlreadyCompleted,
+                            CompletedResult = new IdempotentResult
+                            {
+                                StatusCode = existing.StatusCode,
+                                ContentType = existing.ContentType,
+                                Body = existing.ResponseBody
+                            }
+                        };
+                    }
+
+                    // Si completó previamente con error (>= 400), permitir reintento
+                    existing.Status = IdempotencyStatus.Processing;
+                    existing.StatusCode = 0;
+                    existing.ResponseBody = string.Empty;
+                    existing.CreatedAt = DateTimeOffset.UtcNow;
+                    existing.UpdatedAt = DateTimeOffset.UtcNow;
+                    existing.CreatedByWorkerKeyId = workerKeyId;
+                    await db.SaveChangesAsync();
+                    return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
                 }
 
                 // Atomic Lease Reclamation for expired 'Processing' reservations (e.g. server crash or reboot)
