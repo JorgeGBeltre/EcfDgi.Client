@@ -1397,6 +1397,69 @@ namespace EcfDgii.Client.Api.Controllers
                             }
                         }
                     }
+                    else
+                    {
+                        var uncertainSince = doc.UpdatedAt.HasValue
+                            ? new DateTimeOffset(doc.UpdatedAt.Value, TimeSpan.Zero)
+                            : new DateTimeOffset(doc.CreatedAt, TimeSpan.Zero);
+
+                        if (_clock.UtcNow - uncertainSince >= MinimumUncertainAgeBeforeReconciliation)
+                        {
+                            ConsultaEstadoResponse? status = null;
+                            try
+                            {
+                                status = await client.ConsultarEstadoAsync(doc.RncEmisor, doc.ENcf);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "Error al consultar estado DGII para reconciliación de eNCF {eNCF}.", doc.ENcf);
+                            }
+
+                            if (status != null)
+                            {
+                                var estado = status.Estado?.Trim() ?? string.Empty;
+                                if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase) ||
+                                    status.Codigo == "1")
+                                {
+                                    doc.State = "AcceptedByDgii";
+                                    doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                                    doc.DgiiResponseXml = $"Aceptado por DGII: {status.Estado ?? "Aceptado"}";
+                                    await _db.SaveChangesAsync();
+                                }
+                                else if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    doc.State = "RejectedByDgii";
+                                    doc.DgiiResponseXml = $"Rechazado por DGII: {status.Estado}";
+                                    await _db.SaveChangesAsync();
+                                }
+                                else if (IsNotFoundByDgii(status) && !string.IsNullOrWhiteSpace(doc.XmlContent))
+                                {
+                                    var fileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+                                    var signedXml = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
+                                    doc.SignedXmlContent = signedXml;
+                                    doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
+
+                                    var response = await client.SendEcfAsync(signedXml, fileName);
+                                    if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
+                                    {
+                                        doc.TrackId = response.TrackId;
+                                        doc.State = "Signed";
+                                        doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                                        doc.DgiiResponseXml = $"Recibido por DGII. TrackId: {response.TrackId}";
+                                        await _db.SaveChangesAsync();
+                                        _logger.LogInformation("e-CF estándar {ENcf} retransmitido y recibido por DGII. TrackId={TrackId}", doc.ENcf, doc.TrackId);
+                                    }
+                                    else if (response != null && (!string.IsNullOrWhiteSpace(response.Error) || (response.Mensaje != null && response.Mensaje.Contains("rechazado", StringComparison.OrdinalIgnoreCase))))
+                                    {
+                                        doc.State = "RejectedByDgii";
+                                        doc.DgiiResponseXml = response.Mensaje ?? response.Error ?? "Rechazado por DGII";
+                                        await _db.SaveChangesAsync();
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {

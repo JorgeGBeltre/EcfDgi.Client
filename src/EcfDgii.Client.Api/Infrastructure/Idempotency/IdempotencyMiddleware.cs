@@ -119,14 +119,9 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 await _next(context);
 
                 var sc = context.Response.StatusCode;
-                // Selective caching: Cache business domain results (2xx, 400, 404, 422).
-                // Exclude auth/pipeline errors (401, 403), transient timeouts/limits (408, 409, 429), and server failures (>= 500)
-                var shouldCache = sc >= 200 && sc < 500 &&
-                                  sc != StatusCodes.Status401Unauthorized &&
-                                  sc != StatusCodes.Status403Forbidden &&
-                                  sc != StatusCodes.Status408RequestTimeout &&
-                                  sc != StatusCodes.Status409Conflict &&
-                                  sc != StatusCodes.Status429TooManyRequests;
+                // Selective caching: Cache ONLY successful business domain results (2xx).
+                // Error responses (>= 400) must not be cached as permanent completed idempotent results to allow callers to correct errors and retry.
+                var shouldCache = sc >= 200 && sc < 300;
 
                 if (shouldCache)
                 {

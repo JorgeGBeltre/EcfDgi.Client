@@ -148,6 +148,43 @@ namespace EcfDgii.Client.Infrastructure.Security
                 // Ignorar error al leer extensiones
             }
 
+            // 3. Certificados cualificados de persona física para procedimientos tributarios (Viafirma / Avansi / DGII)
+            // Bajo la normativa de la DGII (Norma General 06-2018, Ley 32-23), los contribuyentes (personas jurídicas con RNC de 9 dígitos)
+            // delegan la firma de e-CF a una persona física autorizada (representante legal / contador) en la Oficina Virtual.
+            // Dichos certificados contienen en el Subject la cédula del representante (SERIALNUMBER=IDCDO-XXXXXXXXXXX) y
+            // dnQualifier indicando 'QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES' (o equivalente en español).
+            var isTaxProcedures = subject.Contains("TAX PROCEDURES", StringComparison.OrdinalIgnoreCase) ||
+                                  subject.Contains("PROCEDIMIENTOS TRIBUTARIOS", StringComparison.OrdinalIgnoreCase);
+            var isNaturalPerson = subject.Contains("NATURAL PERSON", StringComparison.OrdinalIgnoreCase) ||
+                                  subject.Contains("PERSONA FISICA", StringComparison.OrdinalIgnoreCase);
+            var isDominican = subject.Contains("C=DO", StringComparison.OrdinalIgnoreCase) ||
+                              (_certificate.Issuer ?? string.Empty).Contains("C=DO", StringComparison.OrdinalIgnoreCase);
+
+            if ((isTaxProcedures || isNaturalPerson) && isDominican)
+            {
+                // Si el certificado tiene un RNC corporativo explícito de 9 dígitos (ej. VATDO-133664692),
+                // debe coincidir con cleanTarget. Si tiene un RNC corporativo diferente, no es válido para este target.
+                var corporateMatches = System.Text.RegularExpressions.Regex.Matches(subject, @"(?<=(VATDO|RNC)[-:\s]?)(\d{9})\b");
+                var hasExplicitOtherCorporateRnc = false;
+                foreach (System.Text.RegularExpressions.Match cm in corporateMatches)
+                {
+                    if (cm.Success)
+                    {
+                        if (cm.Value == cleanTarget)
+                            return true;
+                        hasExplicitOtherCorporateRnc = true;
+                    }
+                }
+
+                // Si no tiene un RNC corporativo diferente en el Subject, es un certificado de persona física
+                // delegado para procedimientos tributarios con cédula dominicana (11 dígitos), válido para actuar
+                // en representación del contribuyente.
+                if (!hasExplicitOtherCorporateRnc && System.Text.RegularExpressions.Regex.IsMatch(subject, @"(IDCDO|SERIALNUMBER|CEDULA)[-:\s=]?\d{11}"))
+                {
+                    return true;
+                }
+            }
+
             return false;
         }
 

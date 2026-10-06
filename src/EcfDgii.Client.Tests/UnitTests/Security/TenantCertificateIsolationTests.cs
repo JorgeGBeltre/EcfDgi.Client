@@ -158,5 +158,26 @@ namespace EcfDgii.Client.UnitTests.Security
             Assert.False(leafSigner.ValidateCertificateSn("101889063"));
             Assert.False(leafSigner.ValidateCertificateSn("40220595869"));
         }
+
+        [Fact]
+        public void ValidateCertificateSn_NaturalPersonTaxProceduresWithoutCorporateRnc_ReturnsTrueForCompanyRnc()
+        {
+            // Certificado real de persona física delegada para procedimientos tributarios (Viafirma / DGII) sin RNC corporativo en el Subject
+            using var rsa = RSA.Create(2048);
+            var req = new CertificateRequest(
+                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=JESSICA LARA BRAX EP. VOLEL, SERIALNUMBER=IDCDO-40220595868, G=JESSICA LARA, SN=BRAX EP. VOLEL, C=DO",
+                rsa,
+                HashAlgorithmName.SHA256,
+                RSASignaturePadding.Pkcs1);
+
+            var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+            var signer = new EcfXmlSigner(cert);
+
+            // Debe validar positivamente para el RNC de la empresa a la que representa
+            Assert.True(signer.ValidateCertificateSn("101889063"));
+            Assert.True(signer.ValidateCertificateSn("133664692"));
+            Assert.True(signer.ValidateCertificateSn("40220595868"));
+            Assert.False(signer.ValidateCertificateSn(""));
+        }
     }
 }
