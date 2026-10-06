@@ -1006,10 +1006,12 @@ namespace EcfDgii.Client.Api.Controllers
 
                     var rfceXml = BuildRfceXml(doc, dto, emisorRazon);
                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
-                    var secCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedRfce);
 
                     doc.SignedRfceContent = signedRfce;
-                    doc.SecurityCode = secCode;
+                    // Note: doc.SecurityCode was already assigned from the signed e-CF (signedXml)
+                    // and embedded as <CodigoSeguridadeCF> in the RFCE.
+                    // DO NOT overwrite doc.SecurityCode with the RFCE summary envelope signature hash,
+                    // as DGII's consultatimbrefc endpoint validates against the e-CF's CodigoSeguridadeCF.
 
                     if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
                     {
@@ -1105,7 +1107,7 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,
-                securityCode = doc.SecurityCode,
+                securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml
             });
@@ -1198,7 +1200,7 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,
-                securityCode = doc.SecurityCode,
+                securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml
@@ -1315,7 +1317,7 @@ namespace EcfDgii.Client.Api.Controllers
                                     var rfceXml = BuildRfceXml(doc, null, emisorRazon);
                                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
                                     doc.SignedRfceContent = signedRfce;
-                                    doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedRfce);
+                                    // Preserve doc.SecurityCode as the e-CF invoice security code (CodigoSeguridadeCF)
 
                                     // Local XSD check for RFCE
                                     if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
@@ -1474,7 +1476,7 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,
-                securityCode = doc.SecurityCode,
+                securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml
@@ -1547,6 +1549,19 @@ namespace EcfDgii.Client.Api.Controllers
             var fileName = $"{doc.RncEmisor}-{doc.ENcf}.xml";
             var xmlToReturn = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent!;
             return File(Encoding.UTF8.GetBytes(xmlToReturn), "application/xml", fileName);
+        }
+
+        private static string? ResolveEffectiveSecurityCode(string? currentCode, string? signedRfce, string? signedXml)
+        {
+            if (!string.IsNullOrWhiteSpace(signedRfce))
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(signedRfce, @"<CodigoSeguridadeCF>([^<]+)</CodigoSeguridadeCF>");
+                if (match.Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                {
+                    return match.Groups[1].Value.Trim();
+                }
+            }
+            return currentCode;
         }
 
         private string BuildRfceXml(EcfDocument doc, CanonicalDocumentDto? dto, string emisorRazonSocial)
