@@ -692,7 +692,8 @@ namespace EcfDgii.TestRunner
             }
             else
             {
-                var buyerParam = !string.IsNullOrWhiteSpace(c.RncComprador) ? $"&rnccomprador={Uri.EscapeDataString(c.RncComprador)}" : string.Empty;
+                var isE43 = c.TipoEcf == "43" || (c.NewEncf?.StartsWith("E43", StringComparison.OrdinalIgnoreCase) == true);
+                var buyerParam = !isE43 && !string.IsNullOrWhiteSpace(c.RncComprador) ? $"&rnccomprador={Uri.EscapeDataString(c.RncComprador)}" : string.Empty;
                 qrUrl = $"https://ecf.dgii.gov.do/certecf/consultatimbre?rncemisor={_rncEmisor}" +
                         buyerParam +
                         $"&encf={c.NewEncf}" +
