@@ -2126,7 +2126,7 @@ namespace EcfDgii.Client.Api.Controllers
         /// </summary>
         private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention, string tipoEcf)
         {
-            if (retention is null) return;
+            if (retention is null || (tipoEcf != "41" && tipoEcf != "47")) return;
 
             sb.AppendLine("      <Retencion>");
             sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
