@@ -1203,7 +1203,8 @@ namespace EcfDgii.Client.Api.Controllers
                 securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
-                dgiiResponse = doc.DgiiResponseXml
+                dgiiResponse = doc.DgiiResponseXml,
+                dgiiResponseXml = doc.DgiiResponseXml
             });
         }
 
@@ -1479,7 +1480,8 @@ namespace EcfDgii.Client.Api.Controllers
                 securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
-                dgiiResponse = doc.DgiiResponseXml
+                dgiiResponse = doc.DgiiResponseXml,
+                dgiiResponseXml = doc.DgiiResponseXml
             });
         }
 
@@ -1652,12 +1654,39 @@ namespace EcfDgii.Client.Api.Controllers
             // Emitting FechaVencimientoSecuencia for tipo 32 failed every consumo invoice.
             if (tipoEcf == "34")
             {
-                // IndicadorNotaCreditoType: 0 = fecha de emisión <= 30 días calendario del e-CF
-                // afectado (ITBIS rebate right preserved), 1 = > 30 días (no rebate right). Computing
-                // the real value needs the referenced document's emission date, which this method
-                // doesn't have access to (no DB lookup here) — defaults to 0 (the common case: a
-                // correction issued promptly). Known simplification, not yet resolved.
-                sb.AppendLine("      <IndicadorNotaCredito>0</IndicadorNotaCredito>");
+                // IndicadorNotaCreditoType (Norma DGII / e-CF 34 XSD):
+                // 0 = Si fecha de emisión es <= a 30 días calendario del e-CF afectado (preserva derecho a rebaja de ITBIS).
+                // 1 = Si fecha de emisión es > a 30 días calendario del e-CF afectado.
+                int indicadorNotaCredito = 0;
+                if (dto.References?.IndicadorNotaCredito.HasValue == true)
+                {
+                    indicadorNotaCredito = dto.References.IndicadorNotaCredito.Value;
+                }
+                else
+                {
+                    try
+                    {
+                        var fechaEmisionStr = NormalizeFechaDgii(dto.Header?.FechaEmision);
+                        var rawModDate = !string.IsNullOrWhiteSpace(dto.References?.FechaNcfModificado)
+                            ? dto.References.FechaNcfModificado
+                            : null;
+
+                        if (rawModDate != null)
+                        {
+                            var fechaModStr = NormalizeFechaDgii(rawModDate);
+                            if (DateTime.TryParseExact(fechaEmisionStr, DgiiDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dtEmision) &&
+                                DateTime.TryParseExact(fechaModStr, DgiiDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dtMod))
+                            {
+                                indicadorNotaCredito = (dtEmision.Date - dtMod.Date).TotalDays > 30 ? 1 : 0;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        indicadorNotaCredito = 0;
+                    }
+                }
+                sb.AppendLine($"      <IndicadorNotaCredito>{indicadorNotaCredito}</IndicadorNotaCredito>");
             }
             else if (tipoEcf != "32")
             {

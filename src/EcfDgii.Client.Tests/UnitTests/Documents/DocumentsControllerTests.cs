@@ -281,6 +281,70 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Contains("<RazonModificacion>error en precio</RazonModificacion>", stored.XmlContent);
         }
 
+        [Fact]
+        public async Task NewDocument_Tipo34_FechaNcfModificado_MoreThan30Days_EmitsIndicadorNotaCredito1()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), "E34", It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E340000000049");
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-NC-49" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>())).Returns(FakeSignedXml);
+
+            var dto = MakeDto("TXN-NC-49", "1");
+            dto.TipoComprobante = "E34";
+            dto.Header.FechaEmision = "2026-10-21";
+            dto.References = new CanonicalReferencesDto
+            {
+                CorrectsENcf = "E310000000008",
+                CodigoModificacion = 3,
+                FechaNcfModificado = "2026-09-16", // 35 días antes (>30 días)
+                RazonModificacion = "Nota de Crédito"
+            };
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<AcceptedResult>(result);
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<IndicadorNotaCredito>1</IndicadorNotaCredito>", stored.XmlContent);
+        }
+
+        [Fact]
+        public async Task NewDocument_Tipo34_FechaNcfModificado_Within30Days_EmitsIndicadorNotaCredito0()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), "E34", It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E340000000050");
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-NC-50" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>())).Returns(FakeSignedXml);
+
+            var dto = MakeDto("TXN-NC-50", "1");
+            dto.TipoComprobante = "E34";
+            dto.Header.FechaEmision = "2026-10-21";
+            dto.References = new CanonicalReferencesDto
+            {
+                CorrectsENcf = "E310000000008",
+                CodigoModificacion = 3,
+                FechaNcfModificado = "2026-10-05", // 16 días antes (<=30 días)
+                RazonModificacion = "Nota de Crédito"
+            };
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<AcceptedResult>(result);
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<IndicadorNotaCredito>0</IndicadorNotaCredito>", stored.XmlContent);
+        }
+
         // --- Tipo 41 (Comprobante de Compras) ---
 
         [Fact]

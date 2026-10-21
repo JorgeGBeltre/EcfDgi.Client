@@ -118,6 +118,12 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string? FechaNcfModificado { get; set; }
 
         /// <summary>
+        /// DGII: IndicadorNotaCredito (0 = fecha de emisión <= 30 días calendario del e-CF afectado; 1 = > 30 días calendario).
+        /// Obligatorio para tipo 34. Si es nulo, DocumentsController lo calcula automáticamente entre FechaEmision y FechaNcfModificado.
+        /// </summary>
+        public int? IndicadorNotaCredito { get; set; }
+
+        /// <summary>
         /// DGII: RNCOtroContribuyente. Condicional — only when the emisor's RNC differs from the
         /// modified document's RNC (dissolution/merger/split). Not applicable to this deployment's
         /// single-emisor design; left null in practice.
