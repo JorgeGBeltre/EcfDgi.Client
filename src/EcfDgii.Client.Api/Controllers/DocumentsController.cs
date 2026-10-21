@@ -1006,10 +1006,12 @@ namespace EcfDgii.Client.Api.Controllers
 
                     var rfceXml = BuildRfceXml(doc, dto, emisorRazon);
                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
-                    var secCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedRfce);
 
                     doc.SignedRfceContent = signedRfce;
-                    doc.SecurityCode = secCode;
+                    // Note: doc.SecurityCode was already assigned from the signed e-CF (signedXml)
+                    // and embedded as <CodigoSeguridadeCF> in the RFCE.
+                    // DO NOT overwrite doc.SecurityCode with the RFCE summary envelope signature hash,
+                    // as DGII's consultatimbrefc endpoint validates against the e-CF's CodigoSeguridadeCF.
 
                     if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
                     {
@@ -1105,7 +1107,7 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,
-                securityCode = doc.SecurityCode,
+                securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml
             });
@@ -1198,10 +1200,11 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,
-                securityCode = doc.SecurityCode,
+                securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
-                dgiiResponse = doc.DgiiResponseXml
+                dgiiResponse = doc.DgiiResponseXml,
+                dgiiResponseXml = doc.DgiiResponseXml
             });
         }
 
@@ -1315,7 +1318,7 @@ namespace EcfDgii.Client.Api.Controllers
                                     var rfceXml = BuildRfceXml(doc, null, emisorRazon);
                                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
                                     doc.SignedRfceContent = signedRfce;
-                                    doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedRfce);
+                                    // Preserve doc.SecurityCode as the e-CF invoice security code (CodigoSeguridadeCF)
 
                                     // Local XSD check for RFCE
                                     if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
@@ -1474,10 +1477,11 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = doc.ENcf,
                 state = doc.State,
                 trackId = doc.TrackId,
-                securityCode = doc.SecurityCode,
+                securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
-                dgiiResponse = doc.DgiiResponseXml
+                dgiiResponse = doc.DgiiResponseXml,
+                dgiiResponseXml = doc.DgiiResponseXml
             });
         }
 
@@ -1547,6 +1551,19 @@ namespace EcfDgii.Client.Api.Controllers
             var fileName = $"{doc.RncEmisor}-{doc.ENcf}.xml";
             var xmlToReturn = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent!;
             return File(Encoding.UTF8.GetBytes(xmlToReturn), "application/xml", fileName);
+        }
+
+        private static string? ResolveEffectiveSecurityCode(string? currentCode, string? signedRfce, string? signedXml)
+        {
+            if (!string.IsNullOrWhiteSpace(signedRfce))
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(signedRfce, @"<CodigoSeguridadeCF>([^<]+)</CodigoSeguridadeCF>");
+                if (match.Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                {
+                    return match.Groups[1].Value.Trim();
+                }
+            }
+            return currentCode;
         }
 
         private string BuildRfceXml(EcfDocument doc, CanonicalDocumentDto? dto, string emisorRazonSocial)
@@ -1637,12 +1654,39 @@ namespace EcfDgii.Client.Api.Controllers
             // Emitting FechaVencimientoSecuencia for tipo 32 failed every consumo invoice.
             if (tipoEcf == "34")
             {
-                // IndicadorNotaCreditoType: 0 = fecha de emisión <= 30 días calendario del e-CF
-                // afectado (ITBIS rebate right preserved), 1 = > 30 días (no rebate right). Computing
-                // the real value needs the referenced document's emission date, which this method
-                // doesn't have access to (no DB lookup here) — defaults to 0 (the common case: a
-                // correction issued promptly). Known simplification, not yet resolved.
-                sb.AppendLine("      <IndicadorNotaCredito>0</IndicadorNotaCredito>");
+                // IndicadorNotaCreditoType (Norma DGII / e-CF 34 XSD):
+                // 0 = Si fecha de emisión es <= a 30 días calendario del e-CF afectado (preserva derecho a rebaja de ITBIS).
+                // 1 = Si fecha de emisión es > a 30 días calendario del e-CF afectado.
+                int indicadorNotaCredito = 0;
+                if (dto.References?.IndicadorNotaCredito.HasValue == true)
+                {
+                    indicadorNotaCredito = dto.References.IndicadorNotaCredito.Value;
+                }
+                else
+                {
+                    try
+                    {
+                        var fechaEmisionStr = NormalizeFechaDgii(dto.Header?.FechaEmision);
+                        var rawModDate = !string.IsNullOrWhiteSpace(dto.References?.FechaNcfModificado)
+                            ? dto.References.FechaNcfModificado
+                            : null;
+
+                        if (rawModDate != null)
+                        {
+                            var fechaModStr = NormalizeFechaDgii(rawModDate);
+                            if (DateTime.TryParseExact(fechaEmisionStr, DgiiDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dtEmision) &&
+                                DateTime.TryParseExact(fechaModStr, DgiiDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dtMod))
+                            {
+                                indicadorNotaCredito = (dtEmision.Date - dtMod.Date).TotalDays > 30 ? 1 : 0;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        indicadorNotaCredito = 0;
+                    }
+                }
+                sb.AppendLine($"      <IndicadorNotaCredito>{indicadorNotaCredito}</IndicadorNotaCredito>");
             }
             else if (tipoEcf != "32")
             {
@@ -2111,7 +2155,7 @@ namespace EcfDgii.Client.Api.Controllers
         /// </summary>
         private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention, string tipoEcf)
         {
-            if (retention is null) return;
+            if (retention is null || (tipoEcf != "41" && tipoEcf != "47")) return;
 
             sb.AppendLine("      <Retencion>");
             sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");

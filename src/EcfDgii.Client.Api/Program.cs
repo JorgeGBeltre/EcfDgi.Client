@@ -540,6 +540,13 @@ static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
                     INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
                     VALUES ('20261005010000_AddSignedRfceContentColumn', '10.0.10')
                     ON CONFLICT (""MigrationId"") DO NOTHING;
+
+                    -- Auto-heal RFCE security_code to match CodigoSeguridadeCF
+                    UPDATE ecf_documents
+                    SET security_code = substring(signed_rfce_content from '<CodigoSeguridadeCF>([^<]+)</CodigoSeguridadeCF>')
+                    WHERE signed_rfce_content LIKE '%<CodigoSeguridadeCF>%'
+                      AND substring(signed_rfce_content from '<CodigoSeguridadeCF>([^<]+)</CodigoSeguridadeCF>') IS NOT NULL
+                      AND (security_code IS NULL OR security_code != substring(signed_rfce_content from '<CodigoSeguridadeCF>([^<]+)</CodigoSeguridadeCF>'));
                 END IF;
             END $$;
         ");
