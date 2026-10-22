@@ -1817,6 +1817,11 @@ namespace EcfDgii.Client.Api.Controllers
                             }
                         }
                     }
+                    else if (tipoEcf is "33" or "34" && dto.References?.CorrectsENcf?.Trim().StartsWith("E46", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        // Fallback obligatorio DGII para Notas de Crédito/Débito que modifican facturas de exportación (E46)
+                        sb.AppendLine("      <IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>");
+                    }
                 }
                 var rawComprador = string.IsNullOrWhiteSpace(dto.Header?.RazonSocialComprador)
                     ? (tipoEcf == "47" ? "Beneficiario del Exterior" : (tipoEcf == "46" ? "Comprador Internacional" : "Consumidor Final"))

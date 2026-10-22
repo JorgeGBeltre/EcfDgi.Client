@@ -412,6 +412,46 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo34_ModifyingTipo46_WithoutBuyerRnc_GeneratesIdentificadorExtranjero_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E340000000803");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-34-E46-MOD", EditSequence = "1" },
+                TipoComprobante = "E34",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncComprador = "",
+                    RazonSocialComprador = "SAINT PREUX LOINES",
+                    FechaEmision = "22-10-2026",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 1500, MontoItbis = 0, MontoTotal = 1500 },
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "E460000000045",
+                    CodigoModificacion = 1,
+                    RazonModificacion = "Anulación Total",
+                    FechaNcfModificado = "2026-10-22",
+                },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Item Export", Quantity = 1m, UnitPrice = 1500m, Amount = 1500m }]
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<TipoeCF>34</TipoeCF>", stored.SignedXmlContent!);
+            Assert.Contains("<IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>", stored.SignedXmlContent!);
+            Assert.DoesNotContain("<RNCComprador>", stored.SignedXmlContent!);
+            Assert.Contains("<NCFModificado>E460000000045</NCFModificado>", stored.SignedXmlContent!);
+
+            var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 34 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo32_GeneratedXml_IsValidAgainstDgiiXsd()
         {
             // Tipo 32 (Factura de Consumo) had NO test at all, and it is the type most of this
