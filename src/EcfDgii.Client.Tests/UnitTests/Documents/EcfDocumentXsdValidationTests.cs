@@ -564,6 +564,51 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo31_MixedTaxableAndExemptLines_EmitsCorrectIndicadorFacturacionPerLineAndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000811");
+
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { Provider = "QuickBooksDesktop", TxnId = "TXN-MIXED-LINES" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "130862346", RazonSocialEmisor = "Empresa de Prueba",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoGravadoTotal = 1178773.90m,
+                    MontoExento = 120871.72m,
+                    MontoItbis = 212179.30m,
+                    MontoTotal = 1511824.92m
+                },
+                Lines =
+                [
+                    new CanonicalLineDto { LineNumber = 1, ItemName = "MOTOCICLETA ZS125-76", Quantity = 14m, UnitPrice = 84198.1357m, Amount = 1178773.90m, IndicadorFacturacion = "1" },
+                    new CanonicalLineDto { LineNumber = 2, ItemName = "PRIMERA PLACA", Quantity = 14m, UnitPrice = 8490.8371m, Amount = 118871.72m, IndicadorFacturacion = "4" },
+                    new CanonicalLineDto { LineNumber = 3, ItemName = "ENDOSO DE MATRICULA", Quantity = 1m, UnitPrice = 2000.00m, Amount = 2000.00m, IndicadorFacturacion = "4" },
+                    new CanonicalLineDto { LineNumber = 4, ItemName = "ZS125-76 AZUL CHASIS: LBMPCJL33T1607771", Quantity = 0m, UnitPrice = 0m, Amount = 0m },
+                ],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync(d => d.SourceTxnId == "TXN-MIXED-LINES")).SignedXmlContent!;
+
+            // 0-amount chassis line is omitted from DGII XML
+            Assert.DoesNotContain("LBMPCJL33T1607771", xml);
+
+            // Items have respective IndicadorFacturacion (1 for motorcycle, 4 for placa and endoso)
+            Assert.Contains("<IndicadorFacturacion>1</IndicadorFacturacion>", xml);
+            Assert.Contains("<IndicadorFacturacion>4</IndicadorFacturacion>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo31_WithoutRncComprador_IsRejectedBeforeSpendingASequence()
         {
             // e-CF 31's Comprador has RNCComprador minOccurs="1" — a crédito fiscal cannot exist

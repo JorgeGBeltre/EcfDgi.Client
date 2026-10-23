@@ -2007,7 +2007,10 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     sb.AppendLine("    <Item>");
                     sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
-                    sb.AppendLine($"      <IndicadorFacturacion>{indicadorFacturacion}</IndicadorFacturacion>");
+                    var lineIndicador = !string.IsNullOrWhiteSpace(item.IndicadorFacturacion)
+                        ? item.IndicadorFacturacion
+                        : indicadorFacturacion;
+                    sb.AppendLine($"      <IndicadorFacturacion>{lineIndicador}</IndicadorFacturacion>");
                     AppendRetencion(sb, retention, tipoEcf);
                     sb.AppendLine($"      <NombreItem>{EscapeXml(item.Name)}</NombreItem>");
                     sb.AppendLine($"      <IndicadorBienoServicio>{indicadorBienoServicio}</IndicadorBienoServicio>");
@@ -2202,6 +2205,7 @@ namespace EcfDgii.Client.Api.Controllers
             public decimal UnitPrice { get; set; }
             public decimal DiscountAmount { get; set; }
             public decimal MontoItem { get; set; }
+            public string? IndicadorFacturacion { get; set; }
         }
 
         private static List<ProcessedLineItem> NormalizeCanonicalLines(List<CanonicalLineDto> lines)
@@ -2260,7 +2264,8 @@ namespace EcfDgii.Client.Api.Controllers
                     Quantity = safeQty,
                     UnitPrice = safePrice,
                     DiscountAmount = 0m,
-                    MontoItem = safeAmount
+                    MontoItem = safeAmount,
+                    IndicadorFacturacion = line.IndicadorFacturacion
                 });
             }
 

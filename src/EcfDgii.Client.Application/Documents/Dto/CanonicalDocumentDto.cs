@@ -36,6 +36,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public decimal Quantity { get; set; }
         public decimal UnitPrice { get; set; }
         public decimal Amount { get; set; }
+        public string? IndicadorFacturacion { get; set; }
     }
 
     public class CanonicalTotalsDto
