@@ -42,19 +42,58 @@ namespace EcfDgii.Client.Infrastructure.Security
                 ?? configuration["DB_CONNECTION_STRING"];
         }
 
-        private string DecryptPassword(string? cipherTextOrPlain)
+        private const string PrefixV1 = "enc:v1:";
+        private const string PrefixV2 = "enc:v2:";
+        private const string PrefixV3 = "enc:v3:";
+
+        private static byte[] GetAssociatedData(string? tenantId)
+        {
+            var tenantTag = string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId.Trim().ToLowerInvariant();
+            return System.Text.Encoding.UTF8.GetBytes($"tenant:{tenantTag}|field:CertificatePassword|v3");
+        }
+
+        private string GetSecret()
+        {
+            return _configuration?["STORAGE_ENCRYPTION_KEY"]
+                ?? _configuration?["Jwt:SecretKey"]
+                ?? _configuration?["JWT_SECRET"]
+                ?? "DevStorageKeyOnlyForLocalUnitTesting2026AtLeast32Bytes!";
+        }
+
+        private byte[] DeriveKeyV2()
+        {
+            var secret = GetSecret();
+            return System.Security.Cryptography.HKDF.DeriveKey(
+                System.Security.Cryptography.HashAlgorithmName.SHA256,
+                System.Text.Encoding.UTF8.GetBytes(secret),
+                32,
+                info: System.Text.Encoding.UTF8.GetBytes("ecf:certificate-password:v1"));
+        }
+
+        private byte[] DeriveKeyV1()
+        {
+            var secret = GetSecret();
+            using var sha256 = System.Security.Cryptography.SHA256.Create();
+            return sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(secret));
+        }
+
+        private string DecryptPassword(string? cipherTextOrPlain, string? tenantCode = null)
         {
             if (string.IsNullOrEmpty(cipherTextOrPlain)) return string.Empty;
-            if (!cipherTextOrPlain.StartsWith("enc:v1:")) return cipherTextOrPlain;
+
+            bool isV3 = cipherTextOrPlain.StartsWith(PrefixV3);
+            bool isV2 = cipherTextOrPlain.StartsWith(PrefixV2);
+            bool isV1 = cipherTextOrPlain.StartsWith(PrefixV1);
+
+            if (!isV3 && !isV2 && !isV1)
+            {
+                return cipherTextOrPlain;
+            }
 
             try
             {
-                var secret = _configuration?["STORAGE_ENCRYPTION_KEY"]
-                    ?? "DevStorageKeyOnlyForLocalUnitTesting2026AtLeast32Bytes!";
-                using var sha256 = System.Security.Cryptography.SHA256.Create();
-                var key = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(secret));
-
-                var rawBase64 = cipherTextOrPlain.Substring("enc:v1:".Length);
+                var prefixLen = isV3 ? PrefixV3.Length : (isV2 ? PrefixV2.Length : PrefixV1.Length);
+                var rawBase64 = cipherTextOrPlain.Substring(prefixLen);
                 var combined = Convert.FromBase64String(rawBase64);
 
                 var nonceSize = System.Security.Cryptography.AesGcm.NonceByteSizes.MaxSize;
@@ -71,14 +110,24 @@ namespace EcfDgii.Client.Infrastructure.Security
                 Buffer.BlockCopy(combined, nonceSize + tagSize, cipherBytes, 0, cipherLength);
 
                 var plainBytes = new byte[cipherLength];
+                var key = (isV3 || isV2) ? DeriveKeyV2() : DeriveKeyV1();
+
                 using var aesGcm = new System.Security.Cryptography.AesGcm(key, tagSize);
-                aesGcm.Decrypt(nonce, cipherBytes, tag, plainBytes);
+                if (isV3)
+                {
+                    var associatedData = GetAssociatedData(tenantCode);
+                    aesGcm.Decrypt(nonce, cipherBytes, tag, plainBytes, associatedData);
+                }
+                else
+                {
+                    aesGcm.Decrypt(nonce, cipherBytes, tag, plainBytes);
+                }
 
                 return System.Text.Encoding.UTF8.GetString(plainBytes);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to decrypt certificate password from database");
+                _logger.LogWarning(ex, "Failed to decrypt certificate password for tenant {TenantCode}", tenantCode);
                 return cipherTextOrPlain;
             }
         }
@@ -144,7 +193,7 @@ namespace EcfDgii.Client.Infrastructure.Security
                             var companyName = reader["CompanyName"] as string ?? code;
                             var rawData = reader["CertificateRawData"] as byte[];
                             var rawPassword = reader["CertificatePasswordEncrypted"] as string ?? string.Empty;
-                            var password = DecryptPassword(rawPassword);
+                            var password = DecryptPassword(rawPassword, code);
 
                             if (rawData != null && rawData.Length > 0)
                             {
