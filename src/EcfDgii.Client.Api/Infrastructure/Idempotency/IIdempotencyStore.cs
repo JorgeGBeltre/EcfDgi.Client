@@ -77,16 +77,47 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 {
                     if (existing.StatusCode >= 200 && existing.StatusCode < 300)
                     {
-                        return new IdempotencyReservationResult
+                        // Defense-in-depth: if the underlying fiscal document was subsequently rejected by DGII,
+                        // do not return the stale cached acceptance/signed response. Allow re-emission.
+                        bool wasRejected = false;
+                        if (!string.IsNullOrWhiteSpace(existing.ResponseBody) && existing.ResponseBody.Contains("\"eNcf\":"))
                         {
-                            Status = IdempotencyReservationStatus.AlreadyCompleted,
-                            CompletedResult = new IdempotentResult
+                            try
                             {
-                                StatusCode = existing.StatusCode,
-                                ContentType = existing.ContentType,
-                                Body = existing.ResponseBody
+                                using var docJson = System.Text.Json.JsonDocument.Parse(existing.ResponseBody);
+                                if (docJson.RootElement.TryGetProperty("documentId", out var idProp) &&
+                                    Guid.TryParse(idProp.GetString(), out var docId))
+                                {
+                                    var docState = await db.EcfDocuments
+                                        .Where(d => d.Id == docId)
+                                        .Select(d => d.State)
+                                        .FirstOrDefaultAsync();
+
+                                    if (docState == "RejectedByDgii")
+                                    {
+                                        wasRejected = true;
+                                    }
+                                }
                             }
-                        };
+                            catch
+                            {
+                                // In case of parsing error, proceed with standard behavior
+                            }
+                        }
+
+                        if (!wasRejected)
+                        {
+                            return new IdempotencyReservationResult
+                            {
+                                Status = IdempotencyReservationStatus.AlreadyCompleted,
+                                CompletedResult = new IdempotentResult
+                                {
+                                    StatusCode = existing.StatusCode,
+                                    ContentType = existing.ContentType,
+                                    Body = existing.ResponseBody
+                                }
+                            };
+                        }
                     }
 
                     // Si completó previamente con error (>= 400), permitir reintento

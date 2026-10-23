@@ -412,6 +412,46 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo34_ModifyingTipo46_WithoutBuyerRnc_GeneratesIdentificadorExtranjero_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E340000000803");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-34-E46-MOD", EditSequence = "1" },
+                TipoComprobante = "E34",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncComprador = "",
+                    RazonSocialComprador = "SAINT PREUX LOINES",
+                    FechaEmision = "22-10-2026",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 1500, MontoItbis = 0, MontoTotal = 1500 },
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "E460000000045",
+                    CodigoModificacion = 1,
+                    RazonModificacion = "Anulación Total",
+                    FechaNcfModificado = "2026-10-22",
+                },
+                Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Item Export", Quantity = 1m, UnitPrice = 1500m, Amount = 1500m }]
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Contains("<TipoeCF>34</TipoeCF>", stored.SignedXmlContent!);
+            Assert.Contains("<IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>", stored.SignedXmlContent!);
+            Assert.DoesNotContain("<RNCComprador>", stored.SignedXmlContent!);
+            Assert.Contains("<NCFModificado>E460000000045</NCFModificado>", stored.SignedXmlContent!);
+
+            var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 34 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo32_GeneratedXml_IsValidAgainstDgiiXsd()
         {
             // Tipo 32 (Factura de Consumo) had NO test at all, and it is the type most of this
@@ -518,6 +558,51 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Contains("<NombreItem>Porcelanato 60x60</NombreItem>", xml);
             Assert.Contains("<NumeroLinea>1</NumeroLinea>", xml);
             Assert.DoesNotContain("<NumeroLinea>2</NumeroLinea>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_MixedTaxableAndExemptLines_EmitsCorrectIndicadorFacturacionPerLineAndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000811");
+
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { Provider = "QuickBooksDesktop", TxnId = "TXN-MIXED-LINES" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "130862346", RazonSocialEmisor = "Empresa de Prueba",
+                    RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoGravadoTotal = 1178773.90m,
+                    MontoExento = 120871.72m,
+                    MontoItbis = 212179.30m,
+                    MontoTotal = 1511824.92m
+                },
+                Lines =
+                [
+                    new CanonicalLineDto { LineNumber = 1, ItemName = "MOTOCICLETA ZS125-76", Quantity = 14m, UnitPrice = 84198.1357m, Amount = 1178773.90m, IndicadorFacturacion = "1" },
+                    new CanonicalLineDto { LineNumber = 2, ItemName = "PRIMERA PLACA", Quantity = 14m, UnitPrice = 8490.8371m, Amount = 118871.72m, IndicadorFacturacion = "4" },
+                    new CanonicalLineDto { LineNumber = 3, ItemName = "ENDOSO DE MATRICULA", Quantity = 1m, UnitPrice = 2000.00m, Amount = 2000.00m, IndicadorFacturacion = "4" },
+                    new CanonicalLineDto { LineNumber = 4, ItemName = "ZS125-76 AZUL CHASIS: LBMPCJL33T1607771", Quantity = 0m, UnitPrice = 0m, Amount = 0m },
+                ],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var xml = (await db.EcfDocuments.SingleAsync(d => d.SourceTxnId == "TXN-MIXED-LINES")).SignedXmlContent!;
+
+            // 0-amount chassis line is omitted from DGII XML
+            Assert.DoesNotContain("LBMPCJL33T1607771", xml);
+
+            // Items have respective IndicadorFacturacion (1 for motorcycle, 4 for placa and endoso)
+            Assert.Contains("<IndicadorFacturacion>1</IndicadorFacturacion>", xml);
+            Assert.Contains("<IndicadorFacturacion>4</IndicadorFacturacion>", xml);
 
             var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
             Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
