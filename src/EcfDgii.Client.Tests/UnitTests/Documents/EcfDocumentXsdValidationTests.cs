@@ -1502,7 +1502,7 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
-        public async Task SubmitCanonicalDocument_Tipo41_WithOnlyIsrRetention_DoesNotEmitTotalITBISRetenido_AndPassesXsd()
+        public async Task SubmitCanonicalDocument_Tipo41_WithOnlyIsrRetention_EmitsZeroTotalITBISRetenido_AndPassesXsd()
         {
             var (controller, db, _, _) = MakeRealController("E410000000803");
             var dto = new CanonicalDocumentDto
@@ -1550,9 +1550,9 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync();
             var xml = stored.SignedXmlContent!;
 
-            // TotalITBISRetenido and MontoITBISRetenido must NOT be emitted (DGII rule 11160)
-            Assert.DoesNotContain("<TotalITBISRetenido>", xml);
-            Assert.DoesNotContain("<MontoITBISRetenido>", xml);
+            // DGII rule 11160 requires TotalITBISRetenido and MontoITBISRetenido to be emitted as 0.00 when withholding applies
+            Assert.Contains("<TotalITBISRetenido>0.00</TotalITBISRetenido>", xml);
+            Assert.Contains("<MontoITBISRetenido>0.00</MontoITBISRetenido>", xml);
 
             // ISR retention must be emitted
             Assert.Contains("<TotalISRRetencion>3660.00</TotalISRRetencion>", xml);

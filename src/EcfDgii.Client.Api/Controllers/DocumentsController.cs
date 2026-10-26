@@ -1965,9 +1965,10 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
                     if (tipoEcf is "31" or "33" or "34" or "41")
                     {
-                        if (dto.Retention?.MontoItbisRetenido is { } itbisRet && itbisRet > 0)
+                        if (tipoEcf == "41" || (dto.Retention?.MontoItbisRetenido is { } itbisRet && itbisRet > 0))
                         {
-                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBISRetenido>{itbisRet:F2}</TotalITBISRetenido>");
+                            var itbisRetVal = dto.Retention?.MontoItbisRetenido ?? 0m;
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBISRetenido>{itbisRetVal:F2}</TotalITBISRetenido>");
                         }
                         if (dto.Retention?.MontoIsrRetenido is { } isrRet && isrRet > 0)
                         {
@@ -2166,24 +2167,24 @@ namespace EcfDgii.Client.Api.Controllers
         /// </summary>
         private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention, string tipoEcf)
         {
-            if (retention is null || (tipoEcf != "41" && tipoEcf != "47")) return;
+            if (retention is null && tipoEcf != "41") return;
+            if (tipoEcf != "41" && tipoEcf != "47") return;
 
+            var indAgente = retention?.IndicadorAgenteRetencionoPercepcion ?? 1;
             sb.AppendLine("      <Retencion>");
-            sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
+            sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{indAgente}</IndicadorAgenteRetencionoPercepcion>");
             if (tipoEcf == "47")
             {
-                var isr = retention.MontoIsrRetenido ?? 0m;
-                sb.AppendLine($"        <MontoISRRetenido>{isr:F2}</MontoISRRetenido>");
+                var isr = retention?.MontoIsrRetenido ?? 0m;
+                sb.AppendLine(CultureInfo.InvariantCulture, $"        <MontoISRRetenido>{isr:F2}</MontoISRRetenido>");
             }
             else
             {
-                if (retention.MontoItbisRetenido is { } itbisRet && itbisRet > 0)
+                var itbisRet = retention?.MontoItbisRetenido ?? 0m;
+                sb.AppendLine(CultureInfo.InvariantCulture, $"        <MontoITBISRetenido>{itbisRet:F2}</MontoITBISRetenido>");
+                if (retention?.MontoIsrRetenido is { } montoIsr && montoIsr > 0)
                 {
-                    sb.AppendLine($"        <MontoITBISRetenido>{itbisRet:F2}</MontoITBISRetenido>");
-                }
-                if (retention.MontoIsrRetenido is { } montoIsr && montoIsr > 0)
-                {
-                    sb.AppendLine($"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
                 }
             }
             sb.AppendLine("      </Retencion>");
