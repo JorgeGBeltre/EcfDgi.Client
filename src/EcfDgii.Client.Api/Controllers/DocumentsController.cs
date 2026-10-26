@@ -2009,7 +2009,7 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
                     var lineIndicador = tipoEcf switch
                     {
-                        "46" => (item.IndicadorFacturacion == "4" || item.IndicadorFacturacion == "0") ? "4" : "3",
+                        "46" => item.IndicadorFacturacion == "0" ? "0" : "3",
                         "43" or "44" or "47" => "4",
                         _ => !string.IsNullOrWhiteSpace(item.IndicadorFacturacion) ? item.IndicadorFacturacion : indicadorFacturacion
                     };
