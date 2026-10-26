@@ -2007,9 +2007,12 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     sb.AppendLine("    <Item>");
                     sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
-                    var lineIndicador = !string.IsNullOrWhiteSpace(item.IndicadorFacturacion)
-                        ? item.IndicadorFacturacion
-                        : indicadorFacturacion;
+                    var lineIndicador = tipoEcf switch
+                    {
+                        "46" => (item.IndicadorFacturacion == "4" || item.IndicadorFacturacion == "0") ? "4" : "3",
+                        "43" or "44" or "47" => "4",
+                        _ => !string.IsNullOrWhiteSpace(item.IndicadorFacturacion) ? item.IndicadorFacturacion : indicadorFacturacion
+                    };
                     sb.AppendLine($"      <IndicadorFacturacion>{lineIndicador}</IndicadorFacturacion>");
                     AppendRetencion(sb, retention, tipoEcf);
                     sb.AppendLine($"      <NombreItem>{EscapeXml(item.Name)}</NombreItem>");

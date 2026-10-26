@@ -1170,6 +1170,45 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo46_WhenLineItemHasTaxRate18_ForcesIndicadorFacturacionTo3_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E460000000802");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-46-RULE244", EditSequence = "1" },
+                TipoComprobante = "E46",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "US-987654321", RazonSocialComprador = "Miami Apparel Imports LLC",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 176000m, MontoItbis = 0m, MontoTotal = 176000m },
+                Lines = [new CanonicalLineDto
+                {
+                    LineNumber = 1,
+                    ItemName = "WILLY TIPO CLUB 24X9X34GRS",
+                    Quantity = 200m,
+                    UnitPrice = 880m,
+                    Amount = 176000m,
+                    IndicadorFacturacion = "1" // ERP erroneously sent 1 (18% tax)
+                }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync(d => d.ENcf == "E460000000802");
+            var xml = stored.SignedXmlContent!;
+
+            // Verify DGII Rule 244: Line IndicadorFacturacion must be forced to 3 (Zero Rate), not 1
+            Assert.Contains("<IndicadorFacturacion>3</IndicadorFacturacion>", xml);
+            Assert.DoesNotContain("<IndicadorFacturacion>1</IndicadorFacturacion>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 46 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo47_GeneratedXml_IsValidAgainstDgiiXsd()
         {
             var (controller, db, _, _) = MakeRealController("E470000000801");
