@@ -143,7 +143,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public int IndicadorAgenteRetencionoPercepcion { get; set; } = 1;
 
         /// <summary>DGII: MontoITBISRetenido.</summary>
-        public decimal MontoItbisRetenido { get; set; }
+        public decimal? MontoItbisRetenido { get; set; }
 
         /// <summary>
         /// DGII: MontoISRRetenido. Per the spec, condicional to IndicadorBienoServicio=2 (Servicio) on

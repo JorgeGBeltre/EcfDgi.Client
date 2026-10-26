@@ -2177,8 +2177,11 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else
             {
-                sb.AppendLine($"        <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
-                if (retention.MontoIsrRetenido is { } montoIsr)
+                if (retention.MontoItbisRetenido is { } itbisRet && itbisRet > 0)
+                {
+                    sb.AppendLine($"        <MontoITBISRetenido>{itbisRet:F2}</MontoITBISRetenido>");
+                }
+                if (retention.MontoIsrRetenido is { } montoIsr && montoIsr > 0)
                 {
                     sb.AppendLine($"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
                 }

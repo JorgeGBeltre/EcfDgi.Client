@@ -1502,6 +1502,67 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task SubmitCanonicalDocument_Tipo41_WithOnlyIsrRetention_DoesNotEmitTotalITBISRetenido_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E410000000803");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-41-ISR-ONLY" },
+                TipoComprobante = "E41",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000005",
+                    RazonSocialComprador = "Vicente Maldonado",
+                    FechaEmision = "2026-10-20",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 122000m,
+                    MontoExento = 122000m,
+                    MontoItbis = 0m,
+                    MontoTotal = 122000m,
+                },
+                Retention = new CanonicalRetentionDto
+                {
+                    IndicadorAgenteRetencionoPercepcion = 1,
+                    MontoItbisRetenido = null,
+                    MontoIsrRetenido = 3660m,
+                },
+                Lines = new List<CanonicalLineDto>
+                {
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "Transporte y Envios",
+                        Quantity = 1m,
+                        UnitPrice = 122000m,
+                        Amount = 122000m,
+                        IndicadorFacturacion = "4",
+                    },
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            // TotalITBISRetenido and MontoITBISRetenido must NOT be emitted (DGII rule 11160)
+            Assert.DoesNotContain("<TotalITBISRetenido>", xml);
+            Assert.DoesNotContain("<MontoITBISRetenido>", xml);
+
+            // ISR retention must be emitted
+            Assert.Contains("<TotalISRRetencion>3660.00</TotalISRRetencion>", xml);
+            Assert.Contains("<MontoISRRetenido>3660.00</MontoISRRetenido>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 41 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo31_And_Tipo32_WithCorreoComprador_IsValidAgainstDgiiXsd()
         {
             var (controller, db, _, _) = MakeRealController("E310000000301");
