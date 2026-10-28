@@ -54,10 +54,25 @@ namespace EcfDgii.Client.Infrastructure.Security
 
         private string GetSecret()
         {
-            return _configuration?["STORAGE_ENCRYPTION_KEY"]
-                ?? _configuration?["Jwt:SecretKey"]
-                ?? _configuration?["JWT_SECRET"]
-                ?? "DevStorageKeyOnlyForLocalUnitTesting2026AtLeast32Bytes!";
+            string?[] candidates =
+            {
+                _configuration?["STORAGE_ENCRYPTION_KEY"],
+                _configuration?["Jwt:SecretKey"],
+                _configuration?["JWT_SECRET"],
+                _configuration?["JwtSettings:Secret"],
+                _configuration?["WORKER_SECRET_KEY"],
+                _configuration?["WorkerSecretKey"]
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (!string.IsNullOrWhiteSpace(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return "DevStorageKeyOnlyForLocalUnitTesting2026AtLeast32Bytes!";
         }
 
         private byte[] DeriveKeyV2()
