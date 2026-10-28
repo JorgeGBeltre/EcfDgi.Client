@@ -1817,7 +1817,7 @@ namespace EcfDgii.Client.Api.Controllers
                             }
                         }
                     }
-                    else if (tipoEcf is "33" or "34" && dto.References?.CorrectsENcf?.Trim().StartsWith("E46", StringComparison.OrdinalIgnoreCase) == true)
+                    else if (tipoEcf is "33" or "34" && (dto.References?.CorrectsENcf?.Trim().StartsWith("E46", StringComparison.OrdinalIgnoreCase) == true || NcfNormalizer.Normalize(dto.References?.CorrectsENcf).StartsWith("B16", StringComparison.OrdinalIgnoreCase)))
                     {
                         // Fallback obligatorio DGII para Notas de Crédito/Débito que modifican facturas de exportación (E46)
                         sb.AppendLine("      <IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>");
