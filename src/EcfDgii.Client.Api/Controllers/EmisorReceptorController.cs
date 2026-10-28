@@ -131,6 +131,7 @@ namespace EcfDgii.Client.Api.Controllers
             }
         }
 
+        [AllowAnonymous]
         [HttpGet("fe/autenticacion/api/semilla")]
         public IActionResult GetSemilla()
         {
@@ -145,6 +146,7 @@ namespace EcfDgii.Client.Api.Controllers
             return Content(xml, "application/xml", Encoding.UTF8);
         }
 
+        [AllowAnonymous]
         [HttpPost("fe/autenticacion/api/validacioncertificado")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> ValidarSemilla(IFormFile xml)
