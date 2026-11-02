@@ -14,6 +14,21 @@ namespace EcfDgii.Client.Application.Documents.Validators
             "E31", "E32", "E33", "E34", "E41", "E43", "E44", "E45", "E46", "E47"
         };
 
+        private static readonly HashSet<string> ValidDgiiForeignCurrencyCodes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "BRL", "CAD", "CHF", "CHY", "CNY", "XDR", "DKK", "EUR", "GBP",
+            "JPY", "NOK", "SCP", "SEK", "USD", "US$", "VEF", "HTG", "MXN", "COP"
+        };
+
+        private static bool IsDopCurrency(string? code)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return true;
+            var trimmed = code.Trim();
+            return trimmed.Equals("DOP", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("RD$", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("RDS", StringComparison.OrdinalIgnoreCase);
+        }
+
         public CanonicalDocumentDtoValidator()
         {
             RuleFor(x => x.SourceReference)
@@ -77,6 +92,17 @@ namespace EcfDgii.Client.Application.Documents.Validators
                 RuleFor(x => x.Lines)
                     .Must(lines => lines.Any(l => l.Amount > 0 || l.UnitPrice > 0))
                     .WithMessage("El comprobante no posee líneas facturables con importe mayor a cero.");
+            });
+
+            When(x => x.Currency != null && !IsDopCurrency(x.Currency.Code), () =>
+            {
+                RuleFor(x => x.Currency!.Code)
+                    .Must(code => !string.IsNullOrWhiteSpace(code) && ValidDgiiForeignCurrencyCodes.Contains(code.Trim()))
+                    .WithMessage(x => $"Currency.Code '{x.Currency!.Code}' no es una moneda extranjera válida según el esquema TipoMonedaType de la DGII.");
+
+                RuleFor(x => x.Currency!.ExchangeRate)
+                    .Must(rate => rate > 0m && rate < 1000m)
+                    .WithMessage(x => $"Currency.ExchangeRate ({x.Currency!.ExchangeRate}) debe ser mayor a 0 y menor a 1000 para comprobantes en Otra Moneda.");
             });
         }
     }

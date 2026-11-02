@@ -35,6 +35,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string ItemName { get; set; } = string.Empty;
         public decimal Quantity { get; set; }
         public decimal UnitPrice { get; set; }
+        public decimal DiscountAmount { get; set; }
         public decimal Amount { get; set; }
         public string? IndicadorFacturacion { get; set; }
     }
@@ -160,6 +161,12 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string? CertificatePath { get; set; }
     }
 
+    public class CanonicalCurrencyDto
+    {
+        public string Code { get; set; } = "DOP";
+        public decimal ExchangeRate { get; set; } = 1m;
+    }
+
     public class CanonicalDocumentDto
     {
         public string? TenantId { get; set; }
@@ -170,6 +177,7 @@ namespace EcfDgii.Client.Application.Documents.Dto
         public string DocumentKind { get; set; } = "Invoice"; // Invoice, CreditNote, DebitNote, Bill
         public string TipoComprobante { get; set; } = "E31"; // Default Factura de Crédito Fiscal
         public CanonicalHeaderDto Header { get; set; } = new CanonicalHeaderDto();
+        public CanonicalCurrencyDto? Currency { get; set; }
         public List<CanonicalLineDto> Lines { get; set; } = new List<CanonicalLineDto>();
         public CanonicalTotalsDto Totals { get; set; } = new CanonicalTotalsDto();
         public CanonicalReferencesDto References { get; set; } = new CanonicalReferencesDto();
