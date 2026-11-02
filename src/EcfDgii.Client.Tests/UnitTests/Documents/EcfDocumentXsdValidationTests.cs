@@ -1870,5 +1870,135 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.IsType<BadRequestObjectResult>(result);
             Assert.Empty(await db.EcfDocuments.ToListAsync());
         }
+
+        [Fact]
+        public async Task Tipo31_WithCodigoModificacion3_ReturnsBadRequestBeforeSequenceAllocation_DgiiRule613()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000293");
+            var dto = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E31",
+                SourceReference = new SourceReferenceDto { TxnId = "CFB4A-1793645147", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncComprador = "101812761",
+                    RazonSocialComprador = "EDESSA SA",
+                    FechaEmision = "2026-11-02"
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 870472.70m,
+                    MontoGravadoTotal = 870472.70m,
+                    MontoItbis = 156685.09m,
+                    MontoTotal = 1027157.79m
+                },
+                Lines = [new() { LineNumber = 1, ItemName = "CREMICA", Quantity = 1m, UnitPrice = 870472.70m, Amount = 870472.70m, IndicadorFacturacion = "1" }],
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "B0400022008",
+                    CodigoModificacion = 3,
+                    RazonModificacion = "Corrección de Montos",
+                    FechaNcfModificado = "2026-11-02"
+                }
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            var badReq = Assert.IsType<BadRequestObjectResult>(result);
+            Assert.Contains("613", badReq.Value?.ToString() ?? string.Empty);
+            Assert.Empty(await db.EcfDocuments.ToListAsync());
+        }
+
+        [Fact]
+        public async Task PreFoldedNetDiscountLines_ReconstructGrossUnitPriceAndPassXsdValidation()
+        {
+            // Production scenario 100082607 (SURTICRISS): Qty=25, Net UnitPrice=807.324, Net Amount=20183.10, DiscountAmount=411.90
+            var (controller31, db31, _, _) = MakeRealController("E310000000907");
+            var dto31 = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E31",
+                SourceReference = new SourceReferenceDto { TxnId = "CFB68-1793645512", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncComprador = "130388318",
+                    RazonSocialComprador = "SURTICRISS",
+                    FechaEmision = "2026-11-02"
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 20183.10m,
+                    MontoGravadoTotal = 20183.10m,
+                    MontoItbis = 3632.96m,
+                    MontoTotal = 23816.06m,
+                    TaxBuckets = [new() { Rate = 18, Base = 20183.10m, Tax = 3632.96m }]
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "CREMICA QUESO 12X12X36GR",
+                        Quantity = 25m,
+                        UnitPrice = 807.324m,
+                        Amount = 20183.10m,
+                        DiscountAmount = 411.90m,
+                        IndicadorFacturacion = "1"
+                    }
+                ]
+            };
+
+            var res31 = await controller31.SubmitCanonicalDocument(dto31);
+            Assert.IsType<AcceptedResult>(res31);
+            var doc31 = await db31.EcfDocuments.SingleAsync();
+            Assert.Contains("<PrecioUnitarioItem>823.80</PrecioUnitarioItem>", doc31.XmlContent);
+            Assert.Contains("<DescuentoMonto>411.90</DescuentoMonto>", doc31.XmlContent);
+            Assert.Contains("<MontoItem>20183.10</MontoItem>", doc31.XmlContent);
+            var val31 = new EcfSchemaValidator().Validate(doc31.SignedXmlContent!, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(val31.IsValid, string.Join("\n", val31.Errors));
+
+            // Production scenario 200120316 (VENTAS DE OFICINA EMPLEADOS): 3 fractional lines with pre-folded discounts
+            var (controller32, db32, _, _) = MakeRealController("E320000000316");
+            var dto32 = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E32",
+                SourceReference = new SourceReferenceDto { TxnId = "CFC46-1793654457", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RazonSocialComprador = "VENTAS DE OFICINA EMPLEADOS",
+                    FechaEmision = "2026-11-02"
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 246.33m,
+                    MontoGravadoTotal = 246.33m,
+                    MontoItbis = 44.34m,
+                    MontoTotal = 290.67m,
+                    TaxBuckets = [new() { Rate = 18, Base = 246.33m, Tax = 44.34m }]
+                },
+                Lines =
+                [
+                    new() { LineNumber = 1, ItemName = "CREMICA LECHE 10X24X18GR", Quantity = 0.1m, UnitPrice = 625.4m, Amount = 62.54m, DiscountAmount = 6.95m, IndicadorFacturacion = "1" },
+                    new() { LineNumber = 2, ItemName = "CREMICA MANTEQUILLA 12X12X36GR", Quantity = 0.0833m, UnitPrice = 741.42m, Amount = 61.76m, DiscountAmount = 6.86m, IndicadorFacturacion = "1" },
+                    new() { LineNumber = 3, ItemName = "GOZADERA CHOCOLATE BLANCO 6X200UND", Quantity = 0.16666m, UnitPrice = 732.21m, Amount = 122.03m, DiscountAmount = 13.56m, IndicadorFacturacion = "1" }
+                ]
+            };
+
+            var res32 = await controller32.SubmitCanonicalDocument(dto32);
+            Assert.IsType<AcceptedResult>(res32);
+            var doc32 = await db32.EcfDocuments.SingleAsync();
+            Assert.Contains("<DescuentoMonto>6.95</DescuentoMonto>", doc32.XmlContent);
+            Assert.Contains("<DescuentoMonto>6.86</DescuentoMonto>", doc32.XmlContent);
+            Assert.Contains("<DescuentoMonto>13.56</DescuentoMonto>", doc32.XmlContent);
+            var val32 = new EcfSchemaValidator().Validate(doc32.SignedXmlContent!, XsdPath("e-CF 32 v.1.0.xsd"));
+            Assert.True(val32.IsValid, string.Join("\n", val32.Errors));
+        }
     }
 }

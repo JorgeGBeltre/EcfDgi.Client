@@ -427,8 +427,19 @@ namespace EcfDgii.Client.Api.Controllers
                         dto.SourceReference.TxnId, dto.References.CorrectsENcf);
                 }
             }
-            else if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(dto.TipoComprobante, "E45", StringComparison.OrdinalIgnoreCase))
+            else if (dto.References != null &&
+                     !string.IsNullOrWhiteSpace(dto.References.CorrectsENcf) &&
+                     dto.References.CodigoModificacion != 4)
+            {
+                return BadRequest(new
+                {
+                    error = $"References.CodigoModificacion ({dto.References.CodigoModificacion?.ToString() ?? "null"}) no es válido para TipoComprobante {dto.TipoComprobante} (Regla DGII 613). " +
+                            "Fuera de Notas de Débito (E33) y Notas de Crédito (E34), InformacionReferencia solo admite CodigoModificacion = 4 (Reemplazo de comprobante emitido en contingencia)."
+                });
+            }
+
+            if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(dto.TipoComprobante, "E45", StringComparison.OrdinalIgnoreCase))
             {
                 // e-CF 31 (Crédito Fiscal) & e-CF 45 (Gubernamental): RNCComprador is minOccurs="1" in the real XSD.
                 if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
@@ -2409,7 +2420,8 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine($"      <DescripcionItem>{EscapeXml(item.Description)}</DescripcionItem>");
                 }
                 sb.AppendLine(CultureInfo.InvariantCulture, $"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
-                var precioDopStr = isForeignCurrency
+                var hasSubCentUnitPrice = Math.Round(item.UnitPriceDop, 2, MidpointRounding.AwayFromZero) != Math.Round(item.UnitPriceDop, 4, MidpointRounding.AwayFromZero);
+                var precioDopStr = (isForeignCurrency || hasSubCentUnitPrice)
                     ? FormatDecimalUpTo4(item.UnitPriceDop)
                     : item.UnitPriceDop.ToString("F2", CultureInfo.InvariantCulture);
                 sb.AppendLine($"      <PrecioUnitarioItem>{precioDopStr}</PrecioUnitarioItem>");
@@ -2440,8 +2452,8 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("  </DetallesItems>");
 
             // "InformacionReferencia" — top-level sibling AFTER DetallesItems.
-            // Obligatorio para 33 y 34; opcional para los demás si dto.References != null.
-            if ((tipoEcf is "33" or "34" || dto.References != null) && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
+            // Obligatorio para 33 y 34; fuera de 33/34 solo válido para contingencia (CodigoModificacion = 4).
+            if ((tipoEcf is "33" or "34" || dto.References?.CodigoModificacion == 4) && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
             {
                 var ncfMod = NcfNormalizer.Normalize(refs.CorrectsENcf);
 
@@ -2649,6 +2661,42 @@ namespace EcfDgii.Client.Api.Controllers
                 var safeQty = rawQty > 0m ? rawQty : 1m;
                 var safePrice = rawPrice;
                 var safeAmount = line.Amount;
+                var effectiveDiscount = 0m;
+
+                if (line.DiscountAmount > 0m)
+                {
+                    if (Math.Abs((safeQty * safePrice - line.DiscountAmount) - safeAmount) <= 0.05m)
+                    {
+                        effectiveDiscount = line.DiscountAmount;
+                    }
+                    else if (Math.Abs((safeQty * safePrice) - safeAmount) <= 0.05m)
+                    {
+                        // Pre-folded net line (ERPConnector / Ecf.api folded a negative discount line into Amount & UnitPrice).
+                        // Reconstruct gross UnitPrice so DGII's CantidadItem * PrecioUnitarioItem - DescuentoMonto == MontoItem holds.
+                        var roundedQty = Math.Round(safeQty, 2, MidpointRounding.AwayFromZero);
+                        if (roundedQty > 0m)
+                        {
+                            var grossAmount = safeAmount + line.DiscountAmount;
+                            var grossPrice2 = Math.Round(grossAmount / roundedQty, 2, MidpointRounding.AwayFromZero);
+                            if (Math.Abs(Math.Round(roundedQty * grossPrice2, 2, MidpointRounding.AwayFromZero) - line.DiscountAmount - safeAmount) <= 0.01m)
+                            {
+                                safeQty = roundedQty;
+                                safePrice = grossPrice2;
+                                effectiveDiscount = line.DiscountAmount;
+                            }
+                            else
+                            {
+                                var grossPrice4 = Math.Round(grossAmount / roundedQty, 4, MidpointRounding.AwayFromZero);
+                                if (Math.Abs(Math.Round(roundedQty * grossPrice4, 2, MidpointRounding.AwayFromZero) - line.DiscountAmount - safeAmount) <= 0.01m)
+                                {
+                                    safeQty = roundedQty;
+                                    safePrice = grossPrice4;
+                                    effectiveDiscount = line.DiscountAmount;
+                                }
+                            }
+                        }
+                    }
+                }
 
                 var shortName = rawName.Length > 80 ? rawName[..80] : rawName;
                 string? extendedDesc = rawName.Length > 80
@@ -2662,9 +2710,7 @@ namespace EcfDgii.Client.Api.Controllers
                     Description = extendedDesc,
                     Quantity = safeQty,
                     UnitPrice = safePrice,
-                    DiscountAmount = (line.DiscountAmount > 0m && Math.Abs((safeQty * safePrice - line.DiscountAmount) - safeAmount) <= 0.05m)
-                        ? line.DiscountAmount
-                        : 0m,
+                    DiscountAmount = effectiveDiscount,
                     MontoItem = safeAmount,
                     IndicadorFacturacion = line.IndicadorFacturacion
                 });
