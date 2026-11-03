@@ -2000,5 +2000,124 @@ namespace EcfDgii.Client.UnitTests.Documents
             var val32 = new EcfSchemaValidator().Validate(doc32.SignedXmlContent!, XsdPath("e-CF 32 v.1.0.xsd"));
             Assert.True(val32.IsValid, string.Join("\n", val32.Errors));
         }
+
+        [Fact]
+        public async Task Tipo34_CancellingTipo43InDop_AndReissuingTipo43InUsd_PassDgiiXsd()
+        {
+            // Step 1: E34 (CodigoModificacion = 1) annulling E430000000014 in DOP (10,807.02)
+            var (controller34, db34, _, _) = MakeRealController("E340000000364");
+            var dto34 = new CanonicalDocumentDto
+            {
+                DocumentKind = "CreditNote",
+                TipoComprobante = "E34",
+                SourceReference = new SourceReferenceDto { TxnId = "NC-ANULA-E430000000014", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RazonSocialComprador = "WILLY CHIC DOLAR",
+                    FechaEmision = "2026-11-02"
+                },
+                Currency = new CanonicalCurrencyDto { Code = "DOP", ExchangeRate = 1m },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 10807.02m,
+                    MontoExento = 10807.02m,
+                    MontoGravadoTotal = 0m,
+                    MontoItbis = 0m,
+                    MontoTotal = 10807.02m
+                },
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "E430000000014",
+                    CodigoModificacion = 1,
+                    RazonModificacion = "Anulación de comprobante por corrección de moneda",
+                    FechaNcfModificado = "2026-10-30"
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "6215 · Servicios de Informatica",
+                        Quantity = 1m,
+                        UnitPrice = 10807.02m,
+                        Amount = 10807.02m,
+                        IndicadorFacturacion = "4"
+                    }
+                ]
+            };
+
+            var res34 = await controller34.SubmitCanonicalDocument(dto34);
+            Assert.IsType<AcceptedResult>(res34);
+            var doc34 = await db34.EcfDocuments.SingleAsync();
+            var xml34 = doc34.SignedXmlContent!;
+
+            Assert.Contains("<TipoeCF>34</TipoeCF>", xml34);
+            Assert.DoesNotContain("<Comprador>", xml34);
+            Assert.DoesNotContain("<TipoIngresos>", xml34);
+            Assert.DoesNotContain("<IndicadorMontoGravado>", xml34);
+            Assert.DoesNotContain("<TotalITBIS>", xml34);
+            Assert.Contains("<MontoExento>10807.02</MontoExento>", xml34);
+            Assert.Contains("<MontoTotal>10807.02</MontoTotal>", xml34);
+            Assert.Contains("<IndicadorFacturacion>4</IndicadorFacturacion>", xml34);
+            Assert.Contains("<NCFModificado>E430000000014</NCFModificado>", xml34);
+            Assert.Contains("<CodigoModificacion>1</CodigoModificacion>", xml34);
+
+            var val34 = new EcfSchemaValidator().Validate(xml34, XsdPath("e-CF 34 v.1.0.xsd"));
+            Assert.True(val34.IsValid, string.Join("\n", val34.Errors));
+
+            // Step 2: Replacement E43 emitted in USD @ 60.16 (USD 10,807.02 -> DOP 650,150.32)
+            var (controller43, db43, _, _) = MakeRealController("E430000000015");
+            var dto43 = new CanonicalDocumentDto
+            {
+                DocumentKind = "MinorExpense",
+                TipoComprobante = "E43",
+                SourceReference = new SourceReferenceDto { TxnId = "BILL-B1300002709-REISSUE", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    FechaEmision = "2026-11-02"
+                },
+                Currency = new CanonicalCurrencyDto { Code = "USD", ExchangeRate = 60.16m },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 10807.02m,
+                    MontoExento = 10807.02m,
+                    MontoItbis = 0m,
+                    MontoTotal = 10807.02m
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "6215 · Servicios de Informatica",
+                        Quantity = 1m,
+                        UnitPrice = 10807.02m,
+                        Amount = 10807.02m,
+                        IndicadorFacturacion = "4"
+                    }
+                ]
+            };
+
+            var res43 = await controller43.SubmitCanonicalDocument(dto43);
+            Assert.IsType<AcceptedResult>(res43);
+            var doc43 = await db43.EcfDocuments.SingleAsync();
+            var xml43 = doc43.SignedXmlContent!;
+
+            Assert.Equal(650150.32m, doc43.TotalAmount);
+            Assert.DoesNotContain("<Comprador>", xml43);
+            Assert.Contains("<MontoExento>650150.32</MontoExento>", xml43);
+            Assert.Contains("<MontoTotal>650150.32</MontoTotal>", xml43);
+            Assert.Contains("<TipoMoneda>USD</TipoMoneda>", xml43);
+            Assert.Contains("<TipoCambio>60.16</TipoCambio>", xml43);
+            Assert.Contains("<MontoExentoOtraMoneda>10807.02</MontoExentoOtraMoneda>", xml43);
+            Assert.Contains("<MontoTotalOtraMoneda>10807.02</MontoTotalOtraMoneda>", xml43);
+
+            var val43 = new EcfSchemaValidator().Validate(xml43, XsdPath("e-CF 43 v.1.0.xsd"));
+            Assert.True(val43.IsValid, string.Join("\n", val43.Errors));
+        }
     }
 }

@@ -1714,6 +1714,31 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <TipoeCF>{EscapeXml(tipoEcf)}</TipoeCF>");
             sb.AppendLine($"      <eNCF>{eNcf}</eNCF>");
 
+            var rawRefEncf = dto.References?.CorrectsENcf?.Trim() ?? string.Empty;
+            var normalizedRefEncf = !string.IsNullOrWhiteSpace(rawRefEncf)
+                ? NcfNormalizer.Normalize(rawRefEncf)
+                : string.Empty;
+            var modifiesGastosMenores = tipoEcf is "33" or "34" &&
+                (rawRefEncf.StartsWith("E43", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("E43", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("B13", StringComparison.OrdinalIgnoreCase));
+            var modifiesExpenseEcf = modifiesGastosMenores || (tipoEcf is "33" or "34" &&
+                (rawRefEncf.StartsWith("E41", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("E41", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("B11", StringComparison.OrdinalIgnoreCase) ||
+                 rawRefEncf.StartsWith("E47", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("E47", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("B17", StringComparison.OrdinalIgnoreCase)));
+            var hasExplicitTaxedLine = dto.Lines != null &&
+                dto.Lines.Any(l => l.IndicadorFacturacion is "1" or "2" or "3");
+            var hasTaxedBucket = dto.Totals?.TaxBuckets is { Count: > 0 } declaredTaxBuckets &&
+                declaredTaxBuckets.Any(b => b.Base > 0m);
+            var isPurelyExemptOrNonTaxable = modifiesGastosMenores ||
+                (!hasExplicitTaxedLine && !hasTaxedBucket && dto.Totals != null &&
+                 dto.Totals.MontoExento > 0m &&
+                 (dto.Totals.MontoGravadoTotal == null || dto.Totals.MontoGravadoTotal == 0m) &&
+                 dto.Totals.MontoItbis == 0m);
+
             // Verified against the real DGII XSDs (checked into this repo under "Documentación
             // Técnica (XSD)") — the field-level obligatoriedad tables in the prose spec do NOT
             // capture this: FechaVencimientoSecuencia and IndicadorNotaCredito are MUTUALLY
@@ -1787,16 +1812,16 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
             }
 
-            if (tipoEcf is "31" or "32" or "33" or "34" or "41" or "45")
+            if (tipoEcf is "31" or "32" or "33" or "34" or "41" or "45" && !isPurelyExemptOrNonTaxable)
             {
                 // IndicadorMontoGravado: 0 = montos en líneas sección B no tienen ITBIS incluido, 1 = se encuentran con ITBIS incluido.
-                // Requerido por la DGII cuando el documento contiene montos gravados (Error 176 si falta).
+                // Requerido por la DGII cuando el documento contiene montos gravados (Error 176 si falta), y omitido si es 100% exento.
                 sb.AppendLine("      <IndicadorMontoGravado>0</IndicadorMontoGravado>");
             }
 
             // TipoIngresos doesn't exist as an element at all in tipo 41, 43, 47 IdDoc schemas (confirmed by
-            // running the real XSDs). Present for 31, 32, 33, 34, 44, 45, 46.
-            if (tipoEcf is not "41" and not "43" and not "47")
+            // running the real XSDs), and is omitted on 33/34 when modifying an expense e-CF (E41/E43/E47).
+            if (tipoEcf is not "41" and not "43" and not "47" && !modifiesExpenseEcf)
             {
                 // In 46 (Exportaciones), TipoIngresos 02 = Ingresos por exportaciones (or 01).
                 var tipoIngresoVal = tipoEcf == "46" ? "02" : "01";
@@ -1819,9 +1844,10 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    </Emisor>");
 
             // <Comprador> is omitted entirely for tipo 43 (Gastos Menores) because the schema
-            // forbids it. For tipo 47 (Pagos al Exterior), only IdentificadorExtranjero and
+            // forbids it, and for 33/34 modifying E43/B13 where Comprador is minOccurs="0".
+            // For tipo 47 (Pagos al Exterior), only IdentificadorExtranjero and
             // RazonSocialComprador are allowed. For all other types, Comprador is minOccurs="1".
-            if (tipoEcf != "43")
+            if (tipoEcf != "43" && !modifiesGastosMenores)
             {
                 sb.AppendLine("    <Comprador>");
                 if (tipoEcf == "47")
@@ -1933,7 +1959,7 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 "43" or "44" or "47" => "4", // Exento (DGII Nota 50)
                 "46" => "3",                 // ITBIS tasa cero (DGII Nota 51)
-                _ => (dto.Totals?.MontoExento > 0 && (dto.Totals.MontoGravadoTotal == null || dto.Totals.MontoGravadoTotal == 0) && (dto.Totals.MontoItbis == 0))
+                _ => isPurelyExemptOrNonTaxable
                     ? "4"
                     : (hasOnly16Bucket ? "2" : "1")
             };
@@ -1977,7 +2003,9 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     "46" => item.IndicadorFacturacion == "0" ? "0" : "3",
                     "43" or "44" or "47" => "4",
-                    _ => !string.IsNullOrWhiteSpace(item.IndicadorFacturacion) ? item.IndicadorFacturacion! : indicadorFacturacion
+                    _ => modifiesGastosMenores
+                        ? "4"
+                        : (!string.IsNullOrWhiteSpace(item.IndicadorFacturacion) ? item.IndicadorFacturacion! : indicadorFacturacion)
                 };
 
                 if (isForeignCurrency)
@@ -2038,8 +2066,12 @@ namespace EcfDgii.Client.Api.Controllers
                     var total = dto.Totals.MontoTotal;
                     var itbis = dto.Totals.MontoItbis;
 
-                    var gravado = dto.Totals.MontoGravadoTotal ?? dto.Totals.MontoSubtotal;
-                    var exento = dto.Totals.MontoExento ?? 0m;
+                    var exento = modifiesGastosMenores
+                        ? (total > 0m ? total : (dto.Totals.MontoExento ?? dto.Totals.MontoSubtotal))
+                        : (dto.Totals.MontoExento ?? 0m);
+                    var gravado = modifiesGastosMenores
+                        ? 0m
+                        : (dto.Totals.MontoGravadoTotal ?? Math.Max(0m, dto.Totals.MontoSubtotal - exento));
 
                     if (tipoEcf is "43" or "44")
                     {
@@ -2121,7 +2153,10 @@ namespace EcfDgii.Client.Api.Controllers
                                 sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
                             }
                         }
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
+                        if (slotTax[1].HasValue || slotTax[2].HasValue || slotTax[3].HasValue)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
+                        }
                         for (var slot = 1; slot <= 3; slot++)
                         {
                             if (slotTax[slot] is { } montoItbis)
@@ -2343,7 +2378,10 @@ namespace EcfDgii.Client.Api.Controllers
                             sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
                         }
                     }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbisDop:F2}</TotalITBIS>");
+                    if (slotTaxDop[1].HasValue || slotTaxDop[2].HasValue || slotTaxDop[3].HasValue)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbisDop:F2}</TotalITBIS>");
+                    }
                     for (var slot = 1; slot <= 3; slot++)
                     {
                         if (slotTaxDop[slot] is { } montoItbisDop)
