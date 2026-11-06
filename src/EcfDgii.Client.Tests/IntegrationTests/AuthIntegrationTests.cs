@@ -59,5 +59,35 @@ namespace EcfDgii.Client.IntegrationTests
             Assert.Equal("User", result.Role);
             Assert.False(string.IsNullOrEmpty(result.Token));
         }
+
+        [Fact]
+        public async Task GetSemilla_AnonymousRequest_Returns200AndSemillaXml()
+        {
+            var response = await _client.GetAsync("fe/autenticacion/api/semilla");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var xml = await response.Content.ReadAsStringAsync();
+            Assert.Contains("<SemillaModel", xml);
+            Assert.Contains("<valor>", xml);
+        }
+
+        [Fact]
+        public async Task ValidarSemilla_AnonymousMultipartRequest_Returns200AndTokenXml()
+        {
+            var semillaResponse = await _client.GetAsync("fe/autenticacion/api/semilla");
+            semillaResponse.EnsureSuccessStatusCode();
+            var semillaXml = await semillaResponse.Content.ReadAsStringAsync();
+
+            using var content = new MultipartFormDataContent();
+            var fileContent = new StringContent(semillaXml, System.Text.Encoding.UTF8, "text/xml");
+            content.Add(fileContent, "xml", "semilla.xml");
+
+            var response = await _client.PostAsync("fe/autenticacion/api/validacioncertificado", content);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.Contains("<RespuestaAutenticacion>", body);
+            Assert.Contains("<token>", body);
+        }
     }
 }

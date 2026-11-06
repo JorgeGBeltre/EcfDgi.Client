@@ -62,11 +62,17 @@ namespace EcfDgii.Client.Api.Controllers
                 && string.IsNullOrWhiteSpace(dto?.TenantId);
         }
 
-        private static string? ExtractRazonSocialEmisor(string? xml)
+        private static string? ExtractRazonSocialEmisor(string? xml) =>
+            ExtractXmlElementValue(xml, "RazonSocialEmisor");
+
+        private static string? ExtractXmlElementValue(string? xml, string elementName)
         {
             if (string.IsNullOrWhiteSpace(xml)) return null;
-            var match = System.Text.RegularExpressions.Regex.Match(xml, @"<RazonSocialEmisor>(.*?)</RazonSocialEmisor>", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            return match.Success ? match.Groups[1].Value.Trim() : null;
+            var match = System.Text.RegularExpressions.Regex.Match(
+                xml,
+                $@"<{(System.Text.RegularExpressions.Regex.Escape(elementName))}>(.*?)</{(System.Text.RegularExpressions.Regex.Escape(elementName))}>",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return match.Success ? System.Net.WebUtility.HtmlDecode(match.Groups[1].Value.Trim()) : null;
         }
 
         // DGII's status query does not necessarily reflect a transmission the instant it lands —
@@ -396,6 +402,12 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
+            var (_, _, preValidationExchangeRate, currencyValidationError) = ResolveCanonicalCurrency(dto.Currency);
+            if (currencyValidationError != null)
+            {
+                return BadRequest(new { error = currencyValidationError });
+            }
+
             // Type-specific required fields per DGII's "Formato Comprobante Fiscal Electrónico (e-CF)
             // V1.0" spec — checked before allocating a sequence, since a document missing these can
             // never be validly built regardless of what eNCF it gets.
@@ -421,8 +433,19 @@ namespace EcfDgii.Client.Api.Controllers
                         dto.SourceReference.TxnId, dto.References.CorrectsENcf);
                 }
             }
-            else if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(dto.TipoComprobante, "E45", StringComparison.OrdinalIgnoreCase))
+            else if (dto.References != null &&
+                     !string.IsNullOrWhiteSpace(dto.References.CorrectsENcf) &&
+                     dto.References.CodigoModificacion != 4)
+            {
+                return BadRequest(new
+                {
+                    error = $"References.CodigoModificacion ({dto.References.CodigoModificacion?.ToString() ?? "null"}) no es válido para TipoComprobante {dto.TipoComprobante} (Regla DGII 613). " +
+                            "Fuera de Notas de Débito (E33) y Notas de Crédito (E34), InformacionReferencia solo admite CodigoModificacion = 4 (Reemplazo de comprobante emitido en contingencia)."
+                });
+            }
+
+            if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(dto.TipoComprobante, "E45", StringComparison.OrdinalIgnoreCase))
             {
                 // e-CF 31 (Crédito Fiscal) & e-CF 45 (Gubernamental): RNCComprador is minOccurs="1" in the real XSD.
                 if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
@@ -448,7 +471,7 @@ namespace EcfDgii.Client.Api.Controllers
             {
                 // Tipo 32 (Factura de Consumo): si el monto total es >= DOP$250,000.00 se debe identificar
                 // obligatoriamente RNC/Cédula del comprador o Identificador Extranjero (DGII regla de validación).
-                var total = dto.Totals?.MontoTotal ?? 0m;
+                var total = Math.Round((dto.Totals?.MontoTotal ?? 0m) * preValidationExchangeRate, 2, MidpointRounding.AwayFromZero);
                 if (total >= 250000m)
                 {
                     if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
@@ -792,8 +815,13 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = existingDoc.ENcf,
                 state = existingDoc.State,
                 trackId = existingDoc.TrackId,
-                securityCode = existingDoc.SecurityCode,
-                signedXml = existingDoc.SignedXmlContent
+                securityCode = ResolveEffectiveSecurityCode(existingDoc.SecurityCode, existingDoc.SignedRfceContent, existingDoc.SignedXmlContent),
+                totalAmount = existingDoc.TotalAmount,
+                itbisAmount = existingDoc.ItbisAmount,
+                signedXml = !string.IsNullOrWhiteSpace(existingDoc.SignedRfceContent) ? existingDoc.SignedRfceContent : existingDoc.SignedXmlContent,
+                dgiiResponse = existingDoc.DgiiResponseXml,
+                environment = existingDoc.Ambiente,
+                sourceTxnId = existingDoc.SourceTxnId
             });
         }
 
@@ -825,9 +853,9 @@ namespace EcfDgii.Client.Api.Controllers
 
             doc.RncEmisor = effectiveRnc;
             doc.RncComprador = dto.Header?.RncComprador;
-            doc.TotalAmount = dto.Totals?.MontoTotal ?? 0;
-            doc.ItbisAmount = dto.Totals?.MontoItbis ?? 0;
-            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, effectiveRnc, effectiveRazonSocial, effectiveDireccion);
+            doc.XmlContent = BuildXmlFromCanonical(dto, doc.ENcf, effectiveRnc, effectiveRazonSocial, effectiveDireccion, out var computedTotalDop, out var computedItbisDop);
+            doc.TotalAmount = computedTotalDop;
+            doc.ItbisAmount = computedItbisDop;
             doc.State = "SequenceAllocated";
         }
 
@@ -1108,9 +1136,30 @@ namespace EcfDgii.Client.Api.Controllers
                 state = doc.State,
                 trackId = doc.TrackId,
                 securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
+                totalAmount = doc.TotalAmount,
+                itbisAmount = doc.ItbisAmount,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
-                dgiiResponse = doc.DgiiResponseXml
+                dgiiResponse = doc.DgiiResponseXml,
+                environment = doc.Ambiente,
+                sourceTxnId = doc.SourceTxnId
             });
+        }
+
+        private IQueryable<EcfDocument> ApplyLookupEnvironmentScope(IQueryable<EcfDocument> query, string? targetAmbienteStr, AmbienteEnum targetAmbiente)
+        {
+            var preferredAmbienteStr = _defaultAmbiente.ToString();
+            if (!string.IsNullOrWhiteSpace(targetAmbienteStr))
+            {
+                var allowNullAmbiente = targetAmbiente == _defaultAmbiente;
+                return query
+                    .Where(d => d.Ambiente == targetAmbienteStr || (allowNullAmbiente && d.Ambiente == null))
+                    .OrderByDescending(d => d.CreatedAt);
+            }
+
+            return query
+                .OrderByDescending(d => d.Ambiente == preferredAmbienteStr ? 1 : 0)
+                .ThenByDescending(d => d.Ambiente == nameof(AmbienteEnum.Produccion) ? 1 : 0)
+                .ThenByDescending(d => d.CreatedAt);
         }
 
         /// <summary>
@@ -1118,19 +1167,35 @@ namespace EcfDgii.Client.Api.Controllers
         /// Idempotent GET: never mutates database rows or contacts DGII.
         /// </summary>
         [HttpGet("by-source/{txnId}")]
-        public async Task<IActionResult> GetBySourceTxnId(string txnId)
+        public async Task<IActionResult> GetBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
-            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantClaim = User?.FindFirst("tenant_id")?.Value;
             var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
                 ? tenantClaim
-                : (HttpContext.Items["TenantId"]?.ToString()
-                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                : (HttpContext?.Items["TenantId"]?.ToString()
+                   ?? (Request?.Headers != null && Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
-            // MED-126: Separate sequential indexed probes instead of three-column OR, with AsNoTracking and projection
-            var doc = await _db.EcfDocuments
-                .AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId)
+            var rawEnv = !string.IsNullOrWhiteSpace(environment)
+                ? environment
+                : (Request?.Headers != null && Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            string? targetAmbienteStr = null;
+            var targetAmbiente = _defaultAmbiente;
+            if (!string.IsNullOrWhiteSpace(rawEnv))
+            {
+                if (!TryResolveAmbienteEnum(rawEnv, out targetAmbiente, out var envError))
+                {
+                    return BadRequest(new { error = envError });
+                }
+                targetAmbienteStr = targetAmbiente.ToString();
+            }
+
+            // MED-126: Separate sequential indexed probes instead of three-column OR, isolated by Ambiente when specified
+            var doc = await ApplyLookupEnvironmentScope(
+                    _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
+                    targetAmbienteStr,
+                    targetAmbiente)
                 .Select(d => new
                 {
                     d.Id,
@@ -1140,17 +1205,22 @@ namespace EcfDgii.Client.Api.Controllers
                     d.TrackId,
                     d.SecurityCode,
                     d.ReceiptDate,
+                    d.TotalAmount,
+                    d.ItbisAmount,
                     d.SignedRfceContent,
                     d.SignedXmlContent,
-                    d.DgiiResponseXml
+                    d.DgiiResponseXml,
+                    d.Ambiente,
+                    d.SourceTxnId
                 })
                 .FirstOrDefaultAsync();
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.TrackId == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.TrackId == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new
                     {
                         d.Id,
@@ -1160,18 +1230,23 @@ namespace EcfDgii.Client.Api.Controllers
                         d.TrackId,
                         d.SecurityCode,
                         d.ReceiptDate,
+                        d.TotalAmount,
+                        d.ItbisAmount,
                         d.SignedRfceContent,
                         d.SignedXmlContent,
-                        d.DgiiResponseXml
+                        d.DgiiResponseXml,
+                        d.Ambiente,
+                        d.SourceTxnId
                     })
                     .FirstOrDefaultAsync();
             }
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.ENcf == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.ENcf == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new
                     {
                         d.Id,
@@ -1181,9 +1256,13 @@ namespace EcfDgii.Client.Api.Controllers
                         d.TrackId,
                         d.SecurityCode,
                         d.ReceiptDate,
+                        d.TotalAmount,
+                        d.ItbisAmount,
                         d.SignedRfceContent,
                         d.SignedXmlContent,
-                        d.DgiiResponseXml
+                        d.DgiiResponseXml,
+                        d.Ambiente,
+                        d.SourceTxnId
                     })
                     .FirstOrDefaultAsync();
             }
@@ -1202,9 +1281,13 @@ namespace EcfDgii.Client.Api.Controllers
                 trackId = doc.TrackId,
                 securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
+                totalAmount = doc.TotalAmount,
+                itbisAmount = doc.ItbisAmount,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml,
-                dgiiResponseXml = doc.DgiiResponseXml
+                dgiiResponseXml = doc.DgiiResponseXml,
+                environment = doc.Ambiente,
+                sourceTxnId = doc.SourceTxnId
             });
         }
 
@@ -1212,17 +1295,53 @@ namespace EcfDgii.Client.Api.Controllers
         /// Explicit command endpoint to reconcile or retransmit an Uncertain/Signed document against DGII (MED-017).
         /// </summary>
         [HttpPost("by-source/{txnId}/reconcile")]
-        public async Task<IActionResult> ReconcileBySourceTxnId(string txnId)
+        public async Task<IActionResult> ReconcileBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
-            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantClaim = User?.FindFirst("tenant_id")?.Value;
             var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
                 ? tenantClaim
-                : (HttpContext.Items["TenantId"]?.ToString()
-                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                : (HttpContext?.Items["TenantId"]?.ToString()
+                   ?? (Request?.Headers != null && Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
-            var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
+            var rawEnv = !string.IsNullOrWhiteSpace(environment)
+                ? environment
+                : (Request?.Headers != null && Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            string? targetAmbienteStr = null;
+            var targetAmbiente = _defaultAmbiente;
+            if (!string.IsNullOrWhiteSpace(rawEnv))
+            {
+                if (!TryResolveAmbienteEnum(rawEnv, out targetAmbiente, out var envError))
+                {
+                    return BadRequest(new { error = envError });
+                }
+                targetAmbienteStr = targetAmbiente.ToString();
+            }
+
+            var doc = await ApplyLookupEnvironmentScope(
+                    _db.EcfDocuments.Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
+                    targetAmbienteStr,
+                    targetAmbiente)
+                .FirstOrDefaultAsync();
+
+            if (doc == null)
+            {
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.Where(d => d.TenantId == tenantId && d.TrackId == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
+                    .FirstOrDefaultAsync();
+            }
+
+            if (doc == null)
+            {
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.Where(d => d.TenantId == tenantId && d.ENcf == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
+                    .FirstOrDefaultAsync();
+            }
 
             if (doc == null)
             {
@@ -1264,7 +1383,7 @@ namespace EcfDgii.Client.Api.Controllers
                     _logger.LogWarning(ex, "Error consultando resultado DGII para {TrackId}", doc.TrackId);
                 }
             }
-            else if (doc.State == "Uncertain")
+            else if (doc.State == "Uncertain" || (doc.State == "RequiresManualReview" && string.IsNullOrWhiteSpace(doc.TrackId)))
             {
                 try
                 {
@@ -1314,10 +1433,27 @@ namespace EcfDgii.Client.Api.Controllers
                                 }
                                 else if (IsNotFoundByDgii(status))
                                 {
-                                    var emisorRazon = ExtractRazonSocialEmisor(doc.XmlContent) ?? _emisorRazonSocial;
-                                    var rfceXml = BuildRfceXml(doc, null, emisorRazon);
-                                    var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
-                                    doc.SignedRfceContent = signedRfce;
+                                    string signedRfce;
+                                    if (!string.IsNullOrWhiteSpace(doc.SignedRfceContent))
+                                    {
+                                        signedRfce = doc.SignedRfceContent;
+                                    }
+                                    else
+                                    {
+                                        if (string.IsNullOrWhiteSpace(doc.SignedXmlContent) && !string.IsNullOrWhiteSpace(doc.XmlContent))
+                                        {
+                                            doc.SignedXmlContent = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
+                                        }
+                                        if (string.IsNullOrWhiteSpace(doc.SecurityCode) && !string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+                                        {
+                                            doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(doc.SignedXmlContent);
+                                        }
+
+                                        var emisorRazon = ExtractRazonSocialEmisor(doc.XmlContent) ?? _emisorRazonSocial;
+                                        var rfceXml = BuildRfceXml(doc, null, emisorRazon);
+                                        signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
+                                        doc.SignedRfceContent = signedRfce;
+                                    }
                                     // Preserve doc.SecurityCode as the e-CF invoice security code (CodigoSeguridadeCF)
 
                                     // Local XSD check for RFCE
@@ -1436,12 +1572,24 @@ namespace EcfDgii.Client.Api.Controllers
                                     doc.DgiiResponseXml = $"Rechazado por DGII: {status.Estado}";
                                     await _db.SaveChangesAsync();
                                 }
-                                else if (IsNotFoundByDgii(status) && !string.IsNullOrWhiteSpace(doc.XmlContent))
+                                else if (IsNotFoundByDgii(status) && (!string.IsNullOrWhiteSpace(doc.SignedXmlContent) || !string.IsNullOrWhiteSpace(doc.XmlContent)))
                                 {
                                     var fileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
-                                    var signedXml = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
-                                    doc.SignedXmlContent = signedXml;
-                                    doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
+                                    string signedXml;
+                                    if (!string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+                                    {
+                                        signedXml = doc.SignedXmlContent;
+                                        if (string.IsNullOrWhiteSpace(doc.SecurityCode))
+                                        {
+                                            doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        signedXml = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
+                                        doc.SignedXmlContent = signedXml;
+                                        doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
+                                    }
 
                                     var response = await client.SendEcfAsync(signedXml, fileName);
                                     if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
@@ -1479,43 +1627,65 @@ namespace EcfDgii.Client.Api.Controllers
                 trackId = doc.TrackId,
                 securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
+                totalAmount = doc.TotalAmount,
+                itbisAmount = doc.ItbisAmount,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml,
-                dgiiResponseXml = doc.DgiiResponseXml
+                dgiiResponseXml = doc.DgiiResponseXml,
+                environment = doc.Ambiente,
+                sourceTxnId = doc.SourceTxnId
             });
         }
 
         [HttpGet("by-source/{txnId}/xml")]
-        public async Task<IActionResult> GetXmlBySourceTxnId(string txnId)
+        public async Task<IActionResult> GetXmlBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
-            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantClaim = User?.FindFirst("tenant_id")?.Value;
             var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
                 ? tenantClaim
-                : (HttpContext.Items["TenantId"]?.ToString()
-                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                : (HttpContext?.Items["TenantId"]?.ToString()
+                   ?? (Request?.Headers != null && Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
-            // MED-126: Probes in order: (TenantId, SourceTxnId), then TrackId, then ENcf
-            var doc = await _db.EcfDocuments
-                .AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId)
+            var rawEnv = !string.IsNullOrWhiteSpace(environment)
+                ? environment
+                : (Request?.Headers != null && Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            string? targetAmbienteStr = null;
+            var targetAmbiente = _defaultAmbiente;
+            if (!string.IsNullOrWhiteSpace(rawEnv))
+            {
+                if (!TryResolveAmbienteEnum(rawEnv, out targetAmbiente, out var envError))
+                {
+                    return BadRequest(new { error = envError });
+                }
+                targetAmbienteStr = targetAmbiente.ToString();
+            }
+
+            // MED-126: Probes in order: (TenantId, SourceTxnId), then TrackId, then ENcf — isolated by Ambiente when specified
+            var doc = await ApplyLookupEnvironmentScope(
+                    _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
+                    targetAmbienteStr,
+                    targetAmbiente)
                 .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
                 .FirstOrDefaultAsync();
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.TrackId == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.TrackId == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
                     .FirstOrDefaultAsync();
             }
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.ENcf == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.ENcf == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
                     .FirstOrDefaultAsync();
             }
@@ -1583,7 +1753,8 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <RNCEmisor>{doc.RncEmisor}</RNCEmisor>");
             var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
             sb.AppendLine($"      <RazonSocialEmisor>{EscapeXml(safeEmisorName)}</RazonSocialEmisor>");
-            var fechaEmision = NormalizeFechaDgii(dto?.Header?.FechaEmision);
+            var rawFechaEmision = dto?.Header?.FechaEmision ?? ExtractXmlElementValue(doc.XmlContent, "FechaEmision");
+            var fechaEmision = NormalizeFechaDgii(rawFechaEmision);
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
             sb.AppendLine("    <Comprador>");
@@ -1595,9 +1766,10 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
                 }
             }
+            var extractedCompradorName = ExtractXmlElementValue(doc.XmlContent, "RazonSocialComprador");
             var compradorName = !string.IsNullOrWhiteSpace(dto?.Header?.RazonSocialComprador)
                 ? dto.Header.RazonSocialComprador
-                : "CONSUMIDOR FINAL";
+                : (!string.IsNullOrWhiteSpace(extractedCompradorName) ? extractedCompradorName : "CONSUMIDOR FINAL");
             var safeCompradorName = compradorName.Length > 150 ? compradorName[..150] : compradorName;
             sb.AppendLine($"      <RazonSocialComprador>{EscapeXml(safeCompradorName)}</RazonSocialComprador>");
             sb.AppendLine("    </Comprador>");
@@ -1622,7 +1794,50 @@ namespace EcfDgii.Client.Api.Controllers
             return sb.ToString().Trim();
         }
 
-        private string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial, string? emisorDireccion = null)
+        private static readonly HashSet<string> ValidDgiiForeignCurrencyCodes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "BRL", "CAD", "CHF", "CHY", "XDR", "DKK", "EUR", "GBP",
+            "JPY", "NOK", "SCP", "SEK", "USD", "VEF", "HTG", "MXN", "COP"
+        };
+
+        private static (bool IsForeign, string Code, decimal ExchangeRate, string? ValidationError) ResolveCanonicalCurrency(CanonicalCurrencyDto? currency)
+        {
+            if (currency == null || string.IsNullOrWhiteSpace(currency.Code))
+            {
+                return (false, "DOP", 1m, null);
+            }
+
+            var code = currency.Code.Trim().ToUpperInvariant();
+            if (code is "DOP" or "RD$" or "RDS")
+            {
+                return (false, "DOP", 1m, null);
+            }
+
+            if (code == "CNY") code = "CHY";
+            else if (code == "US$") code = "USD";
+
+            if (!ValidDgiiForeignCurrencyCodes.Contains(code))
+            {
+                return (true, code, currency.ExchangeRate,
+                    $"Currency.Code '{currency.Code}' no es una moneda extranjera válida según el esquema TipoMonedaType de la DGII.");
+            }
+
+            if (currency.ExchangeRate <= 0m || currency.ExchangeRate >= 1000m)
+            {
+                return (true, code, currency.ExchangeRate,
+                    $"Currency.ExchangeRate ({currency.ExchangeRate}) debe ser mayor a 0 y menor a 1000 para comprobantes en Otra Moneda.");
+            }
+
+            return (true, code, Math.Round(currency.ExchangeRate, 4, MidpointRounding.AwayFromZero), null);
+        }
+
+        private static string FormatDecimalUpTo4(decimal value) =>
+            Math.Round(value, 4, MidpointRounding.AwayFromZero).ToString("0.00##", CultureInfo.InvariantCulture);
+
+        private string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial, string? emisorDireccion = null) =>
+            BuildXmlFromCanonical(dto, eNcf, emisorRnc, emisorRazonSocial, emisorDireccion, out _, out _);
+
+        private string BuildXmlFromCanonical(CanonicalDocumentDto dto, string eNcf, string emisorRnc, string emisorRazonSocial, string? emisorDireccion, out decimal computedTotalDop, out decimal computedItbisDop)
         {
             var sb = new StringBuilder();
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
@@ -1639,6 +1854,31 @@ namespace EcfDgii.Client.Api.Controllers
             
             sb.AppendLine($"      <TipoeCF>{EscapeXml(tipoEcf)}</TipoeCF>");
             sb.AppendLine($"      <eNCF>{eNcf}</eNCF>");
+
+            var rawRefEncf = dto.References?.CorrectsENcf?.Trim() ?? string.Empty;
+            var normalizedRefEncf = !string.IsNullOrWhiteSpace(rawRefEncf)
+                ? NcfNormalizer.Normalize(rawRefEncf)
+                : string.Empty;
+            var modifiesGastosMenores = tipoEcf is "33" or "34" &&
+                (rawRefEncf.StartsWith("E43", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("E43", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("B13", StringComparison.OrdinalIgnoreCase));
+            var modifiesExpenseEcf = modifiesGastosMenores || (tipoEcf is "33" or "34" &&
+                (rawRefEncf.StartsWith("E41", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("E41", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("B11", StringComparison.OrdinalIgnoreCase) ||
+                 rawRefEncf.StartsWith("E47", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("E47", StringComparison.OrdinalIgnoreCase) ||
+                 normalizedRefEncf.StartsWith("B17", StringComparison.OrdinalIgnoreCase)));
+            var hasExplicitTaxedLine = dto.Lines != null &&
+                dto.Lines.Any(l => l.IndicadorFacturacion is "1" or "2" or "3");
+            var hasTaxedBucket = dto.Totals?.TaxBuckets is { Count: > 0 } declaredTaxBuckets &&
+                declaredTaxBuckets.Any(b => b.Base > 0m);
+            var isPurelyExemptOrNonTaxable = modifiesGastosMenores ||
+                (!hasExplicitTaxedLine && !hasTaxedBucket && dto.Totals != null &&
+                 dto.Totals.MontoExento > 0m &&
+                 (dto.Totals.MontoGravadoTotal == null || dto.Totals.MontoGravadoTotal == 0m) &&
+                 dto.Totals.MontoItbis == 0m);
 
             // Verified against the real DGII XSDs (checked into this repo under "Documentación
             // Técnica (XSD)") — the field-level obligatoriedad tables in the prose spec do NOT
@@ -1713,16 +1953,16 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine($"      <FechaVencimientoSecuencia>{fechaVencimiento}</FechaVencimientoSecuencia>");
             }
 
-            if (tipoEcf is "31" or "32" or "33" or "34" or "41" or "45")
+            if (tipoEcf is "31" or "32" or "33" or "34" or "41" or "45" && !isPurelyExemptOrNonTaxable)
             {
                 // IndicadorMontoGravado: 0 = montos en líneas sección B no tienen ITBIS incluido, 1 = se encuentran con ITBIS incluido.
-                // Requerido por la DGII cuando el documento contiene montos gravados (Error 176 si falta).
+                // Requerido por la DGII cuando el documento contiene montos gravados (Error 176 si falta), y omitido si es 100% exento.
                 sb.AppendLine("      <IndicadorMontoGravado>0</IndicadorMontoGravado>");
             }
 
             // TipoIngresos doesn't exist as an element at all in tipo 41, 43, 47 IdDoc schemas (confirmed by
-            // running the real XSDs). Present for 31, 32, 33, 34, 44, 45, 46.
-            if (tipoEcf is not "41" and not "43" and not "47")
+            // running the real XSDs), and is omitted on 33/34 when modifying an expense e-CF (E41/E43/E47).
+            if (tipoEcf is not "41" and not "43" and not "47" && !modifiesExpenseEcf)
             {
                 // In 46 (Exportaciones), TipoIngresos 02 = Ingresos por exportaciones (or 01).
                 var tipoIngresoVal = tipoEcf == "46" ? "02" : "01";
@@ -1745,9 +1985,10 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("    </Emisor>");
 
             // <Comprador> is omitted entirely for tipo 43 (Gastos Menores) because the schema
-            // forbids it. For tipo 47 (Pagos al Exterior), only IdentificadorExtranjero and
+            // forbids it, and for 33/34 modifying E43/B13 where Comprador is minOccurs="0".
+            // For tipo 47 (Pagos al Exterior), only IdentificadorExtranjero and
             // RazonSocialComprador are allowed. For all other types, Comprador is minOccurs="1".
-            if (tipoEcf != "43")
+            if (tipoEcf != "43" && !modifiesGastosMenores)
             {
                 sb.AppendLine("    <Comprador>");
                 if (tipoEcf == "47")
@@ -1817,7 +2058,7 @@ namespace EcfDgii.Client.Api.Controllers
                             }
                         }
                     }
-                    else if (tipoEcf is "33" or "34" && dto.References?.CorrectsENcf?.Trim().StartsWith("E46", StringComparison.OrdinalIgnoreCase) == true)
+                    else if (tipoEcf is "33" or "34" && (dto.References?.CorrectsENcf?.Trim().StartsWith("E46", StringComparison.OrdinalIgnoreCase) == true || NcfNormalizer.Normalize(dto.References?.CorrectsENcf).StartsWith("B16", StringComparison.OrdinalIgnoreCase)))
                     {
                         // Fallback obligatorio DGII para Notas de Crédito/Débito que modifican facturas de exportación (E46)
                         sb.AppendLine("      <IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>");
@@ -1849,104 +2090,428 @@ namespace EcfDgii.Client.Api.Controllers
                 sb.AppendLine("    </Comprador>");
             }
 
-            sb.AppendLine("    <Totales>");
-            if (dto.Totals != null)
+            var (isForeignCurrency, foreignCurrencyCode, exchangeRate, _) = ResolveCanonicalCurrency(dto.Currency);
+
+            var hasOnly16Bucket = dto.Totals?.TaxBuckets is { Count: > 0 } tbCheck
+                && tbCheck.All(b => b.Rate == 16)
+                && tbCheck.Any(b => b.Base > 0);
+
+            var indicadorFacturacion = tipoEcf switch
             {
-                var total = dto.Totals.MontoTotal;
-                var itbis = dto.Totals.MontoItbis;
+                "43" or "44" or "47" => "4", // Exento (DGII Nota 50)
+                "46" => "3",                 // ITBIS tasa cero (DGII Nota 51)
+                _ => isPurelyExemptOrNonTaxable
+                    ? "4"
+                    : (hasOnly16Bucket ? "2" : "1")
+            };
 
-                // Exempt amounts are their own DGII bucket, not part of the taxed base. Falling back
-                // to MontoSubtotal (taxed + exempt lumped together) preserves the pre-split behaviour
-                // for a caller that hasn't been updated yet — see CanonicalTotalsDto.
-                var gravado = dto.Totals.MontoGravadoTotal ?? dto.Totals.MontoSubtotal;
-                var exento = dto.Totals.MontoExento ?? 0m;
+            var indicadorBienoServicio = tipoEcf == "47"
+                ? "2" // Servicio (DGII Nota 54)
+                : (tipoEcf == "41" && dto.Retention?.MontoIsrRetenido > 0 ? "2" : "1");
 
-                if (tipoEcf is "43" or "44")
+            List<ProcessedLineItem> processedItems;
+            if (dto.Lines != null && dto.Lines.Count > 0)
+            {
+                processedItems = NormalizeCanonicalLines(dto.Lines);
+            }
+            else
+            {
+                var fallbackAmount = Math.Max(0m,
+                    tipoEcf is "43" or "44" or "46" or "47"
+                        ? (dto.Totals?.MontoTotal ?? 0m)
+                        : ((dto.Totals?.MontoSubtotal ?? 0m) > 0m
+                            ? dto.Totals!.MontoSubtotal
+                            : Math.Max(0m, (dto.Totals?.MontoTotal ?? 0m) - (dto.Totals?.MontoItbis ?? 0m))));
+
+                processedItems = new List<ProcessedLineItem>
                 {
-                    // Tipos 43 (Gastos Menores) y 44 (Regímenes Especiales): exentos de ITBIS.
-                    // El esquema solo admite MontoExento y MontoTotal (prohíbe MontoGravadoTotal y TotalITBIS).
-                    if (total > 0)
+                    new ProcessedLineItem
                     {
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{total:F2}</MontoExento>");
+                        LineNumber = 1,
+                        Name = "Item General",
+                        Quantity = 1m,
+                        UnitPrice = fallbackAmount,
+                        DiscountAmount = 0m,
+                        MontoItem = fallbackAmount,
+                        IndicadorFacturacion = indicadorFacturacion
                     }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
+                };
+            }
+
+            foreach (var item in processedItems)
+            {
+                item.EffectiveIndicador = tipoEcf switch
+                {
+                    "46" => item.IndicadorFacturacion == "0" ? "0" : "3",
+                    "43" or "44" or "47" => "4",
+                    _ => modifiesGastosMenores
+                        ? "4"
+                        : (!string.IsNullOrWhiteSpace(item.IndicadorFacturacion) ? item.IndicadorFacturacion! : indicadorFacturacion)
+                };
+
+                if (isForeignCurrency)
+                {
+                    item.PrecioOtraMoneda = Math.Round(item.UnitPrice, 4, MidpointRounding.AwayFromZero);
+                    item.DiscountOtraMoneda = (tipoEcf is not "43" and not "47" && item.DiscountAmount > 0m)
+                        ? Math.Round(item.DiscountAmount, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+                    item.MontoItemOtraMoneda = Math.Round(item.MontoItem, 2, MidpointRounding.AwayFromZero);
+                    item.DiscountDop = item.DiscountOtraMoneda > 0m
+                        ? Math.Round(item.DiscountOtraMoneda * exchangeRate, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+
+                    if (item.Quantity == 1m && item.DiscountDop == 0m)
+                    {
+                        item.MontoItemDop = Math.Round(item.MontoItemOtraMoneda * exchangeRate, 2, MidpointRounding.AwayFromZero);
+                        item.UnitPriceDop = item.MontoItemDop;
+                    }
+                    else
+                    {
+                        item.UnitPriceDop = Math.Round(item.PrecioOtraMoneda * exchangeRate, 4, MidpointRounding.AwayFromZero);
+                        item.MontoItemDop = Math.Max(0m, Math.Round(item.Quantity * item.UnitPriceDop, 2, MidpointRounding.AwayFromZero) - item.DiscountDop);
+                    }
                 }
-                else if (tipoEcf == "47")
+                else
                 {
-                    // Tipo 47 (Pagos al Exterior): exento de ITBIS local, retención de ISR.
-                    if (total > 0)
+                    item.UnitPriceDop = item.UnitPrice;
+                    item.DiscountDop = (tipoEcf is not "43" and not "47") ? item.DiscountAmount : 0m;
+                    item.MontoItemDop = item.MontoItem;
+                }
+            }
+
+            var rawRetention = (tipoEcf is "31" or "33" or "34" or "41" or "47") ? dto.Retention : null;
+            CanonicalRetentionDto? effectiveRetention = rawRetention;
+            if (isForeignCurrency && rawRetention != null)
+            {
+                effectiveRetention = new CanonicalRetentionDto
+                {
+                    IndicadorAgenteRetencionoPercepcion = rawRetention.IndicadorAgenteRetencionoPercepcion,
+                    MontoItbisRetenido = rawRetention.MontoItbisRetenido.HasValue
+                        ? Math.Round(rawRetention.MontoItbisRetenido.Value * exchangeRate, 2, MidpointRounding.AwayFromZero)
+                        : null,
+                    MontoIsrRetenido = rawRetention.MontoIsrRetenido.HasValue
+                        ? Math.Round(rawRetention.MontoIsrRetenido.Value * exchangeRate, 2, MidpointRounding.AwayFromZero)
+                        : null
+                };
+            }
+
+            computedTotalDop = 0m;
+            computedItbisDop = 0m;
+            StringBuilder? otraMonedaSb = null;
+
+            sb.AppendLine("    <Totales>");
+            if (!isForeignCurrency)
+            {
+                if (dto.Totals != null)
+                {
+                    var total = dto.Totals.MontoTotal;
+                    var itbis = dto.Totals.MontoItbis;
+
+                    var exento = modifiesGastosMenores
+                        ? (total > 0m ? total : (dto.Totals.MontoExento ?? dto.Totals.MontoSubtotal))
+                        : (dto.Totals.MontoExento ?? 0m);
+                    var gravado = modifiesGastosMenores
+                        ? 0m
+                        : (dto.Totals.MontoGravadoTotal ?? Math.Max(0m, dto.Totals.MontoSubtotal - exento));
+
+                    if (tipoEcf is "43" or "44")
                     {
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{total:F2}</MontoExento>");
+                        if (total > 0)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{total:F2}</MontoExento>");
+                        }
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
+                        computedTotalDop = total;
                     }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
-                    if (dto.Retention?.MontoIsrRetenido is { } isrTotal && isrTotal > 0)
+                    else if (tipoEcf == "47")
                     {
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalISRRetencion>{isrTotal:F2}</TotalISRRetencion>");
+                        if (total > 0)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{total:F2}</MontoExento>");
+                        }
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
+                        if (effectiveRetention?.MontoIsrRetenido is { } isrTotal && isrTotal > 0)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalISRRetencion>{isrTotal:F2}</TotalISRRetencion>");
+                        }
+                        computedTotalDop = total;
                     }
+                    else if (tipoEcf == "46")
+                    {
+                        if (total > 0)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{total:F2}</MontoGravadoTotal>");
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI3>{total:F2}</MontoGravadoI3>");
+                            sb.AppendLine("      <ITBIS3>0</ITBIS3>");
+                            sb.AppendLine("      <TotalITBIS>0.00</TotalITBIS>");
+                            sb.AppendLine("      <TotalITBIS3>0.00</TotalITBIS3>");
+                        }
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
+                        computedTotalDop = total;
+                    }
+                    else
+                    {
+                        if (gravado > 0)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
+                        }
+
+                        var slotBase = new decimal?[4];
+                        var slotRate = new int?[4];
+                        var slotTax = new decimal?[4];
+
+                        if (dto.Totals.TaxBuckets is { Count: > 0 } buckets)
+                        {
+                            foreach (var bucket in buckets)
+                            {
+                                var slot = DgiiItbisSlots[bucket.Rate];
+                                slotBase[slot] = (slotBase[slot] ?? 0m) + bucket.Base;
+                                slotTax[slot] = (slotTax[slot] ?? 0m) + bucket.Tax;
+                                slotRate[slot] = bucket.Rate;
+                            }
+                        }
+                        else if (gravado > 0)
+                        {
+                            slotBase[1] = gravado;
+                            slotTax[1] = itbis;
+                        }
+
+                        for (var slot = 1; slot <= 3; slot++)
+                        {
+                            if (slotBase[slot] is { } montoGravado)
+                            {
+                                sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
+                            }
+                        }
+                        if (exento > 0)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{exento:F2}</MontoExento>");
+                        }
+                        for (var slot = 1; slot <= 3; slot++)
+                        {
+                            if (slotRate[slot] is { } rate)
+                            {
+                                sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
+                            }
+                        }
+                        if (slotTax[1].HasValue || slotTax[2].HasValue || slotTax[3].HasValue)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
+                        }
+                        for (var slot = 1; slot <= 3; slot++)
+                        {
+                            if (slotTax[slot] is { } montoItbis)
+                            {
+                                sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
+                            }
+                        }
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
+                        if (tipoEcf is "31" or "33" or "34" or "41")
+                        {
+                            if (tipoEcf == "41" || (effectiveRetention?.MontoItbisRetenido is { } itbisRet && itbisRet > 0))
+                            {
+                                var itbisRetVal = effectiveRetention?.MontoItbisRetenido ?? 0m;
+                                sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBISRetenido>{itbisRetVal:F2}</TotalITBISRetenido>");
+                            }
+                            if (effectiveRetention?.MontoIsrRetenido is { } isrRet && isrRet > 0)
+                            {
+                                sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalISRRetencion>{isrRet:F2}</TotalISRRetencion>");
+                            }
+                        }
+                        computedTotalDop = total;
+                        computedItbisDop = itbis;
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("      <MontoTotal>0.00</MontoTotal>");
+                }
+            }
+            else
+            {
+                // Foreign currency (Otra Moneda): DGII requires <Totales> in DOP (Moneda Nacional)
+                // and <OtraMoneda> immediately after </Totales> in the foreign currency.
+                otraMonedaSb = new StringBuilder();
+                otraMonedaSb.AppendLine("    <OtraMoneda>");
+                otraMonedaSb.AppendLine($"      <TipoMoneda>{EscapeXml(foreignCurrencyCode)}</TipoMoneda>");
+                otraMonedaSb.AppendLine($"      <TipoCambio>{FormatDecimalUpTo4(exchangeRate)}</TipoCambio>");
+
+                if (tipoEcf is "43" or "44" or "47")
+                {
+                    var exentoOtra = processedItems.Sum(x => x.MontoItemOtraMoneda);
+                    var exentoDop = processedItems.Sum(x => x.MontoItemDop);
+
+                    if (exentoDop > 0m)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{exentoDop:F2}</MontoExento>");
+                    }
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{exentoDop:F2}</MontoTotal>");
+                    if (tipoEcf == "47" && effectiveRetention?.MontoIsrRetenido is { } isrTotalDop && isrTotalDop > 0m)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalISRRetencion>{isrTotalDop:F2}</TotalISRRetencion>");
+                    }
+
+                    if (exentoOtra > 0m)
+                    {
+                        otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExentoOtraMoneda>{exentoOtra:F2}</MontoExentoOtraMoneda>");
+                    }
+                    otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotalOtraMoneda>{exentoOtra:F2}</MontoTotalOtraMoneda>");
+                    computedTotalDop = exentoDop;
+                    computedItbisDop = 0m;
                 }
                 else if (tipoEcf == "46")
                 {
-                    // Tipo 46 (Exportaciones): gravadas al 0% ITBIS (bucket 3).
-                    // El esquema XSD 46 solo admite MontoGravadoTotal, MontoGravadoI3, ITBIS3, TotalITBIS, TotalITBIS3, MontoTotal.
-                    if (total > 0)
+                    var gravado3Otra = processedItems.Where(x => x.EffectiveIndicador != "0").Sum(x => x.MontoItemOtraMoneda);
+                    var gravado3Dop = processedItems.Where(x => x.EffectiveIndicador != "0").Sum(x => x.MontoItemDop);
+
+                    if (gravado3Dop > 0m)
                     {
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{total:F2}</MontoGravadoTotal>");
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI3>{total:F2}</MontoGravadoI3>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{gravado3Dop:F2}</MontoGravadoTotal>");
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI3>{gravado3Dop:F2}</MontoGravadoI3>");
                         sb.AppendLine("      <ITBIS3>0</ITBIS3>");
                         sb.AppendLine("      <TotalITBIS>0.00</TotalITBIS>");
                         sb.AppendLine("      <TotalITBIS3>0.00</TotalITBIS3>");
                     }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{gravado3Dop:F2}</MontoTotal>");
+
+                    if (gravado3Otra > 0m)
+                    {
+                        otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotalOtraMoneda>{gravado3Otra:F2}</MontoGravadoTotalOtraMoneda>");
+                        otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravado3OtraMoneda>{gravado3Otra:F2}</MontoGravado3OtraMoneda>");
+                        otraMonedaSb.AppendLine("      <TotalITBISOtraMoneda>0.00</TotalITBISOtraMoneda>");
+                        otraMonedaSb.AppendLine("      <TotalITBIS3OtraMoneda>0.00</TotalITBIS3OtraMoneda>");
+                    }
+                    otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotalOtraMoneda>{gravado3Otra:F2}</MontoTotalOtraMoneda>");
+                    computedTotalDop = gravado3Dop;
+                    computedItbisDop = 0m;
                 }
                 else
                 {
-                    // Element ORDER here is the XSD's Totales xs:sequence, which is not negotiable:
-                    // MontoGravadoTotal, I1, I2, I3, MontoExento, ITBIS1-3, TotalITBIS, TotalITBIS1-3,
-                    // ..., MontoTotal. Everything except MontoTotal is minOccurs="0", so omitting the
-                    // buckets this codebase doesn't populate is valid — misplacing one is not.
-                    if (gravado > 0)
-                    {
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{gravado:F2}</MontoGravadoTotal>");
-                    }
-
-                    // Slot 1..3 = DGII's 18% / 16% / 0% ITBIS buckets. A caller that sends no buckets
-                    // predates them: everything taxed goes to I1 and no ITBIS rate elements are emitted,
-                    // exactly as before — a version-skewed pair must not produce a different document.
-                    var slotBase = new decimal?[4];
+                    var slotBaseOtra = new decimal?[4];
+                    var slotTaxOtra = new decimal?[4];
+                    var slotBaseDop = new decimal?[4];
+                    var slotTaxDop = new decimal?[4];
                     var slotRate = new int?[4];
-                    var slotTax = new decimal?[4];
+                    decimal exentoOtra;
+                    decimal exentoDop;
 
-                    if (dto.Totals.TaxBuckets is { Count: > 0 } buckets)
+                    var linesHaveExplicitIndicators = dto.Lines != null && dto.Lines.Count > 0 &&
+                        dto.Lines.Any(l => !string.IsNullOrWhiteSpace(l.IndicadorFacturacion));
+
+                    if (!linesHaveExplicitIndicators && dto.Totals != null && dto.Totals.TaxBuckets is { Count: > 0 } buckets)
                     {
                         foreach (var bucket in buckets)
                         {
-                            // Rates were validated against the slot map before any sequence was allocated
-                            // (see SubmitCanonicalDocument), so every one of them maps here.
                             var slot = DgiiItbisSlots[bucket.Rate];
-                            slotBase[slot] = (slotBase[slot] ?? 0m) + bucket.Base;
-                            slotTax[slot] = (slotTax[slot] ?? 0m) + bucket.Tax;
+                            slotBaseOtra[slot] = (slotBaseOtra[slot] ?? 0m) + Math.Round(bucket.Base, 2, MidpointRounding.AwayFromZero);
+                            slotTaxOtra[slot] = (slotTaxOtra[slot] ?? 0m) + Math.Round(bucket.Tax, 2, MidpointRounding.AwayFromZero);
                             slotRate[slot] = bucket.Rate;
                         }
-                    }
-                    else if (gravado > 0)
-                    {
-                        slotBase[1] = gravado;
-                        slotTax[1] = itbis;
-                    }
+                        exentoOtra = Math.Round(dto.Totals.MontoExento ?? 0m, 2, MidpointRounding.AwayFromZero);
 
-                    for (var slot = 1; slot <= 3; slot++)
-                    {
-                        if (slotBase[slot] is { } montoGravado)
+                        for (var slot = 1; slot <= 3; slot++)
                         {
-                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI{slot}>{montoGravado:F2}</MontoGravadoI{slot}>");
+                            if (slotBaseOtra[slot] is { } bOtra)
+                            {
+                                slotBaseDop[slot] = Math.Round(bOtra * exchangeRate, 2, MidpointRounding.AwayFromZero);
+                            }
+                        }
+                        exentoDop = exentoOtra > 0m ? Math.Round(exentoOtra * exchangeRate, 2, MidpointRounding.AwayFromZero) : 0m;
+
+                        var sumLinesDop = processedItems.Where(x => x.EffectiveIndicador != "0").Sum(x => x.MontoItemDop);
+                        var currentBaseDop = (slotBaseDop[1] ?? 0m) + (slotBaseDop[2] ?? 0m) + (slotBaseDop[3] ?? 0m) + exentoDop;
+                        var diffDop = sumLinesDop - currentBaseDop;
+                        if (diffDop != 0m && Math.Abs(diffDop) <= 0.10m)
+                        {
+                            if (slotBaseDop[1] > 0m) slotBaseDop[1] += diffDop;
+                            else if (slotBaseDop[2] > 0m) slotBaseDop[2] += diffDop;
+                            else if (slotBaseDop[3] > 0m) slotBaseDop[3] += diffDop;
+                            else if (exentoDop > 0m) exentoDop += diffDop;
                         }
                     }
-                    if (exento > 0)
+                    else if (!linesHaveExplicitIndicators && dto.Totals != null && (dto.Totals.MontoExento > 0m && (dto.Totals.MontoGravadoTotal ?? 0m) > 0m))
                     {
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{exento:F2}</MontoExento>");
+                        var gOtra = Math.Round(dto.Totals.MontoGravadoTotal ?? dto.Totals.MontoSubtotal, 2, MidpointRounding.AwayFromZero);
+                        exentoOtra = Math.Round(dto.Totals.MontoExento ?? 0m, 2, MidpointRounding.AwayFromZero);
+                        slotBaseOtra[1] = gOtra;
+                        slotTaxOtra[1] = Math.Round(dto.Totals.MontoItbis, 2, MidpointRounding.AwayFromZero);
+                        slotRate[1] = 18;
+
+                        slotBaseDop[1] = Math.Round(gOtra * exchangeRate, 2, MidpointRounding.AwayFromZero);
+                        exentoDop = Math.Round(exentoOtra * exchangeRate, 2, MidpointRounding.AwayFromZero);
+
+                        var sumLinesDop = processedItems.Where(x => x.EffectiveIndicador != "0").Sum(x => x.MontoItemDop);
+                        var diffDop = sumLinesDop - ((slotBaseDop[1] ?? 0m) + exentoDop);
+                        if (diffDop != 0m && Math.Abs(diffDop) <= 0.10m)
+                        {
+                            slotBaseDop[1] += diffDop;
+                        }
                     }
-                    // ITBIS1/2/3 declare the RATE of each bucket (Integer2ValidationType — a 1-2 digit
-                    // integer, not an amount); TotalITBIS1/2/3 further down carry the amounts.
+                    else
+                    {
+                        foreach (var item in processedItems)
+                        {
+                            switch (item.EffectiveIndicador)
+                            {
+                                case "1":
+                                    slotBaseOtra[1] = (slotBaseOtra[1] ?? 0m) + item.MontoItemOtraMoneda;
+                                    slotBaseDop[1] = (slotBaseDop[1] ?? 0m) + item.MontoItemDop;
+                                    slotRate[1] = 18;
+                                    break;
+                                case "2":
+                                    slotBaseOtra[2] = (slotBaseOtra[2] ?? 0m) + item.MontoItemOtraMoneda;
+                                    slotBaseDop[2] = (slotBaseDop[2] ?? 0m) + item.MontoItemDop;
+                                    slotRate[2] = 16;
+                                    break;
+                                case "3":
+                                    slotBaseOtra[3] = (slotBaseOtra[3] ?? 0m) + item.MontoItemOtraMoneda;
+                                    slotBaseDop[3] = (slotBaseDop[3] ?? 0m) + item.MontoItemDop;
+                                    slotRate[3] = 0;
+                                    break;
+                            }
+                        }
+
+                        exentoOtra = processedItems.Where(x => x.EffectiveIndicador == "4").Sum(x => x.MontoItemOtraMoneda);
+                        exentoDop = processedItems.Where(x => x.EffectiveIndicador == "4").Sum(x => x.MontoItemDop);
+
+                        if (slotBaseOtra[1] is { } b1) slotTaxOtra[1] = Math.Round(b1 * 0.18m, 2, MidpointRounding.AwayFromZero);
+                        if (slotBaseOtra[2] is { } b2) slotTaxOtra[2] = Math.Round(b2 * 0.16m, 2, MidpointRounding.AwayFromZero);
+                        if (slotBaseOtra[3].HasValue) slotTaxOtra[3] = 0m;
+                    }
+
+                    if (slotBaseDop[1] is { } d1) slotTaxDop[1] = Math.Round(d1 * 0.18m, 2, MidpointRounding.AwayFromZero);
+                    if (slotBaseDop[2] is { } d2) slotTaxDop[2] = Math.Round(d2 * 0.16m, 2, MidpointRounding.AwayFromZero);
+                    if (slotBaseDop[3].HasValue) slotTaxDop[3] = 0m;
+
+                    var gravadoOtra = (slotBaseOtra[1] ?? 0m) + (slotBaseOtra[2] ?? 0m) + (slotBaseOtra[3] ?? 0m);
+                    var itbisOtra = (slotTaxOtra[1] ?? 0m) + (slotTaxOtra[2] ?? 0m) + (slotTaxOtra[3] ?? 0m);
+                    var totalOtra = gravadoOtra + exentoOtra + itbisOtra;
+
+                    var gravadoDop = (slotBaseDop[1] ?? 0m) + (slotBaseDop[2] ?? 0m) + (slotBaseDop[3] ?? 0m);
+                    var itbisDop = (slotTaxDop[1] ?? 0m) + (slotTaxDop[2] ?? 0m) + (slotTaxDop[3] ?? 0m);
+                    var totalDop = gravadoDop + exentoDop + itbisDop;
+
+                    if (tipoEcf == "41" && effectiveRetention != null && rawRetention?.MontoItbisRetenido.HasValue == true &&
+                        dto.Totals != null && Math.Abs(rawRetention.MontoItbisRetenido.Value - dto.Totals.MontoItbis) <= 0.02m)
+                    {
+                        effectiveRetention.MontoItbisRetenido = itbisDop;
+                    }
+
+                    if (gravadoDop > 0m)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotal>{gravadoDop:F2}</MontoGravadoTotal>");
+                    }
+                    for (var slot = 1; slot <= 3; slot++)
+                    {
+                        if (slotBaseDop[slot] is { } montoGravadoDop)
+                        {
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoI{slot}>{montoGravadoDop:F2}</MontoGravadoI{slot}>");
+                        }
+                    }
+                    if (exentoDop > 0m)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExento>{exentoDop:F2}</MontoExento>");
+                    }
                     for (var slot = 1; slot <= 3; slot++)
                     {
                         if (slotRate[slot] is { } rate)
@@ -1954,105 +2519,120 @@ namespace EcfDgii.Client.Api.Controllers
                             sb.AppendLine($"      <ITBIS{slot}>{rate}</ITBIS{slot}>");
                         }
                     }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbis:F2}</TotalITBIS>");
+                    if (slotTaxDop[1].HasValue || slotTaxDop[2].HasValue || slotTaxDop[3].HasValue)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS>{itbisDop:F2}</TotalITBIS>");
+                    }
                     for (var slot = 1; slot <= 3; slot++)
                     {
-                        if (slotTax[slot] is { } montoItbis)
+                        if (slotTaxDop[slot] is { } montoItbisDop)
                         {
-                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS{slot}>{montoItbis:F2}</TotalITBIS{slot}>");
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS{slot}>{montoItbisDop:F2}</TotalITBIS{slot}>");
                         }
                     }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{total:F2}</MontoTotal>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotal>{totalDop:F2}</MontoTotal>");
                     if (tipoEcf is "31" or "33" or "34" or "41")
                     {
-                        if (dto.Retention?.MontoItbisRetenido is { } itbisRet && itbisRet > 0)
+                        if (tipoEcf == "41" || (effectiveRetention?.MontoItbisRetenido is { } itbisRet && itbisRet > 0))
                         {
-                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBISRetenido>{itbisRet:F2}</TotalITBISRetenido>");
+                            var itbisRetVal = effectiveRetention?.MontoItbisRetenido ?? 0m;
+                            sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBISRetenido>{itbisRetVal:F2}</TotalITBISRetenido>");
                         }
-                        if (dto.Retention?.MontoIsrRetenido is { } isrRet && isrRet > 0)
+                        if (effectiveRetention?.MontoIsrRetenido is { } isrRet && isrRet > 0)
                         {
                             sb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalISRRetencion>{isrRet:F2}</TotalISRRetencion>");
                         }
                     }
+
+                    if (gravadoOtra > 0m)
+                    {
+                        otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravadoTotalOtraMoneda>{gravadoOtra:F2}</MontoGravadoTotalOtraMoneda>");
+                    }
+                    for (var slot = 1; slot <= 3; slot++)
+                    {
+                        if (slotBaseOtra[slot] is { } montoGravadoOtra)
+                        {
+                            otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoGravado{slot}OtraMoneda>{montoGravadoOtra:F2}</MontoGravado{slot}OtraMoneda>");
+                        }
+                    }
+                    if (exentoOtra > 0m)
+                    {
+                        otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoExentoOtraMoneda>{exentoOtra:F2}</MontoExentoOtraMoneda>");
+                    }
+                    if (gravadoOtra > 0m || itbisOtra > 0m)
+                    {
+                        otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBISOtraMoneda>{itbisOtra:F2}</TotalITBISOtraMoneda>");
+                    }
+                    for (var slot = 1; slot <= 3; slot++)
+                    {
+                        if (slotTaxOtra[slot] is { } montoItbisOtra)
+                        {
+                            otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <TotalITBIS{slot}OtraMoneda>{montoItbisOtra:F2}</TotalITBIS{slot}OtraMoneda>");
+                        }
+                    }
+                    otraMonedaSb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoTotalOtraMoneda>{totalOtra:F2}</MontoTotalOtraMoneda>");
+
+                    computedTotalDop = totalDop;
+                    computedItbisDop = itbisDop;
                 }
-            }
-            else
-            {
-                sb.AppendLine("      <MontoTotal>0.00</MontoTotal>");
+
+                otraMonedaSb.Append("    </OtraMoneda>");
             }
             sb.AppendLine("    </Totales>");
+            if (otraMonedaSb != null)
+            {
+                sb.AppendLine(otraMonedaSb.ToString());
+            }
             sb.AppendLine("  </Encabezado>");
 
-            // Retención is PER LINE ITEM inside DetallesItems/Item.
-            // In tipo 41, ITBIS & ISR retention are supported; 31, 33, 34 also support it per schema.
-            // In tipo 47, only ISR retention is supported.
-            var retention = (tipoEcf is "31" or "33" or "34" or "41" or "47") ? dto.Retention : null;
-
-            var indicadorFacturacion = tipoEcf switch
-            {
-                "43" or "44" or "47" => "4", // Exento (DGII Nota 50)
-                "46" => "3",                 // ITBIS tasa cero (DGII Nota 51)
-                _ => (dto.Totals?.MontoExento > 0 && (dto.Totals.MontoGravadoTotal == null || dto.Totals.MontoGravadoTotal == 0) && (dto.Totals.MontoItbis == 0)) ? "4" : "1"
-            };
-
-            var indicadorBienoServicio = tipoEcf == "47"
-                ? "2" // Servicio (DGII Nota 54)
-                : (tipoEcf == "41" && dto.Retention?.MontoIsrRetenido > 0 ? "2" : "1");
-
             sb.AppendLine("  <DetallesItems>");
-            if (dto.Lines != null && dto.Lines.Count > 0)
-            {
-                var processedItems = NormalizeCanonicalLines(dto.Lines);
-                foreach (var item in processedItems)
-                {
-                    sb.AppendLine("    <Item>");
-                    sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
-                    var lineIndicador = !string.IsNullOrWhiteSpace(item.IndicadorFacturacion)
-                        ? item.IndicadorFacturacion
-                        : indicadorFacturacion;
-                    sb.AppendLine($"      <IndicadorFacturacion>{lineIndicador}</IndicadorFacturacion>");
-                    AppendRetencion(sb, retention, tipoEcf);
-                    sb.AppendLine($"      <NombreItem>{EscapeXml(item.Name)}</NombreItem>");
-                    sb.AppendLine($"      <IndicadorBienoServicio>{indicadorBienoServicio}</IndicadorBienoServicio>");
-                    if (!string.IsNullOrWhiteSpace(item.Description))
-                    {
-                        sb.AppendLine($"      <DescripcionItem>{EscapeXml(item.Description)}</DescripcionItem>");
-                    }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <PrecioUnitarioItem>{item.UnitPrice:F2}</PrecioUnitarioItem>");
-                    if (tipoEcf is not "43" and not "47" && item.DiscountAmount > 0)
-                    {
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"      <DescuentoMonto>{item.DiscountAmount:F2}</DescuentoMonto>");
-                        sb.AppendLine("      <TablaSubDescuento>");
-                        sb.AppendLine("        <SubDescuento>");
-                        sb.AppendLine("          <TipoSubDescuento>$</TipoSubDescuento>");
-                        sb.AppendLine(CultureInfo.InvariantCulture, $"          <MontoSubDescuento>{item.DiscountAmount:F2}</MontoSubDescuento>");
-                        sb.AppendLine("        </SubDescuento>");
-                        sb.AppendLine("      </TablaSubDescuento>");
-                    }
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoItem>{item.MontoItem:F2}</MontoItem>");
-                    sb.AppendLine("    </Item>");
-                }
-            }
-            else
+            foreach (var item in processedItems)
             {
                 sb.AppendLine("    <Item>");
-                sb.AppendLine("      <NumeroLinea>1</NumeroLinea>");
-                sb.AppendLine($"      <IndicadorFacturacion>{indicadorFacturacion}</IndicadorFacturacion>");
-                AppendRetencion(sb, retention, tipoEcf);
-                sb.AppendLine("      <NombreItem>Item General</NombreItem>");
+                sb.AppendLine($"      <NumeroLinea>{item.LineNumber}</NumeroLinea>");
+                sb.AppendLine($"      <IndicadorFacturacion>{item.EffectiveIndicador}</IndicadorFacturacion>");
+                AppendRetencion(sb, effectiveRetention, tipoEcf);
+                sb.AppendLine($"      <NombreItem>{EscapeXml(item.Name)}</NombreItem>");
                 sb.AppendLine($"      <IndicadorBienoServicio>{indicadorBienoServicio}</IndicadorBienoServicio>");
-                sb.AppendLine("      <CantidadItem>1.00</CantidadItem>");
-                var defaultTotal = Math.Max(0m, dto.Totals?.MontoTotal ?? 0);
-                sb.AppendLine(CultureInfo.InvariantCulture, $"      <PrecioUnitarioItem>{defaultTotal:F2}</PrecioUnitarioItem>");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoItem>{defaultTotal:F2}</MontoItem>");
+                if (!string.IsNullOrWhiteSpace(item.Description))
+                {
+                    sb.AppendLine($"      <DescripcionItem>{EscapeXml(item.Description)}</DescripcionItem>");
+                }
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <CantidadItem>{item.Quantity:F2}</CantidadItem>");
+                var hasSubCentUnitPrice = Math.Round(item.UnitPriceDop, 2, MidpointRounding.AwayFromZero) != Math.Round(item.UnitPriceDop, 4, MidpointRounding.AwayFromZero);
+                var precioDopStr = (isForeignCurrency || hasSubCentUnitPrice)
+                    ? FormatDecimalUpTo4(item.UnitPriceDop)
+                    : item.UnitPriceDop.ToString("F2", CultureInfo.InvariantCulture);
+                sb.AppendLine($"      <PrecioUnitarioItem>{precioDopStr}</PrecioUnitarioItem>");
+                if (tipoEcf is not "43" and not "47" && item.DiscountDop > 0m)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      <DescuentoMonto>{item.DiscountDop:F2}</DescuentoMonto>");
+                    sb.AppendLine("      <TablaSubDescuento>");
+                    sb.AppendLine("        <SubDescuento>");
+                    sb.AppendLine("          <TipoSubDescuento>$</TipoSubDescuento>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"          <MontoSubDescuento>{item.DiscountDop:F2}</MontoSubDescuento>");
+                    sb.AppendLine("        </SubDescuento>");
+                    sb.AppendLine("      </TablaSubDescuento>");
+                }
+                if (isForeignCurrency)
+                {
+                    sb.AppendLine("      <OtraMonedaDetalle>");
+                    sb.AppendLine($"        <PrecioOtraMoneda>{FormatDecimalUpTo4(item.PrecioOtraMoneda)}</PrecioOtraMoneda>");
+                    if (tipoEcf is not "43" and not "47" && item.DiscountOtraMoneda > 0m)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture, $"        <DescuentoOtraMoneda>{item.DiscountOtraMoneda:F2}</DescuentoOtraMoneda>");
+                    }
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"        <MontoItemOtraMoneda>{item.MontoItemOtraMoneda:F2}</MontoItemOtraMoneda>");
+                    sb.AppendLine("      </OtraMonedaDetalle>");
+                }
+                sb.AppendLine(CultureInfo.InvariantCulture, $"      <MontoItem>{item.MontoItemDop:F2}</MontoItem>");
                 sb.AppendLine("    </Item>");
             }
             sb.AppendLine("  </DetallesItems>");
 
             // "InformacionReferencia" — top-level sibling AFTER DetallesItems.
-            // Obligatorio para 33 y 34; opcional para los demás si dto.References != null.
-            if ((tipoEcf is "33" or "34" || dto.References != null) && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
+            // Obligatorio para 33 y 34; fuera de 33/34 solo válido para contingencia (CodigoModificacion = 4).
+            if ((tipoEcf is "33" or "34" || dto.References?.CodigoModificacion == 4) && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
             {
                 var ncfMod = NcfNormalizer.Normalize(refs.CorrectsENcf);
 
@@ -2163,21 +2743,24 @@ namespace EcfDgii.Client.Api.Controllers
         /// </summary>
         private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention, string tipoEcf)
         {
-            if (retention is null || (tipoEcf != "41" && tipoEcf != "47")) return;
+            if (retention is null && tipoEcf != "41") return;
+            if (tipoEcf != "41" && tipoEcf != "47") return;
 
+            var indAgente = retention?.IndicadorAgenteRetencionoPercepcion ?? 1;
             sb.AppendLine("      <Retencion>");
-            sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{retention.IndicadorAgenteRetencionoPercepcion}</IndicadorAgenteRetencionoPercepcion>");
+            sb.AppendLine($"        <IndicadorAgenteRetencionoPercepcion>{indAgente}</IndicadorAgenteRetencionoPercepcion>");
             if (tipoEcf == "47")
             {
-                var isr = retention.MontoIsrRetenido ?? 0m;
-                sb.AppendLine($"        <MontoISRRetenido>{isr:F2}</MontoISRRetenido>");
+                var isr = retention?.MontoIsrRetenido ?? 0m;
+                sb.AppendLine(CultureInfo.InvariantCulture, $"        <MontoISRRetenido>{isr:F2}</MontoISRRetenido>");
             }
             else
             {
-                sb.AppendLine($"        <MontoITBISRetenido>{retention.MontoItbisRetenido:F2}</MontoITBISRetenido>");
-                if (retention.MontoIsrRetenido is { } montoIsr)
+                var itbisRet = retention?.MontoItbisRetenido ?? 0m;
+                sb.AppendLine(CultureInfo.InvariantCulture, $"        <MontoITBISRetenido>{itbisRet:F2}</MontoITBISRetenido>");
+                if (retention?.MontoIsrRetenido is { } montoIsr && montoIsr > 0)
                 {
-                    sb.AppendLine($"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"        <MontoISRRetenido>{montoIsr:F2}</MontoISRRetenido>");
                 }
             }
             sb.AppendLine("      </Retencion>");
@@ -2206,6 +2789,13 @@ namespace EcfDgii.Client.Api.Controllers
             public decimal DiscountAmount { get; set; }
             public decimal MontoItem { get; set; }
             public string? IndicadorFacturacion { get; set; }
+            public string EffectiveIndicador { get; set; } = "1";
+            public decimal UnitPriceDop { get; set; }
+            public decimal DiscountDop { get; set; }
+            public decimal MontoItemDop { get; set; }
+            public decimal PrecioOtraMoneda { get; set; }
+            public decimal DiscountOtraMoneda { get; set; }
+            public decimal MontoItemOtraMoneda { get; set; }
         }
 
         private static List<ProcessedLineItem> NormalizeCanonicalLines(List<CanonicalLineDto> lines)
@@ -2250,6 +2840,42 @@ namespace EcfDgii.Client.Api.Controllers
                 var safeQty = rawQty > 0m ? rawQty : 1m;
                 var safePrice = rawPrice;
                 var safeAmount = line.Amount;
+                var effectiveDiscount = 0m;
+
+                if (line.DiscountAmount > 0m)
+                {
+                    if (Math.Abs((safeQty * safePrice - line.DiscountAmount) - safeAmount) <= 0.05m)
+                    {
+                        effectiveDiscount = line.DiscountAmount;
+                    }
+                    else if (Math.Abs((safeQty * safePrice) - safeAmount) <= 0.05m)
+                    {
+                        // Pre-folded net line (ERPConnector / Ecf.api folded a negative discount line into Amount & UnitPrice).
+                        // Reconstruct gross UnitPrice so DGII's CantidadItem * PrecioUnitarioItem - DescuentoMonto == MontoItem holds.
+                        var roundedQty = Math.Round(safeQty, 2, MidpointRounding.AwayFromZero);
+                        if (roundedQty > 0m)
+                        {
+                            var grossAmount = safeAmount + line.DiscountAmount;
+                            var grossPrice2 = Math.Round(grossAmount / roundedQty, 2, MidpointRounding.AwayFromZero);
+                            if (Math.Abs(Math.Round(roundedQty * grossPrice2, 2, MidpointRounding.AwayFromZero) - line.DiscountAmount - safeAmount) <= 0.01m)
+                            {
+                                safeQty = roundedQty;
+                                safePrice = grossPrice2;
+                                effectiveDiscount = line.DiscountAmount;
+                            }
+                            else
+                            {
+                                var grossPrice4 = Math.Round(grossAmount / roundedQty, 4, MidpointRounding.AwayFromZero);
+                                if (Math.Abs(Math.Round(roundedQty * grossPrice4, 2, MidpointRounding.AwayFromZero) - line.DiscountAmount - safeAmount) <= 0.01m)
+                                {
+                                    safeQty = roundedQty;
+                                    safePrice = grossPrice4;
+                                    effectiveDiscount = line.DiscountAmount;
+                                }
+                            }
+                        }
+                    }
+                }
 
                 var shortName = rawName.Length > 80 ? rawName[..80] : rawName;
                 string? extendedDesc = rawName.Length > 80
@@ -2263,7 +2889,7 @@ namespace EcfDgii.Client.Api.Controllers
                     Description = extendedDesc,
                     Quantity = safeQty,
                     UnitPrice = safePrice,
-                    DiscountAmount = 0m,
+                    DiscountAmount = effectiveDiscount,
                     MontoItem = safeAmount,
                     IndicadorFacturacion = line.IndicadorFacturacion
                 });

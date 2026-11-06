@@ -192,6 +192,9 @@ jobs:
             WorkerSecretKey=${WORKER_SECRET_KEY}
             WORKER_SECRET_KEY=${WORKER_SECRET_KEY}
             JwtSettings__Secret=${JWT_SECRET}
+            JWT_SECRET=${JWT_SECRET}
+            Jwt__SecretKey=${JWT_SECRET}
+            STORAGE_ENCRYPTION_KEY=${JWT_SECRET}
             EcfClientOptions__RncEmisor=${RNC_EMISOR}
             EcfEmisor__Rnc=${RNC_EMISOR}
             EcfClientOptions__CertificatePath=/app/certificates/default.pfx

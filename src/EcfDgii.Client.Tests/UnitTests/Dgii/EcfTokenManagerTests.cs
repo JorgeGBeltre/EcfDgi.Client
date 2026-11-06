@@ -110,5 +110,23 @@ namespace EcfDgii.Client.UnitTests.Dgii
                 return Task.FromResult(_responses.Dequeue()());
             }
         }
+
+        [Fact]
+        public async Task GetTokenAsync_TransientSocketResetOnSemilla_RetriesAndSucceeds()
+        {
+            var factories = new Func<HttpResponseMessage>[]
+            {
+                () => throw new HttpRequestException("An error occurred while sending the request.", new System.IO.IOException("Connection reset by peer")),
+                SemillaResponse,
+                () => TokenResponse("tok-recovered", DateTimeOffset.UtcNow.AddHours(1)),
+            };
+            var handler = new SequencedHandlerExact(factories);
+            var manager = MakeManager(handler);
+
+            var token = await manager.GetTokenAsync();
+
+            Assert.Equal("tok-recovered", token);
+            Assert.Equal(3, handler.CallCount);
+        }
     }
 }

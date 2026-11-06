@@ -1170,6 +1170,84 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task Tipo46_WhenLineItemHasTaxRate18_ForcesIndicadorFacturacionTo3_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E460000000802");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-46-RULE244", EditSequence = "1" },
+                TipoComprobante = "E46",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "US-987654321", RazonSocialComprador = "Miami Apparel Imports LLC",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 176000m, MontoItbis = 0m, MontoTotal = 176000m },
+                Lines = [new CanonicalLineDto
+                {
+                    LineNumber = 1,
+                    ItemName = "WILLY TIPO CLUB 24X9X34GRS",
+                    Quantity = 200m,
+                    UnitPrice = 880m,
+                    Amount = 176000m,
+                    IndicadorFacturacion = "1" // ERP erroneously sent 1 (18% tax)
+                }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync(d => d.ENcf == "E460000000802");
+            var xml = stored.SignedXmlContent!;
+
+            // Verify DGII Rule 244: Line IndicadorFacturacion must be forced to 3 (Zero Rate), not 1
+            Assert.Contains("<IndicadorFacturacion>3</IndicadorFacturacion>", xml);
+            Assert.DoesNotContain("<IndicadorFacturacion>1</IndicadorFacturacion>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 46 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo46_WhenLineItemHasTaxRateExempt4_ForcesIndicadorFacturacionTo3_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E460000000803");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-46-RULE244-EXEMPT", EditSequence = "1" },
+                TipoComprobante = "E46",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "US-987654321", RazonSocialComprador = "Miami Apparel Imports LLC",
+                },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 176000m, MontoItbis = 0m, MontoTotal = 176000m },
+                Lines = [new CanonicalLineDto
+                {
+                    LineNumber = 1,
+                    ItemName = "WILLY TIPO CLUB 24X9X34GRS",
+                    Quantity = 200m,
+                    UnitPrice = 880m,
+                    Amount = 176000m,
+                    IndicadorFacturacion = "4" // ERP erroneously sent 4 (Exempt)
+                }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync(d => d.ENcf == "E460000000803");
+            var xml = stored.SignedXmlContent!;
+
+            // Verify DGII Rule 244: Line IndicadorFacturacion must be forced to 3 (Zero Rate), never 4 (Exempt)
+            Assert.Contains("<IndicadorFacturacion>3</IndicadorFacturacion>", xml);
+            Assert.DoesNotContain("<IndicadorFacturacion>4</IndicadorFacturacion>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 46 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo47_GeneratedXml_IsValidAgainstDgiiXsd()
         {
             var (controller, db, _, _) = MakeRealController("E470000000801");
@@ -1424,6 +1502,67 @@ namespace EcfDgii.Client.UnitTests.Documents
         }
 
         [Fact]
+        public async Task SubmitCanonicalDocument_Tipo41_WithOnlyIsrRetention_EmitsZeroTotalITBISRetenido_AndPassesXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E410000000803");
+            var dto = new CanonicalDocumentDto
+            {
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-41-ISR-ONLY" },
+                TipoComprobante = "E41",
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "Willy Chic",
+                    RncComprador = "130000005",
+                    RazonSocialComprador = "Vicente Maldonado",
+                    FechaEmision = "2026-10-20",
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 122000m,
+                    MontoExento = 122000m,
+                    MontoItbis = 0m,
+                    MontoTotal = 122000m,
+                },
+                Retention = new CanonicalRetentionDto
+                {
+                    IndicadorAgenteRetencionoPercepcion = 1,
+                    MontoItbisRetenido = null,
+                    MontoIsrRetenido = 3660m,
+                },
+                Lines = new List<CanonicalLineDto>
+                {
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "Transporte y Envios",
+                        Quantity = 1m,
+                        UnitPrice = 122000m,
+                        Amount = 122000m,
+                        IndicadorFacturacion = "4",
+                    },
+                },
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            var xml = stored.SignedXmlContent!;
+
+            // DGII rule 11160 requires TotalITBISRetenido and MontoITBISRetenido to be emitted as 0.00 when withholding applies
+            Assert.Contains("<TotalITBISRetenido>0.00</TotalITBISRetenido>", xml);
+            Assert.Contains("<MontoITBISRetenido>0.00</MontoITBISRetenido>", xml);
+
+            // ISR retention must be emitted
+            Assert.Contains("<TotalISRRetencion>3660.00</TotalISRRetencion>", xml);
+            Assert.Contains("<MontoISRRetenido>3660.00</MontoISRRetenido>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 41 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
         public async Task Tipo31_And_Tipo32_WithCorreoComprador_IsValidAgainstDgiiXsd()
         {
             var (controller, db, _, _) = MakeRealController("E310000000301");
@@ -1478,6 +1617,507 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
             Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo43_UsdForeignCurrency_Bill_EmitsDopTotals_OtraMoneda_And_PassesDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E430000000014");
+
+            var dto = new CanonicalDocumentDto
+            {
+                DocumentKind = "Bill",
+                TipoComprobante = "E43",
+                Ncf = "B1300002709",
+                SourceReference = new SourceReferenceDto
+                {
+                    TxnId = "AE1AE7-1793636542",
+                    EditSequence = "B1300002709",
+                },
+                Header = new CanonicalHeaderDto
+                {
+                    FechaEmision = "2026-10-30",
+                    RazonSocialComprador = "WILLY CHIC DOLAR",
+                },
+                Currency = new CanonicalCurrencyDto
+                {
+                    Code = "USD",
+                    ExchangeRate = 60.16m,
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 10807.02m,
+                    MontoExento = 10807.02m,
+                    MontoItbis = 0m,
+                    MontoTotal = 10807.02m,
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "6215 · Servicios de Informatica",
+                        Quantity = 1m,
+                        UnitPrice = 10807.02m,
+                        Amount = 10807.02m,
+                        IndicadorFacturacion = "4",
+                    },
+                ],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Equal(650150.32m, stored.TotalAmount);
+            Assert.Equal(0m, stored.ItbisAmount);
+
+            var xml = stored.SignedXmlContent!;
+            Assert.Contains("<MontoExento>650150.32</MontoExento>", xml);
+            Assert.Contains("<MontoTotal>650150.32</MontoTotal>", xml);
+            Assert.Contains("<TipoMoneda>USD</TipoMoneda>", xml);
+            Assert.Contains("<TipoCambio>60.16</TipoCambio>", xml);
+            Assert.Contains("<MontoExentoOtraMoneda>10807.02</MontoExentoOtraMoneda>", xml);
+            Assert.Contains("<MontoTotalOtraMoneda>10807.02</MontoTotalOtraMoneda>", xml);
+            Assert.Contains("<PrecioUnitarioItem>650150.32</PrecioUnitarioItem>", xml);
+            Assert.Contains("<PrecioOtraMoneda>10807.02</PrecioOtraMoneda>", xml);
+            Assert.Contains("<MontoItemOtraMoneda>10807.02</MontoItemOtraMoneda>", xml);
+            Assert.Contains("<MontoItem>650150.32</MontoItem>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 43 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo31_UsdForeignCurrency_TaxedAndExemptLines_PassesDgiiXsd()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000401");
+
+            var dto = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E31",
+                SourceReference = new SourceReferenceDto
+                {
+                    TxnId = "TXN-USD-31",
+                    EditSequence = "1",
+                },
+                Header = new CanonicalHeaderDto
+                {
+                    RncComprador = "101010101",
+                    RazonSocialComprador = "COMPRADOR USD SRL",
+                    FechaEmision = "2026-10-30",
+                },
+                Currency = new CanonicalCurrencyDto
+                {
+                    Code = "USD",
+                    ExchangeRate = 60.16m,
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 150m,
+                    MontoGravadoTotal = 100m,
+                    MontoExento = 50m,
+                    MontoItbis = 18m,
+                    MontoTotal = 168m,
+                    TaxBuckets =
+                    [
+                        new() { Rate = 18, Base = 100m, Tax = 18m }
+                    ],
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "Consultoría Técnica",
+                        Quantity = 2m,
+                        UnitPrice = 50m,
+                        Amount = 100m,
+                        IndicadorFacturacion = "1",
+                    },
+                    new()
+                    {
+                        LineNumber = 2,
+                        ItemName = "Servicio Exento",
+                        Quantity = 1m,
+                        UnitPrice = 50m,
+                        Amount = 50m,
+                        IndicadorFacturacion = "4",
+                    },
+                ],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            // Gravado DOP = 6016.00, Exento DOP = 3008.00, ITBIS DOP = round(6016 * 0.18, 2) = 1082.88 => Total = 10106.88
+            Assert.Equal(10106.88m, stored.TotalAmount);
+            Assert.Equal(1082.88m, stored.ItbisAmount);
+
+            var xml = stored.SignedXmlContent!;
+            Assert.Contains("<MontoGravadoTotal>6016.00</MontoGravadoTotal>", xml);
+            Assert.Contains("<MontoExento>3008.00</MontoExento>", xml);
+            Assert.Contains("<TotalITBIS>1082.88</TotalITBIS>", xml);
+            Assert.Contains("<MontoTotal>10106.88</MontoTotal>", xml);
+            Assert.Contains("<MontoGravadoTotalOtraMoneda>100.00</MontoGravadoTotalOtraMoneda>", xml);
+            Assert.Contains("<MontoExentoOtraMoneda>50.00</MontoExentoOtraMoneda>", xml);
+            Assert.Contains("<TotalITBISOtraMoneda>18.00</TotalITBISOtraMoneda>", xml);
+            Assert.Contains("<MontoTotalOtraMoneda>168.00</MontoTotalOtraMoneda>", xml);
+
+            var validation = new EcfSchemaValidator().Validate(xml, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo46_And_Tipo47_UsdForeignCurrency_PassRespectiveDgiiXsds()
+        {
+            // 1. E46 Exportación in USD
+            var (c46, db46, _, _) = MakeRealController("E460000000099");
+            var dto46 = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E46",
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-USD-46", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    IdentificadorExtranjero = "EXTRANJERO",
+                    RazonSocialComprador = "FOREIGN BUYER LLC",
+                    FechaEmision = "2026-10-30",
+                },
+                Currency = new CanonicalCurrencyDto { Code = "USD", ExchangeRate = 60.16m },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoGravadoTotal = 1000m, MontoItbis = 0m, MontoTotal = 1000m },
+                Lines = [new() { LineNumber = 1, ItemName = "Export Mercancía", Quantity = 10m, UnitPrice = 100m, Amount = 1000m, IndicadorFacturacion = "3" }],
+            };
+
+            var res46 = await c46.SubmitCanonicalDocument(dto46);
+            Assert.True(res46 is AcceptedResult, (res46 as BadRequestObjectResult)?.Value?.ToString() ?? res46.GetType().Name);
+            var xml46 = (await db46.EcfDocuments.SingleAsync()).SignedXmlContent!;
+            Assert.Contains("<MontoGravado3OtraMoneda>1000.00</MontoGravado3OtraMoneda>", xml46);
+            Assert.Contains("<MontoTotal>60160.00</MontoTotal>", xml46);
+            var val46 = new EcfSchemaValidator().Validate(xml46, XsdPath("e-CF 46 v.1.0.xsd"));
+            Assert.True(val46.IsValid, string.Join("\n", val46.Errors));
+
+            // 2. E47 Pagos al Exterior in USD with 27% ISR retention
+            var (c47, db47, _, _) = MakeRealController("E470000000099");
+            var dto47 = new CanonicalDocumentDto
+            {
+                DocumentKind = "Bill",
+                TipoComprobante = "E47",
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-USD-47", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    IdentificadorExtranjero = "US-99887766",
+                    RazonSocialComprador = "SAAS VENDOR INC",
+                    FechaEmision = "2026-10-30",
+                },
+                Currency = new CanonicalCurrencyDto { Code = "USD", ExchangeRate = 60.16m },
+                Retention = new CanonicalRetentionDto { IndicadorAgenteRetencionoPercepcion = 1, MontoIsrRetenido = 270m },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoExento = 1000m, MontoTotal = 1000m },
+                Lines = [new() { LineNumber = 1, ItemName = "Suscripción Anual Cloud", Quantity = 1m, UnitPrice = 1000m, Amount = 1000m, IndicadorFacturacion = "4" }],
+            };
+
+            var res47 = await c47.SubmitCanonicalDocument(dto47);
+            Assert.True(res47 is AcceptedResult, (res47 as BadRequestObjectResult)?.Value?.ToString() ?? res47.GetType().Name);
+            var xml47 = (await db47.EcfDocuments.SingleAsync()).SignedXmlContent!;
+            Assert.Contains("<TotalISRRetencion>16243.20</TotalISRRetencion>", xml47);
+            Assert.Contains("<MontoISRRetenido>16243.20</MontoISRRetenido>", xml47);
+            Assert.Contains("<MontoExentoOtraMoneda>1000.00</MontoExentoOtraMoneda>", xml47);
+            var val47 = new EcfSchemaValidator().Validate(xml47, XsdPath("e-CF 47 v.1.0.xsd"));
+            Assert.True(val47.IsValid, string.Join("\n", val47.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo32_UsdForeignCurrency_Over250kDopEquivalent_RequiresRncComprador()
+        {
+            var (controller, _, _, _) = MakeRealController("E320000000999");
+            var dto = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E32",
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-USD-32-HIGH", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RazonSocialComprador = "CONSUMIDOR FINAL",
+                    FechaEmision = "2026-10-30",
+                },
+                Currency = new CanonicalCurrencyDto { Code = "USD", ExchangeRate = 60.16m },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 5000m, MontoExento = 5000m, MontoTotal = 5000m },
+                Lines = [new() { LineNumber = 1, ItemName = "Equipo Industrial", Quantity = 1m, UnitPrice = 5000m, Amount = 5000m, IndicadorFacturacion = "4" }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task InvalidForeignCurrencyOrZeroRate_ReturnsBadRequest()
+        {
+            var (controller, db, _, _) = MakeRealController("E430000000999");
+            var dto = new CanonicalDocumentDto
+            {
+                DocumentKind = "Bill",
+                TipoComprobante = "E43",
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-BAD-CURR", EditSequence = "1" },
+                Header = new CanonicalHeaderDto { FechaEmision = "2026-10-30" },
+                Currency = new CanonicalCurrencyDto { Code = "USD", ExchangeRate = 0m },
+                Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoExento = 100m, MontoTotal = 100m },
+                Lines = [new() { LineNumber = 1, ItemName = "Gasto", Quantity = 1m, UnitPrice = 100m, Amount = 100m }],
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            Assert.IsType<BadRequestObjectResult>(result);
+            Assert.Empty(await db.EcfDocuments.ToListAsync());
+        }
+
+        [Fact]
+        public async Task Tipo31_WithCodigoModificacion3_ReturnsBadRequestBeforeSequenceAllocation_DgiiRule613()
+        {
+            var (controller, db, _, _) = MakeRealController("E310000000293");
+            var dto = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E31",
+                SourceReference = new SourceReferenceDto { TxnId = "CFB4A-1793645147", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncComprador = "101812761",
+                    RazonSocialComprador = "EDESSA SA",
+                    FechaEmision = "2026-11-02"
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 870472.70m,
+                    MontoGravadoTotal = 870472.70m,
+                    MontoItbis = 156685.09m,
+                    MontoTotal = 1027157.79m
+                },
+                Lines = [new() { LineNumber = 1, ItemName = "CREMICA", Quantity = 1m, UnitPrice = 870472.70m, Amount = 870472.70m, IndicadorFacturacion = "1" }],
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "B0400022008",
+                    CodigoModificacion = 3,
+                    RazonModificacion = "Corrección de Montos",
+                    FechaNcfModificado = "2026-11-02"
+                }
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+            var badReq = Assert.IsType<BadRequestObjectResult>(result);
+            Assert.Contains("613", badReq.Value?.ToString() ?? string.Empty);
+            Assert.Empty(await db.EcfDocuments.ToListAsync());
+        }
+
+        [Fact]
+        public async Task PreFoldedNetDiscountLines_ReconstructGrossUnitPriceAndPassXsdValidation()
+        {
+            // Production scenario 100082607 (SURTICRISS): Qty=25, Net UnitPrice=807.324, Net Amount=20183.10, DiscountAmount=411.90
+            var (controller31, db31, _, _) = MakeRealController("E310000000907");
+            var dto31 = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E31",
+                SourceReference = new SourceReferenceDto { TxnId = "CFB68-1793645512", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncComprador = "130388318",
+                    RazonSocialComprador = "SURTICRISS",
+                    FechaEmision = "2026-11-02"
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 20183.10m,
+                    MontoGravadoTotal = 20183.10m,
+                    MontoItbis = 3632.96m,
+                    MontoTotal = 23816.06m,
+                    TaxBuckets = [new() { Rate = 18, Base = 20183.10m, Tax = 3632.96m }]
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "CREMICA QUESO 12X12X36GR",
+                        Quantity = 25m,
+                        UnitPrice = 807.324m,
+                        Amount = 20183.10m,
+                        DiscountAmount = 411.90m,
+                        IndicadorFacturacion = "1"
+                    }
+                ]
+            };
+
+            var res31 = await controller31.SubmitCanonicalDocument(dto31);
+            Assert.IsType<AcceptedResult>(res31);
+            var doc31 = await db31.EcfDocuments.SingleAsync();
+            Assert.Contains("<PrecioUnitarioItem>823.80</PrecioUnitarioItem>", doc31.XmlContent);
+            Assert.Contains("<DescuentoMonto>411.90</DescuentoMonto>", doc31.XmlContent);
+            Assert.Contains("<MontoItem>20183.10</MontoItem>", doc31.XmlContent);
+            var val31 = new EcfSchemaValidator().Validate(doc31.SignedXmlContent!, XsdPath("e-CF 31 v.1.0.xsd"));
+            Assert.True(val31.IsValid, string.Join("\n", val31.Errors));
+
+            // Production scenario 200120316 (VENTAS DE OFICINA EMPLEADOS): 3 fractional lines with pre-folded discounts
+            var (controller32, db32, _, _) = MakeRealController("E320000000316");
+            var dto32 = new CanonicalDocumentDto
+            {
+                DocumentKind = "Invoice",
+                TipoComprobante = "E32",
+                SourceReference = new SourceReferenceDto { TxnId = "CFC46-1793654457", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RazonSocialComprador = "VENTAS DE OFICINA EMPLEADOS",
+                    FechaEmision = "2026-11-02"
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 246.33m,
+                    MontoGravadoTotal = 246.33m,
+                    MontoItbis = 44.34m,
+                    MontoTotal = 290.67m,
+                    TaxBuckets = [new() { Rate = 18, Base = 246.33m, Tax = 44.34m }]
+                },
+                Lines =
+                [
+                    new() { LineNumber = 1, ItemName = "CREMICA LECHE 10X24X18GR", Quantity = 0.1m, UnitPrice = 625.4m, Amount = 62.54m, DiscountAmount = 6.95m, IndicadorFacturacion = "1" },
+                    new() { LineNumber = 2, ItemName = "CREMICA MANTEQUILLA 12X12X36GR", Quantity = 0.0833m, UnitPrice = 741.42m, Amount = 61.76m, DiscountAmount = 6.86m, IndicadorFacturacion = "1" },
+                    new() { LineNumber = 3, ItemName = "GOZADERA CHOCOLATE BLANCO 6X200UND", Quantity = 0.16666m, UnitPrice = 732.21m, Amount = 122.03m, DiscountAmount = 13.56m, IndicadorFacturacion = "1" }
+                ]
+            };
+
+            var res32 = await controller32.SubmitCanonicalDocument(dto32);
+            Assert.IsType<AcceptedResult>(res32);
+            var doc32 = await db32.EcfDocuments.SingleAsync();
+            Assert.Contains("<DescuentoMonto>6.95</DescuentoMonto>", doc32.XmlContent);
+            Assert.Contains("<DescuentoMonto>6.86</DescuentoMonto>", doc32.XmlContent);
+            Assert.Contains("<DescuentoMonto>13.56</DescuentoMonto>", doc32.XmlContent);
+            var val32 = new EcfSchemaValidator().Validate(doc32.SignedXmlContent!, XsdPath("e-CF 32 v.1.0.xsd"));
+            Assert.True(val32.IsValid, string.Join("\n", val32.Errors));
+        }
+
+        [Fact]
+        public async Task Tipo34_CancellingTipo43InDop_AndReissuingTipo43InUsd_PassDgiiXsd()
+        {
+            // Step 1: E34 (CodigoModificacion = 1) annulling E430000000014 in DOP (10,807.02)
+            var (controller34, db34, _, _) = MakeRealController("E340000000364");
+            var dto34 = new CanonicalDocumentDto
+            {
+                DocumentKind = "CreditNote",
+                TipoComprobante = "E34",
+                SourceReference = new SourceReferenceDto { TxnId = "NC-ANULA-E430000000014", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RazonSocialComprador = "WILLY CHIC DOLAR",
+                    FechaEmision = "2026-11-02"
+                },
+                Currency = new CanonicalCurrencyDto { Code = "DOP", ExchangeRate = 1m },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 10807.02m,
+                    MontoExento = 10807.02m,
+                    MontoGravadoTotal = 0m,
+                    MontoItbis = 0m,
+                    MontoTotal = 10807.02m
+                },
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "E430000000014",
+                    CodigoModificacion = 1,
+                    RazonModificacion = "Anulación de comprobante por corrección de moneda",
+                    FechaNcfModificado = "2026-10-30"
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "6215 · Servicios de Informatica",
+                        Quantity = 1m,
+                        UnitPrice = 10807.02m,
+                        Amount = 10807.02m,
+                        IndicadorFacturacion = "4"
+                    }
+                ]
+            };
+
+            var res34 = await controller34.SubmitCanonicalDocument(dto34);
+            Assert.IsType<AcceptedResult>(res34);
+            var doc34 = await db34.EcfDocuments.SingleAsync();
+            var xml34 = doc34.SignedXmlContent!;
+
+            Assert.Contains("<TipoeCF>34</TipoeCF>", xml34);
+            Assert.DoesNotContain("<Comprador>", xml34);
+            Assert.DoesNotContain("<TipoIngresos>", xml34);
+            Assert.DoesNotContain("<IndicadorMontoGravado>", xml34);
+            Assert.DoesNotContain("<TotalITBIS>", xml34);
+            Assert.Contains("<MontoExento>10807.02</MontoExento>", xml34);
+            Assert.Contains("<MontoTotal>10807.02</MontoTotal>", xml34);
+            Assert.Contains("<IndicadorFacturacion>4</IndicadorFacturacion>", xml34);
+            Assert.Contains("<NCFModificado>E430000000014</NCFModificado>", xml34);
+            Assert.Contains("<CodigoModificacion>1</CodigoModificacion>", xml34);
+
+            var val34 = new EcfSchemaValidator().Validate(xml34, XsdPath("e-CF 34 v.1.0.xsd"));
+            Assert.True(val34.IsValid, string.Join("\n", val34.Errors));
+
+            // Step 2: Replacement E43 emitted in USD @ 60.16 (USD 10,807.02 -> DOP 650,150.32)
+            var (controller43, db43, _, _) = MakeRealController("E430000000015");
+            var dto43 = new CanonicalDocumentDto
+            {
+                DocumentKind = "MinorExpense",
+                TipoComprobante = "E43",
+                SourceReference = new SourceReferenceDto { TxnId = "BILL-B1300002709-REISSUE", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncEmisor = "101889063",
+                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    FechaEmision = "2026-11-02"
+                },
+                Currency = new CanonicalCurrencyDto { Code = "USD", ExchangeRate = 60.16m },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 10807.02m,
+                    MontoExento = 10807.02m,
+                    MontoItbis = 0m,
+                    MontoTotal = 10807.02m
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "6215 · Servicios de Informatica",
+                        Quantity = 1m,
+                        UnitPrice = 10807.02m,
+                        Amount = 10807.02m,
+                        IndicadorFacturacion = "4"
+                    }
+                ]
+            };
+
+            var res43 = await controller43.SubmitCanonicalDocument(dto43);
+            Assert.IsType<AcceptedResult>(res43);
+            var doc43 = await db43.EcfDocuments.SingleAsync();
+            var xml43 = doc43.SignedXmlContent!;
+
+            Assert.Equal(650150.32m, doc43.TotalAmount);
+            Assert.DoesNotContain("<Comprador>", xml43);
+            Assert.Contains("<MontoExento>650150.32</MontoExento>", xml43);
+            Assert.Contains("<MontoTotal>650150.32</MontoTotal>", xml43);
+            Assert.Contains("<TipoMoneda>USD</TipoMoneda>", xml43);
+            Assert.Contains("<TipoCambio>60.16</TipoCambio>", xml43);
+            Assert.Contains("<MontoExentoOtraMoneda>10807.02</MontoExentoOtraMoneda>", xml43);
+            Assert.Contains("<MontoTotalOtraMoneda>10807.02</MontoTotalOtraMoneda>", xml43);
+
+            var val43 = new EcfSchemaValidator().Validate(xml43, XsdPath("e-CF 43 v.1.0.xsd"));
+            Assert.True(val43.IsValid, string.Join("\n", val43.Errors));
         }
     }
 }

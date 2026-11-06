@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography.X509Certificates;
@@ -194,18 +195,32 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 
         private async Task RenewTokenAsync(string cacheKey, CancellationToken ct)
         {
-            var semillaXml = await _httpClient.GetStringAsync($"{_config.AutenticacionUrl}/api/autenticacion/semilla", ct);
+            const int maxRetries = 2;
+            string responseBody;
 
-            var semillaFirmada = _signer.SignXml(semillaXml, _rncEmisor);
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    var semillaXml = await _httpClient.GetStringAsync($"{_config.AutenticacionUrl}/api/autenticacion/semilla", ct);
 
-            using var content = new MultipartFormDataContent();
-            var fileContent = new StringContent(semillaFirmada, Encoding.UTF8, "text/xml");
-            content.Add(fileContent, "xml", "semilla.xml");
+                    var semillaFirmada = _signer.SignXml(semillaXml, _rncEmisor);
 
-            var response = await _httpClient.PostAsync($"{_config.AutenticacionUrl}/api/autenticacion/validarsemilla", content, ct);
-            response.EnsureSuccessStatusCode();
+                    using var content = new MultipartFormDataContent();
+                    var fileContent = new StringContent(semillaFirmada, Encoding.UTF8, "text/xml");
+                    content.Add(fileContent, "xml", "semilla.xml");
 
-            var responseBody = await response.Content.ReadAsStringAsync(ct);
+                    using var response = await _httpClient.PostAsync($"{_config.AutenticacionUrl}/api/autenticacion/validarsemilla", content, ct);
+                    response.EnsureSuccessStatusCode();
+
+                    responseBody = await response.Content.ReadAsStringAsync(ct);
+                    break;
+                }
+                catch (Exception ex) when (attempt < maxRetries && !ct.IsCancellationRequested && IsTransientAuthTransportError(ex))
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100 * (1 << attempt)), ct);
+                }
+            }
 
             string? token = null;
             string? expira = null;
@@ -264,5 +279,10 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 }
             }
         }
+
+        private static bool IsTransientAuthTransportError(Exception ex) =>
+            ex is IOException ||
+            (ex is HttpRequestException httpEx &&
+             httpEx.StatusCode is null or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout);
     }
 }

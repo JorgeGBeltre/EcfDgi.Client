@@ -36,12 +36,18 @@ namespace EcfDgii.Client.Shared.Common
                 return clean;
             }
 
-            if (clean.Length == 9 && clean.All(char.IsDigit) && (clean.StartsWith("1") || clean.StartsWith("2") || clean.StartsWith("4")))
+            if (clean.Length == 9 && clean.All(char.IsDigit) && (clean.StartsWith("1") || clean.StartsWith("2") || clean.StartsWith("3") || clean.StartsWith("4")))
             {
                 return $"{LegacyPrefix}0{clean}";
             }
 
-            if (clean.Length == 10 && clean.StartsWith("0") && clean.All(char.IsDigit))
+            if (clean.Length == 9 && clean.All(char.IsDigit) && (clean.StartsWith("5") || clean.StartsWith("6") || clean.StartsWith("7")))
+            {
+                return $"{LegacyPrefix}1{clean}";
+            }
+
+            if (clean.Length == 10 && clean.All(char.IsDigit) &&
+                (clean.StartsWith("0") || clean.StartsWith("14") || clean.StartsWith("15") || clean.StartsWith("16") || clean.StartsWith("17")))
             {
                 return $"{LegacyPrefix}{clean}";
             }
@@ -63,7 +69,7 @@ namespace EcfDgii.Client.Shared.Common
             var clean = input.Trim();
             candidates.Add(clean);
 
-            if (clean.StartsWith("B0", StringComparison.OrdinalIgnoreCase) && clean.Length > 2)
+            if ((clean.StartsWith("B0", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("B1", StringComparison.OrdinalIgnoreCase)) && clean.Length > 2)
             {
                 candidates.Add(clean[2..]);
             }
@@ -73,12 +79,16 @@ namespace EcfDgii.Client.Shared.Common
                 candidates.Add(clean[1..]);
             }
 
-            if (clean.Length == 9 && (clean.StartsWith("1") || clean.StartsWith("2") || clean.StartsWith("4")))
+            if (clean.Length == 9 && (clean.StartsWith("1") || clean.StartsWith("2") || clean.StartsWith("3") || clean.StartsWith("4")))
             {
                 candidates.Add($"{LegacyPrefix}0{clean}");
             }
+            else if (clean.Length == 9 && (clean.StartsWith("5") || clean.StartsWith("6") || clean.StartsWith("7")))
+            {
+                candidates.Add($"{LegacyPrefix}1{clean}");
+            }
 
-            if (clean.Length == 10 && clean.StartsWith("0"))
+            if (clean.Length == 10 && (clean.StartsWith("0") || clean.StartsWith("14") || clean.StartsWith("15") || clean.StartsWith("16") || clean.StartsWith("17")))
             {
                 candidates.Add($"{LegacyPrefix}{clean}");
             }

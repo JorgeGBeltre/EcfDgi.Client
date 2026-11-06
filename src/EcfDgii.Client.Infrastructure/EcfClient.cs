@@ -56,7 +56,13 @@ namespace EcfDgii.Client
             }
             else
             {
-                _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                var handler = new SocketsHttpHandler
+                {
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                    PooledConnectionIdleTimeout = TimeSpan.FromSeconds(45),
+                    ConnectTimeout = TimeSpan.FromSeconds(10)
+                };
+                _httpClient = new HttpClient(handler, disposeHandler: true) { Timeout = TimeSpan.FromSeconds(30) };
                 _ownsHttpClient = true;
             }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -56,7 +57,17 @@ namespace EcfDgii.Client.Infrastructure.Dgii
 
             while (true)
             {
-                response = await _httpClient.SendAsync(buildRequest(token), ct);
+                try
+                {
+                    response = await _httpClient.SendAsync(buildRequest(token), ct);
+                }
+                catch (Exception ex) when (isIdempotentQuery && retryCount < maxRetries && !ct.IsCancellationRequested &&
+                    (ex is IOException || (ex is HttpRequestException httpEx && httpEx.StatusCode is null)))
+                {
+                    retryCount++;
+                    await Task.Delay(TimeSpan.FromMilliseconds(150 * Math.Pow(2, retryCount)), ct);
+                    continue;
+                }
 
                 if (response.StatusCode == HttpStatusCode.Unauthorized && _tokenManager != null)
                 {

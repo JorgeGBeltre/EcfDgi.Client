@@ -101,6 +101,7 @@ namespace EcfDgii.Client.Api.Services
                     d.TrackId,
                     d.State,
                     d.Ambiente,
+                    d.TotalAmount,
                     d.SentToDgiiAt,
                     d.CreatedAt,
                     d.LastStatusCheckAt,
@@ -110,136 +111,207 @@ namespace EcfDgii.Client.Api.Services
             var processed = 0;
             var dynamicClients = new Dictionary<string, IEcfClient>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var doc in due)
+            try
             {
-                processed++;
-                var sentTime = doc.SentToDgiiAt ?? doc.CreatedAt;
-                var age = now - sentTime;
-
-                if (age >= options.MaxPollingWindow)
+                foreach (var doc in due)
                 {
-                    var isTest = !string.IsNullOrWhiteSpace(doc.Ambiente) &&
-                                 EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente) == EcfEnvironment.Test;
-                    var finalState = isTest ? "Expired" : "RequiresManualReview";
+                    processed++;
+                    var sentTime = doc.SentToDgiiAt ?? doc.CreatedAt;
+                    var age = now - sentTime;
 
-                    if (isTest)
+                    if (age >= options.MaxPollingWindow)
                     {
-                        logger.LogWarning(
-                            "e-CF de prueba {ENcf} (RNC {RncEmisor}, Ambiente {Ambiente}) no se confirmó tras {Hours}h; marcado como Expired.",
-                            doc.ENcf, doc.RncEmisor, doc.Ambiente, age.TotalHours);
+                        var isTest = !string.IsNullOrWhiteSpace(doc.Ambiente) &&
+                                     EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente) == EcfEnvironment.Test;
+                        var finalState = isTest ? "Expired" : "RequiresManualReview";
+
+                        if (isTest)
+                        {
+                            logger.LogWarning(
+                                "e-CF de prueba {ENcf} (RNC {RncEmisor}, Ambiente {Ambiente}) no se confirmó tras {Hours}h; marcado como Expired.",
+                                doc.ENcf, doc.RncEmisor, doc.Ambiente, age.TotalHours);
+                        }
+                        else
+                        {
+                            logger.LogCritical(
+                                "e-CF {ENcf} (RNC {RncEmisor}) lleva {Hours}h sin confirmación definitiva de DGII " +
+                                "(ventana de {MaxHours}h agotada); requiere revisión manual.",
+                                doc.ENcf, doc.RncEmisor, age.TotalHours, options.MaxPollingWindow.TotalHours);
+                        }
+
+                        await UpdateDocStatusAsync(doc.Id, finalState, now, doc.StatusCheckAttempts, sentTime, null, null, ct);
+                        continue;
                     }
-                    else
+
+                    string? dgiiResponseXml = null;
+                    string? estado = null;
+                    string? newTrackId = null;
+                    var attempts = doc.StatusCheckAttempts + 1;
+                    var newState = doc.State;
+
+                    try
                     {
-                        logger.LogCritical(
-                            "e-CF {ENcf} (RNC {RncEmisor}) lleva {Hours}h sin confirmación definitiva de DGII " +
-                            "(ventana de {MaxHours}h agotada); requiere revisión manual.",
-                            doc.ENcf, doc.RncEmisor, age.TotalHours, options.MaxPollingWindow.TotalHours);
-                    }
+                        var clientToUse = ecfClient;
+                        if (signerResolver != null && !string.IsNullOrWhiteSpace(doc.RncEmisor))
+                        {
+                            var env = EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente);
+                            var clientKey = $"{doc.RncEmisor}:{env}";
+                            if (!dynamicClients.TryGetValue(clientKey, out clientToUse!))
+                            {
+                                try
+                                {
+                                    var dynamicSigner = await signerResolver.ResolveSignerAsync(doc.RncEmisor, ct);
 
-                    await UpdateDocStatusAsync(doc.Id, finalState, now, doc.StatusCheckAttempts, sentTime, null, ct);
-                    continue;
-                }
+                                    var clientOpts = new EcfClientOptions
+                                    {
+                                        RncEmisor = doc.RncEmisor,
+                                        Environment = env,
+                                        Mode = IntegrationMode.DgiiDirect,
+                                        ValidateSchemasLocal = false
+                                    };
+                                    clientToUse = new EcfClient(clientOpts, signer: dynamicSigner);
+                                    dynamicClients[clientKey] = clientToUse;
+                                }
+                                catch (Exception resolveEx)
+                                {
+                                    logger.LogDebug(resolveEx, "No se pudo resolver signer dinámico para {Rnc} ({Env}); usando ecfClient default.", doc.RncEmisor, env);
+                                    clientToUse = ecfClient;
+                                }
+                            }
+                        }
 
-                string? dgiiResponseXml = null;
-                string? estado = null;
-                var attempts = doc.StatusCheckAttempts + 1;
-                var newState = doc.State;
-
-                try
-                {
-                    var clientToUse = ecfClient;
-                    if (signerResolver != null && !string.IsNullOrWhiteSpace(doc.RncEmisor))
-                    {
-                        if (!dynamicClients.TryGetValue(doc.RncEmisor, out clientToUse!))
+                        if (!string.IsNullOrWhiteSpace(doc.TrackId))
                         {
                             try
                             {
-                                var dynamicSigner = await signerResolver.ResolveSignerAsync(doc.RncEmisor, ct);
-                                var env = EcfEnvironmentHelper.ResolveEcfEnvironment(doc.Ambiente);
-
-                                var clientOpts = new EcfClientOptions
+                                var resultado = await clientToUse.ConsultarResultadoAsync(doc.TrackId, ct);
+                                if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
                                 {
-                                    RncEmisor = doc.RncEmisor,
-                                    Environment = env,
-                                    Mode = IntegrationMode.DgiiDirect,
-                                    ValidateSchemasLocal = false
-                                };
-                                clientToUse = new EcfClient(clientOpts, signer: dynamicSigner);
-                                dynamicClients[doc.RncEmisor] = clientToUse;
-                            }
-                            catch (Exception resolveEx)
-                            {
-                                logger.LogDebug(resolveEx, "No se pudo resolver signer dinámico para {Rnc}; usando ecfClient default.", doc.RncEmisor);
-                                clientToUse = ecfClient;
-                            }
-                        }
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(doc.TrackId))
-                    {
-                        try
-                        {
-                            var resultado = await clientToUse.ConsultarResultadoAsync(doc.TrackId, ct);
-                            if (resultado != null && !string.IsNullOrWhiteSpace(resultado.Estado))
-                            {
-                                estado = resultado.Estado.Trim();
-                                if (resultado.Mensajes != null && resultado.Mensajes.Count > 0)
-                                {
-                                    dgiiResponseXml = $"[{resultado.Estado}] " + string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"));
-                                }
-                                else
-                                {
-                                    dgiiResponseXml = $"Estado DGII: {estado}";
+                                    estado = resultado.Estado.Trim();
+                                    if (resultado.Mensajes != null && resultado.Mensajes.Count > 0)
+                                    {
+                                        dgiiResponseXml = $"[{resultado.Estado}] " + string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"));
+                                    }
+                                    else
+                                    {
+                                        dgiiResponseXml = $"Estado DGII: {estado}";
+                                    }
                                 }
                             }
+                            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+                            catch
+                            {
+                                // Fallback to ConsultarEstadoAsync below
+                            }
                         }
-                        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+
+                        if (string.IsNullOrWhiteSpace(estado) || string.Equals(estado, "No encontrado", StringComparison.OrdinalIgnoreCase))
                         {
-                            throw;
+                            var response = await clientToUse.ConsultarEstadoAsync(
+                                doc.RncEmisor, doc.ENcf, doc.RncComprador, doc.SecurityCode, ct);
+                            if (response != null && !string.IsNullOrWhiteSpace(response.Estado))
+                            {
+                                estado = response.Estado.Trim();
+                                dgiiResponseXml = $"Estado DGII: {estado}";
+                            }
                         }
-                        catch
+
+                        if (estado != null && AcceptedEstados.Contains(estado))
                         {
-                            // Fallback to ConsultarEstadoAsync below
+                            newState = "AcceptedByDgii";
+                            logger.LogInformation("e-CF {ENcf}: DGII confirmó '{Estado}'.", doc.ENcf, estado);
                         }
+                        else if (estado != null && RejectedEstados.Contains(estado))
+                        {
+                            newState = "RejectedByDgii";
+                            logger.LogCritical(
+                                "ALERTA: e-CF {ENcf} (RNC {RncEmisor}) fue aceptado en recepción y luego " +
+                                "RECHAZADO por DGII tras verificación posterior. Requiere atención — el " +
+                                "comprobante no tiene validez fiscal.",
+                                doc.ENcf, doc.RncEmisor);
+                        }
+                        else if (string.Equals(doc.State, "Uncertain", StringComparison.OrdinalIgnoreCase)
+                              && string.IsNullOrWhiteSpace(doc.TrackId)
+                              && string.Equals(estado, "No encontrado", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var signedPayloads = await db.EcfDocuments
+                                .AsNoTracking()
+                                .Where(d => d.Id == doc.Id)
+                                .Select(d => new { d.SignedRfceContent, d.SignedXmlContent })
+                                .FirstOrDefaultAsync(ct);
+
+                            var isRfce = doc.ENcf.StartsWith("E32", StringComparison.OrdinalIgnoreCase) && doc.TotalAmount < 250000m;
+                            var fileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
+
+                            if (isRfce && !string.IsNullOrWhiteSpace(signedPayloads?.SignedRfceContent))
+                            {
+                                var rfceResp = await clientToUse.SendRfceAsync(signedPayloads.SignedRfceContent, fileName, ct);
+                                if (rfceResp != null && (rfceResp.Codigo == 1 || (rfceResp.Estado != null && AcceptedEstados.Contains(rfceResp.Estado.Trim()))))
+                                {
+                                    newState = "AcceptedByDgii";
+                                    sentTime = now;
+                                    dgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado?.Trim() ?? "Aceptado"}";
+                                    logger.LogInformation(
+                                        "e-CF de Consumo Uncertain {ENcf} (Ambiente {Ambiente}) retransmitido automáticamente a RecepcionFC y aceptado.",
+                                        doc.ENcf, doc.Ambiente);
+                                }
+                                else if (rfceResp != null && rfceResp.Estado != null && RejectedEstados.Contains(rfceResp.Estado.Trim()))
+                                {
+                                    newState = "RejectedByDgii";
+                                    dgiiResponseXml = rfceResp.Mensajes != null && rfceResp.Mensajes.Count > 0
+                                        ? string.Join("; ", rfceResp.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                                        : rfceResp.Estado.Trim();
+                                    logger.LogWarning(
+                                        "e-CF de Consumo Uncertain {ENcf} (Ambiente {Ambiente}) retransmitido automáticamente a RecepcionFC y rechazado: {Errors}",
+                                        doc.ENcf, doc.Ambiente, dgiiResponseXml);
+                                }
+                            }
+                            else if (!isRfce && !string.IsNullOrWhiteSpace(signedPayloads?.SignedXmlContent))
+                            {
+                                var ecfResp = await clientToUse.SendEcfAsync(signedPayloads.SignedXmlContent, fileName, ct);
+                                if (ecfResp != null && !string.IsNullOrWhiteSpace(ecfResp.TrackId))
+                                {
+                                    newState = "Signed";
+                                    newTrackId = ecfResp.TrackId;
+                                    sentTime = now;
+                                    dgiiResponseXml = $"Recibido por DGII. TrackId: {ecfResp.TrackId}";
+                                    logger.LogInformation(
+                                        "e-CF estándar Uncertain {ENcf} (Ambiente {Ambiente}) retransmitido automáticamente a DGII. TrackId={TrackId}",
+                                        doc.ENcf, doc.Ambiente, ecfResp.TrackId);
+                                }
+                                else if (ecfResp != null && (!string.IsNullOrWhiteSpace(ecfResp.Error) || (ecfResp.Mensaje != null && ecfResp.Mensaje.Contains("rechazado", StringComparison.OrdinalIgnoreCase))))
+                                {
+                                    newState = "RejectedByDgii";
+                                    dgiiResponseXml = ecfResp.Mensaje ?? ecfResp.Error ?? "Rechazado por DGII";
+                                    logger.LogWarning(
+                                        "e-CF estándar Uncertain {ENcf} (Ambiente {Ambiente}) retransmitido automáticamente y rechazado por DGII: {Errors}",
+                                        doc.ENcf, doc.Ambiente, dgiiResponseXml);
+                                }
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        logger.LogInformation("Reconciliación de e-CFs cancelada limpiamente por CancellationToken.");
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Fallo consultando estado DGII para e-CF {ENcf}; se reintentará.", doc.ENcf);
                     }
 
-                    if (string.IsNullOrWhiteSpace(estado) || string.Equals(estado, "No encontrado", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var response = await clientToUse.ConsultarEstadoAsync(
-                            doc.RncEmisor, doc.ENcf, doc.RncComprador, doc.SecurityCode, ct);
-                        if (response != null && !string.IsNullOrWhiteSpace(response.Estado))
-                        {
-                            estado = response.Estado.Trim();
-                            dgiiResponseXml = $"Estado DGII: {estado}";
-                        }
-                    }
-
-                    if (estado != null && AcceptedEstados.Contains(estado))
-                    {
-                        newState = "AcceptedByDgii";
-                        logger.LogInformation("e-CF {ENcf}: DGII confirmó '{Estado}'.", doc.ENcf, estado);
-                    }
-                    else if (estado != null && RejectedEstados.Contains(estado))
-                    {
-                        newState = "RejectedByDgii";
-                        logger.LogCritical(
-                            "ALERTA: e-CF {ENcf} (RNC {RncEmisor}) fue aceptado en recepción y luego " +
-                            "RECHAZADO por DGII tras verificación posterior. Requiere atención — el " +
-                            "comprobante no tiene validez fiscal.",
-                            doc.ENcf, doc.RncEmisor);
-                    }
+                    await UpdateDocStatusAsync(doc.Id, newState, now, attempts, sentTime, dgiiResponseXml, newTrackId, ct);
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            }
+            finally
+            {
+                foreach (var disposable in dynamicClients.Values.OfType<IDisposable>())
                 {
-                    logger.LogInformation("Reconciliación de e-CFs cancelada limpiamente por CancellationToken.");
-                    throw;
+                    disposable.Dispose();
                 }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Fallo consultando estado DGII para e-CF {ENcf}; se reintentará.", doc.ENcf);
-                }
-
-                await UpdateDocStatusAsync(doc.Id, newState, now, attempts, sentTime, dgiiResponseXml, ct);
             }
 
             return processed;
@@ -252,6 +324,7 @@ namespace EcfDgii.Client.Api.Services
             int attempts,
             DateTime sentTime,
             string? dgiiResponseXml,
+            string? trackId,
             CancellationToken ct)
         {
             try
@@ -265,6 +338,7 @@ namespace EcfDgii.Client.Api.Services
                             .SetProperty(d => d.LastStatusCheckAt, lastCheck)
                             .SetProperty(d => d.StatusCheckAttempts, attempts)
                             .SetProperty(d => d.SentToDgiiAt, sentTime)
+                            .SetProperty(d => d.TrackId, d => trackId ?? d.TrackId)
                             .SetProperty(d => d.DgiiResponseXml, d => dgiiResponseXml ?? d.DgiiResponseXml), ct);
                 }
                 else
@@ -276,6 +350,10 @@ namespace EcfDgii.Client.Api.Services
                         attached.LastStatusCheckAt = lastCheck;
                         attached.StatusCheckAttempts = attempts;
                         attached.SentToDgiiAt = sentTime;
+                        if (trackId != null)
+                        {
+                            attached.TrackId = trackId;
+                        }
                         if (dgiiResponseXml != null)
                         {
                             attached.DgiiResponseXml = dgiiResponseXml;
@@ -300,6 +378,7 @@ namespace EcfDgii.Client.Api.Services
         string? TrackId,
         string State,
         string? Ambiente,
+        decimal TotalAmount,
         DateTime? SentToDgiiAt,
         DateTime CreatedAt,
         DateTime? LastStatusCheckAt,
