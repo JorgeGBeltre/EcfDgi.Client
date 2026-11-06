@@ -285,5 +285,89 @@ namespace EcfDgii.Client.UnitTests.Services
 
             Assert.Equal(1, processed);
         }
+
+        [Fact]
+        public async Task ReconcileAsync_UncertainRfceAndDgiiSaysNoEncontrado_RetransmitsSignedRfceVerbatim_AndTransitionsToAcceptedByDgii()
+        {
+            using var db = NewDb();
+            const string exactSignedRfce = "<RFCE><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COL. SANTA</RazonSocialComprador></Comprador><CodigoSeguridadeCF>naRchs</CodigoSeguridadeCF></Encabezado></RFCE>";
+            var doc = new EcfDocument
+            {
+                RncEmisor = "101889063",
+                ENcf = "E320000003190",
+                SecurityCode = "naRchs",
+                TenantId = "sede-principal-101889063",
+                Ambiente = "Produccion",
+                SourceTxnId = "AF148C-1793819502",
+                EditSequence = "1",
+                TotalAmount = 1343.74m,
+                ItbisAmount = 204.98m,
+                State = "Uncertain",
+                XmlContent = "<ECF/>",
+                SignedXmlContent = "<ECF><Signed/></ECF>",
+                SignedRfceContent = exactSignedRfce
+            };
+            db.EcfDocuments.Add(doc);
+            await db.SaveChangesAsync();
+
+            var evalNow = DateTime.UtcNow.AddMinutes(10);
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync(
+                    "101889063", "E320000003190", null, "naRchs", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaEstadoResponse { Estado = "No encontrado" });
+            ecfClientMock.Setup(c => c.SendRfceAsync(
+                    exactSignedRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new RfceRecepcionResponse { Codigo = 1, Estado = "Aceptado" });
+
+            await MakeReconciler(db, ecfClientMock, MakeClockMock(evalNow)).ReconcileAsync(CancellationToken.None);
+
+            var updated = db.EcfDocuments.Single();
+            Assert.Equal("AcceptedByDgii", updated.State);
+            Assert.Equal("naRchs", updated.SecurityCode);
+            Assert.Null(updated.TrackId);
+            ecfClientMock.Verify(c => c.SendRfceAsync(exactSignedRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        [Fact]
+        public async Task ReconcileAsync_UncertainStandardEcfAndDgiiSaysNoEncontrado_RetransmitsSignedXmlVerbatim_AndPersistsTrackId()
+        {
+            using var db = NewDb();
+            const string exactSignedXml = "<ECF><SignedStandard/></ECF>";
+            var doc = new EcfDocument
+            {
+                RncEmisor = "101889063",
+                ENcf = "E340000000475",
+                RncComprador = "130000000",
+                SecurityCode = "XyZ987",
+                TenantId = "sede-principal-101889063",
+                Ambiente = "Produccion",
+                SourceTxnId = "AF148C-475",
+                EditSequence = "1",
+                TotalAmount = 1500.00m,
+                ItbisAmount = 228.81m,
+                State = "Uncertain",
+                XmlContent = "<ECF/>",
+                SignedXmlContent = exactSignedXml
+            };
+            db.EcfDocuments.Add(doc);
+            await db.SaveChangesAsync();
+
+            var evalNow = DateTime.UtcNow.AddMinutes(10);
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync(
+                    "101889063", "E340000000475", "130000000", "XyZ987", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaEstadoResponse { Estado = "No encontrado" });
+            ecfClientMock.Setup(c => c.SendEcfAsync(
+                    exactSignedXml, "101889063E340000000475.xml", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRK-PROD-475" });
+
+            await MakeReconciler(db, ecfClientMock, MakeClockMock(evalNow)).ReconcileAsync(CancellationToken.None);
+
+            var updated = db.EcfDocuments.Single();
+            Assert.Equal("Signed", updated.State);
+            Assert.Equal("TRK-PROD-475", updated.TrackId);
+            Assert.Equal("XyZ987", updated.SecurityCode);
+            ecfClientMock.Verify(c => c.SendEcfAsync(exactSignedXml, "101889063E340000000475.xml", It.IsAny<CancellationToken>()), Times.Once);
+        }
     }
 }

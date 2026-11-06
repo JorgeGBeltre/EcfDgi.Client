@@ -62,11 +62,17 @@ namespace EcfDgii.Client.Api.Controllers
                 && string.IsNullOrWhiteSpace(dto?.TenantId);
         }
 
-        private static string? ExtractRazonSocialEmisor(string? xml)
+        private static string? ExtractRazonSocialEmisor(string? xml) =>
+            ExtractXmlElementValue(xml, "RazonSocialEmisor");
+
+        private static string? ExtractXmlElementValue(string? xml, string elementName)
         {
             if (string.IsNullOrWhiteSpace(xml)) return null;
-            var match = System.Text.RegularExpressions.Regex.Match(xml, @"<RazonSocialEmisor>(.*?)</RazonSocialEmisor>", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            return match.Success ? match.Groups[1].Value.Trim() : null;
+            var match = System.Text.RegularExpressions.Regex.Match(
+                xml,
+                $@"<{(System.Text.RegularExpressions.Regex.Escape(elementName))}>(.*?)</{(System.Text.RegularExpressions.Regex.Escape(elementName))}>",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return match.Success ? System.Net.WebUtility.HtmlDecode(match.Groups[1].Value.Trim()) : null;
         }
 
         // DGII's status query does not necessarily reflect a transmission the instant it lands —
@@ -809,10 +815,13 @@ namespace EcfDgii.Client.Api.Controllers
                 eNcf = existingDoc.ENcf,
                 state = existingDoc.State,
                 trackId = existingDoc.TrackId,
-                securityCode = existingDoc.SecurityCode,
+                securityCode = ResolveEffectiveSecurityCode(existingDoc.SecurityCode, existingDoc.SignedRfceContent, existingDoc.SignedXmlContent),
                 totalAmount = existingDoc.TotalAmount,
                 itbisAmount = existingDoc.ItbisAmount,
-                signedXml = existingDoc.SignedXmlContent
+                signedXml = !string.IsNullOrWhiteSpace(existingDoc.SignedRfceContent) ? existingDoc.SignedRfceContent : existingDoc.SignedXmlContent,
+                dgiiResponse = existingDoc.DgiiResponseXml,
+                environment = existingDoc.Ambiente,
+                sourceTxnId = existingDoc.SourceTxnId
             });
         }
 
@@ -1130,8 +1139,27 @@ namespace EcfDgii.Client.Api.Controllers
                 totalAmount = doc.TotalAmount,
                 itbisAmount = doc.ItbisAmount,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
-                dgiiResponse = doc.DgiiResponseXml
+                dgiiResponse = doc.DgiiResponseXml,
+                environment = doc.Ambiente,
+                sourceTxnId = doc.SourceTxnId
             });
+        }
+
+        private IQueryable<EcfDocument> ApplyLookupEnvironmentScope(IQueryable<EcfDocument> query, string? targetAmbienteStr, AmbienteEnum targetAmbiente)
+        {
+            var preferredAmbienteStr = _defaultAmbiente.ToString();
+            if (!string.IsNullOrWhiteSpace(targetAmbienteStr))
+            {
+                var allowNullAmbiente = targetAmbiente == _defaultAmbiente;
+                return query
+                    .Where(d => d.Ambiente == targetAmbienteStr || (allowNullAmbiente && d.Ambiente == null))
+                    .OrderByDescending(d => d.CreatedAt);
+            }
+
+            return query
+                .OrderByDescending(d => d.Ambiente == preferredAmbienteStr ? 1 : 0)
+                .ThenByDescending(d => d.Ambiente == nameof(AmbienteEnum.Produccion) ? 1 : 0)
+                .ThenByDescending(d => d.CreatedAt);
         }
 
         /// <summary>
@@ -1139,19 +1167,35 @@ namespace EcfDgii.Client.Api.Controllers
         /// Idempotent GET: never mutates database rows or contacts DGII.
         /// </summary>
         [HttpGet("by-source/{txnId}")]
-        public async Task<IActionResult> GetBySourceTxnId(string txnId)
+        public async Task<IActionResult> GetBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
-            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantClaim = User?.FindFirst("tenant_id")?.Value;
             var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
                 ? tenantClaim
-                : (HttpContext.Items["TenantId"]?.ToString()
-                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                : (HttpContext?.Items["TenantId"]?.ToString()
+                   ?? (Request?.Headers != null && Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
-            // MED-126: Separate sequential indexed probes instead of three-column OR, with AsNoTracking and projection
-            var doc = await _db.EcfDocuments
-                .AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId)
+            var rawEnv = !string.IsNullOrWhiteSpace(environment)
+                ? environment
+                : (Request?.Headers != null && Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            string? targetAmbienteStr = null;
+            var targetAmbiente = _defaultAmbiente;
+            if (!string.IsNullOrWhiteSpace(rawEnv))
+            {
+                if (!TryResolveAmbienteEnum(rawEnv, out targetAmbiente, out var envError))
+                {
+                    return BadRequest(new { error = envError });
+                }
+                targetAmbienteStr = targetAmbiente.ToString();
+            }
+
+            // MED-126: Separate sequential indexed probes instead of three-column OR, isolated by Ambiente when specified
+            var doc = await ApplyLookupEnvironmentScope(
+                    _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
+                    targetAmbienteStr,
+                    targetAmbiente)
                 .Select(d => new
                 {
                     d.Id,
@@ -1165,15 +1209,18 @@ namespace EcfDgii.Client.Api.Controllers
                     d.ItbisAmount,
                     d.SignedRfceContent,
                     d.SignedXmlContent,
-                    d.DgiiResponseXml
+                    d.DgiiResponseXml,
+                    d.Ambiente,
+                    d.SourceTxnId
                 })
                 .FirstOrDefaultAsync();
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.TrackId == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.TrackId == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new
                     {
                         d.Id,
@@ -1187,16 +1234,19 @@ namespace EcfDgii.Client.Api.Controllers
                         d.ItbisAmount,
                         d.SignedRfceContent,
                         d.SignedXmlContent,
-                        d.DgiiResponseXml
+                        d.DgiiResponseXml,
+                        d.Ambiente,
+                        d.SourceTxnId
                     })
                     .FirstOrDefaultAsync();
             }
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.ENcf == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.ENcf == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new
                     {
                         d.Id,
@@ -1210,7 +1260,9 @@ namespace EcfDgii.Client.Api.Controllers
                         d.ItbisAmount,
                         d.SignedRfceContent,
                         d.SignedXmlContent,
-                        d.DgiiResponseXml
+                        d.DgiiResponseXml,
+                        d.Ambiente,
+                        d.SourceTxnId
                     })
                     .FirstOrDefaultAsync();
             }
@@ -1233,7 +1285,9 @@ namespace EcfDgii.Client.Api.Controllers
                 itbisAmount = doc.ItbisAmount,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml,
-                dgiiResponseXml = doc.DgiiResponseXml
+                dgiiResponseXml = doc.DgiiResponseXml,
+                environment = doc.Ambiente,
+                sourceTxnId = doc.SourceTxnId
             });
         }
 
@@ -1241,17 +1295,53 @@ namespace EcfDgii.Client.Api.Controllers
         /// Explicit command endpoint to reconcile or retransmit an Uncertain/Signed document against DGII (MED-017).
         /// </summary>
         [HttpPost("by-source/{txnId}/reconcile")]
-        public async Task<IActionResult> ReconcileBySourceTxnId(string txnId)
+        public async Task<IActionResult> ReconcileBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
-            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantClaim = User?.FindFirst("tenant_id")?.Value;
             var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
                 ? tenantClaim
-                : (HttpContext.Items["TenantId"]?.ToString()
-                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                : (HttpContext?.Items["TenantId"]?.ToString()
+                   ?? (Request?.Headers != null && Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
-            var doc = await _db.EcfDocuments
-                .FirstOrDefaultAsync(d => d.TenantId == tenantId && (d.SourceTxnId == txnId || d.TrackId == txnId || d.ENcf == txnId));
+            var rawEnv = !string.IsNullOrWhiteSpace(environment)
+                ? environment
+                : (Request?.Headers != null && Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            string? targetAmbienteStr = null;
+            var targetAmbiente = _defaultAmbiente;
+            if (!string.IsNullOrWhiteSpace(rawEnv))
+            {
+                if (!TryResolveAmbienteEnum(rawEnv, out targetAmbiente, out var envError))
+                {
+                    return BadRequest(new { error = envError });
+                }
+                targetAmbienteStr = targetAmbiente.ToString();
+            }
+
+            var doc = await ApplyLookupEnvironmentScope(
+                    _db.EcfDocuments.Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
+                    targetAmbienteStr,
+                    targetAmbiente)
+                .FirstOrDefaultAsync();
+
+            if (doc == null)
+            {
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.Where(d => d.TenantId == tenantId && d.TrackId == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
+                    .FirstOrDefaultAsync();
+            }
+
+            if (doc == null)
+            {
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.Where(d => d.TenantId == tenantId && d.ENcf == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
+                    .FirstOrDefaultAsync();
+            }
 
             if (doc == null)
             {
@@ -1293,7 +1383,7 @@ namespace EcfDgii.Client.Api.Controllers
                     _logger.LogWarning(ex, "Error consultando resultado DGII para {TrackId}", doc.TrackId);
                 }
             }
-            else if (doc.State == "Uncertain")
+            else if (doc.State == "Uncertain" || (doc.State == "RequiresManualReview" && string.IsNullOrWhiteSpace(doc.TrackId)))
             {
                 try
                 {
@@ -1343,10 +1433,27 @@ namespace EcfDgii.Client.Api.Controllers
                                 }
                                 else if (IsNotFoundByDgii(status))
                                 {
-                                    var emisorRazon = ExtractRazonSocialEmisor(doc.XmlContent) ?? _emisorRazonSocial;
-                                    var rfceXml = BuildRfceXml(doc, null, emisorRazon);
-                                    var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
-                                    doc.SignedRfceContent = signedRfce;
+                                    string signedRfce;
+                                    if (!string.IsNullOrWhiteSpace(doc.SignedRfceContent))
+                                    {
+                                        signedRfce = doc.SignedRfceContent;
+                                    }
+                                    else
+                                    {
+                                        if (string.IsNullOrWhiteSpace(doc.SignedXmlContent) && !string.IsNullOrWhiteSpace(doc.XmlContent))
+                                        {
+                                            doc.SignedXmlContent = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
+                                        }
+                                        if (string.IsNullOrWhiteSpace(doc.SecurityCode) && !string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+                                        {
+                                            doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(doc.SignedXmlContent);
+                                        }
+
+                                        var emisorRazon = ExtractRazonSocialEmisor(doc.XmlContent) ?? _emisorRazonSocial;
+                                        var rfceXml = BuildRfceXml(doc, null, emisorRazon);
+                                        signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
+                                        doc.SignedRfceContent = signedRfce;
+                                    }
                                     // Preserve doc.SecurityCode as the e-CF invoice security code (CodigoSeguridadeCF)
 
                                     // Local XSD check for RFCE
@@ -1465,12 +1572,24 @@ namespace EcfDgii.Client.Api.Controllers
                                     doc.DgiiResponseXml = $"Rechazado por DGII: {status.Estado}";
                                     await _db.SaveChangesAsync();
                                 }
-                                else if (IsNotFoundByDgii(status) && !string.IsNullOrWhiteSpace(doc.XmlContent))
+                                else if (IsNotFoundByDgii(status) && (!string.IsNullOrWhiteSpace(doc.SignedXmlContent) || !string.IsNullOrWhiteSpace(doc.XmlContent)))
                                 {
                                     var fileName = $"{doc.RncEmisor}{doc.ENcf}.xml";
-                                    var signedXml = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
-                                    doc.SignedXmlContent = signedXml;
-                                    doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
+                                    string signedXml;
+                                    if (!string.IsNullOrWhiteSpace(doc.SignedXmlContent))
+                                    {
+                                        signedXml = doc.SignedXmlContent;
+                                        if (string.IsNullOrWhiteSpace(doc.SecurityCode))
+                                        {
+                                            doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        signedXml = effectiveSigner.SignXml(doc.XmlContent, doc.RncEmisor);
+                                        doc.SignedXmlContent = signedXml;
+                                        doc.SecurityCode = EcfSecurityUtils.CalcularCodigoSeguridad(signedXml);
+                                    }
 
                                     var response = await client.SendEcfAsync(signedXml, fileName);
                                     if (response != null && !string.IsNullOrWhiteSpace(response.TrackId))
@@ -1512,41 +1631,61 @@ namespace EcfDgii.Client.Api.Controllers
                 itbisAmount = doc.ItbisAmount,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
                 dgiiResponse = doc.DgiiResponseXml,
-                dgiiResponseXml = doc.DgiiResponseXml
+                dgiiResponseXml = doc.DgiiResponseXml,
+                environment = doc.Ambiente,
+                sourceTxnId = doc.SourceTxnId
             });
         }
 
         [HttpGet("by-source/{txnId}/xml")]
-        public async Task<IActionResult> GetXmlBySourceTxnId(string txnId)
+        public async Task<IActionResult> GetXmlBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
-            var tenantClaim = User.FindFirst("tenant_id")?.Value;
+            var tenantClaim = User?.FindFirst("tenant_id")?.Value;
             var tenantId = (!string.IsNullOrWhiteSpace(tenantClaim) && tenantClaim != "default-tenant")
                 ? tenantClaim
-                : (HttpContext.Items["TenantId"]?.ToString()
-                   ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
+                : (HttpContext?.Items["TenantId"]?.ToString()
+                   ?? (Request?.Headers != null && Request.Headers.TryGetValue("X-Tenant-Id", out var h) ? h.ToString() : null)
                    ?? "default-tenant");
 
-            // MED-126: Probes in order: (TenantId, SourceTxnId), then TrackId, then ENcf
-            var doc = await _db.EcfDocuments
-                .AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId)
+            var rawEnv = !string.IsNullOrWhiteSpace(environment)
+                ? environment
+                : (Request?.Headers != null && Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
+
+            string? targetAmbienteStr = null;
+            var targetAmbiente = _defaultAmbiente;
+            if (!string.IsNullOrWhiteSpace(rawEnv))
+            {
+                if (!TryResolveAmbienteEnum(rawEnv, out targetAmbiente, out var envError))
+                {
+                    return BadRequest(new { error = envError });
+                }
+                targetAmbienteStr = targetAmbiente.ToString();
+            }
+
+            // MED-126: Probes in order: (TenantId, SourceTxnId), then TrackId, then ENcf — isolated by Ambiente when specified
+            var doc = await ApplyLookupEnvironmentScope(
+                    _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
+                    targetAmbienteStr,
+                    targetAmbiente)
                 .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
                 .FirstOrDefaultAsync();
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.TrackId == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.TrackId == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
                     .FirstOrDefaultAsync();
             }
 
             if (doc == null)
             {
-                doc = await _db.EcfDocuments
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenantId && d.ENcf == txnId)
+                doc = await ApplyLookupEnvironmentScope(
+                        _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.ENcf == txnId),
+                        targetAmbienteStr,
+                        targetAmbiente)
                     .Select(d => new { d.RncEmisor, d.ENcf, d.SignedRfceContent, d.SignedXmlContent })
                     .FirstOrDefaultAsync();
             }
@@ -1614,7 +1753,8 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <RNCEmisor>{doc.RncEmisor}</RNCEmisor>");
             var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
             sb.AppendLine($"      <RazonSocialEmisor>{EscapeXml(safeEmisorName)}</RazonSocialEmisor>");
-            var fechaEmision = NormalizeFechaDgii(dto?.Header?.FechaEmision);
+            var rawFechaEmision = dto?.Header?.FechaEmision ?? ExtractXmlElementValue(doc.XmlContent, "FechaEmision");
+            var fechaEmision = NormalizeFechaDgii(rawFechaEmision);
             sb.AppendLine($"      <FechaEmision>{fechaEmision}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
             sb.AppendLine("    <Comprador>");
@@ -1626,9 +1766,10 @@ namespace EcfDgii.Client.Api.Controllers
                     sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
                 }
             }
+            var extractedCompradorName = ExtractXmlElementValue(doc.XmlContent, "RazonSocialComprador");
             var compradorName = !string.IsNullOrWhiteSpace(dto?.Header?.RazonSocialComprador)
                 ? dto.Header.RazonSocialComprador
-                : "CONSUMIDOR FINAL";
+                : (!string.IsNullOrWhiteSpace(extractedCompradorName) ? extractedCompradorName : "CONSUMIDOR FINAL");
             var safeCompradorName = compradorName.Length > 150 ? compradorName[..150] : compradorName;
             sb.AppendLine($"      <RazonSocialComprador>{EscapeXml(safeCompradorName)}</RazonSocialComprador>");
             sb.AppendLine("    </Comprador>");

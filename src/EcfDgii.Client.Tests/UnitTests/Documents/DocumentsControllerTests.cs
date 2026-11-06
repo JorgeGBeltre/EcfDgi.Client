@@ -1068,5 +1068,91 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Contains("SourceTxnId", tenantTxnProps);
             Assert.Contains("Ambiente", tenantTxnProps);
         }
+
+        [Fact]
+        public async Task GetBySourceTxnId_And_ReconcileBySourceTxnId_IsolateByEnvironment_AndReuseSignedRfceVerbatim()
+        {
+            var db = NewDb();
+            const string exactProdRfce = "<RFCE><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COL. SANTA</RazonSocialComprador></Comprador><CodigoSeguridadeCF>naRchs</CodigoSeguridadeCF></Encabezado></RFCE>";
+
+            // Old PreCertificacion row with identical eNCF E320000003190
+            db.EcfDocuments.Add(new EcfDocument
+            {
+                TenantId = "sede-principal-101889063",
+                Ambiente = "PreCertificacion",
+                RncEmisor = "101889063",
+                ENcf = "E320000003190",
+                SourceTxnId = "TEST-TXN-OLD",
+                EditSequence = "1",
+                State = "AcceptedByDgii",
+                TrackId = "mBhTUD",
+                SecurityCode = "mBhTUD",
+                TotalAmount = 3592.43m,
+                ItbisAmount = 548.00m,
+                CreatedAt = DateTime.UtcNow.AddDays(-40),
+                XmlContent = "<ECF/>",
+                SignedXmlContent = FakeSignedXml
+            });
+
+            // New Produccion row currently Uncertain after transient socket reset
+            db.EcfDocuments.Add(new EcfDocument
+            {
+                TenantId = "sede-principal-101889063",
+                Ambiente = "Produccion",
+                RncEmisor = "101889063",
+                ENcf = "E320000003190",
+                SourceTxnId = "AF148C-1793819502",
+                EditSequence = "1",
+                State = "Uncertain",
+                TrackId = null,
+                SecurityCode = "naRchs",
+                TotalAmount = 1343.74m,
+                ItbisAmount = 204.98m,
+                CreatedAt = DateTime.UtcNow.AddMinutes(-15),
+                XmlContent = "<ECF><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COL. SANTA</RazonSocialComprador></Comprador></Encabezado></ECF>",
+                SignedXmlContent = FakeSignedXml,
+                SignedRfceContent = exactProdRfce
+            });
+            await db.SaveChangesAsync();
+
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101889063", "E320000003190", null, null, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaEstadoResponse { Estado = "No encontrado" });
+            ecfClientMock.Setup(c => c.SendRfceAsync(exactProdRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new RfceRecepcionResponse { Codigo = 1, Estado = "Aceptado" });
+
+            var signerMock = new Mock<IEcfXmlSigner>();
+            var clockMock = new Mock<IClock>();
+            clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddHours(1));
+
+            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063", RazonSocial = "Willy Chic Dominicana SRL" });
+            var ecfClientOptions = Options.Create(new EcfClientOptions { Environment = EcfEnvironment.Prod, ValidateSchemasLocal = false });
+
+            var controller = new DocumentsController(
+                db, sequenceManagerMock.Object, ecfClientMock.Object, signerMock.Object,
+                NullLogger<DocumentsController>.Instance, clockMock.Object, emisorOptions,
+                new EcfSchemaValidator(), ecfClientOptions)
+            {
+                ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+            };
+            controller.Request.Headers["X-Tenant-Id"] = "sede-principal-101889063";
+
+            // 1. Lookup by eNCF scoped to Produccion must NOT return the PreCertificacion row
+            var lookupRes = Assert.IsType<OkObjectResult>(await controller.GetBySourceTxnId("E320000003190", "Produccion"));
+            var lookupJson = System.Text.Json.JsonSerializer.Serialize(lookupRes.Value);
+            Assert.Contains("\"state\":\"Uncertain\"", lookupJson);
+            Assert.Contains("\"securityCode\":\"naRchs\"", lookupJson);
+            Assert.Contains("\"environment\":\"Produccion\"", lookupJson);
+
+            // 2. Reconcile scoped to Produccion reuses exactProdRfce verbatim without re-signing or mutating metadata
+            var reconcileRes = Assert.IsType<OkObjectResult>(await controller.ReconcileBySourceTxnId("E320000003190", "Produccion"));
+            var reconcileJson = System.Text.Json.JsonSerializer.Serialize(reconcileRes.Value);
+            Assert.Contains("\"state\":\"AcceptedByDgii\"", reconcileJson);
+            Assert.Contains("\"securityCode\":\"naRchs\"", reconcileJson);
+
+            signerMock.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+            ecfClientMock.Verify(c => c.SendRfceAsync(exactProdRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()), Times.Once);
+        }
     }
 }
