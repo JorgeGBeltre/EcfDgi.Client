@@ -637,6 +637,12 @@ namespace EcfDgii.Client.Api.Controllers
 
             var editSequence = dto.SourceReference.EditSequence ?? string.Empty;
 
+            var creditNoteCapError = await ValidateCreditNoteCapAgainstModifiedDocumentAsync(dto, tenantId, ambiente);
+            if (creditNoteCapError != null)
+            {
+                return BadRequest(new { error = creditNoteCapError });
+            }
+
             // Check if document for this TxnId has already been processed in this ambiente
             var existingDoc = await _db.EcfDocuments
                 .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == dto.SourceReference.TxnId && (d.Ambiente == null || d.Ambiente == ambiente.ToString()));
@@ -729,6 +735,57 @@ namespace EcfDgii.Client.Api.Controllers
             && (pg.ConstraintName == TenantSourceTxnUniqueConstraint
                 || pg.ConstraintName?.Contains("tenant_source_txn", StringComparison.OrdinalIgnoreCase) == true);
 
+        private async Task<string?> ValidateCreditNoteCapAgainstModifiedDocumentAsync(CanonicalDocumentDto dto, string tenantId, AmbienteEnum ambiente)
+        {
+            if (!string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(dto.References?.CorrectsENcf) ||
+                dto.Totals == null)
+            {
+                return null;
+            }
+
+            var targetEncf = dto.References.CorrectsENcf.Trim();
+            if (!targetEncf.StartsWith("E", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var envStr = ambiente.ToString();
+            var rncEmisor = !string.IsNullOrWhiteSpace(dto.Header?.RncEmisor) ? dto.Header.RncEmisor.Trim() : _emisorRnc;
+            var modifiedDoc = await _db.EcfDocuments
+                .AsNoTracking()
+                .Where(d => d.ENcf == targetEncf &&
+                            (d.TenantId == tenantId || d.RncEmisor == rncEmisor) &&
+                            (d.Ambiente == null || d.Ambiente == envStr) &&
+                            d.State != "RejectedByDgii" &&
+                            d.TotalAmount > 0m)
+                .OrderByDescending(d => d.State == "AcceptedByDgii" ? 1 : 0)
+                .ThenByDescending(d => d.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (modifiedDoc == null)
+            {
+                return null;
+            }
+
+            var isForeign = !string.IsNullOrWhiteSpace(dto.Currency?.Code) &&
+                            !string.Equals(dto.Currency.Code.Trim(), "DOP", StringComparison.OrdinalIgnoreCase) &&
+                            (dto.Currency?.ExchangeRate ?? 0m) > 0m;
+            var incomingTotalDop = isForeign
+                ? Math.Round(dto.Totals.MontoTotal * dto.Currency!.ExchangeRate, 2, MidpointRounding.AwayFromZero)
+                : dto.Totals.MontoTotal;
+
+            if (incomingTotalDop > modifiedDoc.TotalAmount + 0.05m)
+            {
+                _logger.LogWarning(
+                    "🛡️ Regla DGII [615] bloqueada antes de asignar secuencia: Nota de Crédito {TxnId} declara MontoTotal={IncomingTotal:F2} DOP mayor al comprobante modificado '{TargetEncf}' ({OrigTotal:F2} DOP).",
+                    dto.SourceReference?.TxnId, incomingTotalDop, targetEncf, modifiedDoc.TotalAmount);
+                return $"[Rechazado] [615] El campo NCFModificado de la sección InformacionReferencia no es válido. El monto total de la Nota de Crédito Electrónica ({incomingTotalDop:F2}) no puede ser mayor al monto total o balance disponible del NCF modificado '{targetEncf}' ({modifiedDoc.TotalAmount:F2}).";
+            }
+
+            return null;
+        }
+
         /// <summary>
         /// Decides what to do with a document that already exists for this TxnId, based on how far
         /// the prior attempt got. Shared by the normal lookup path and by the concurrent-insert
@@ -754,9 +811,6 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (existingDoc.State == "RejectedByDgii")
             {
-                // El documento previo fue rechazado por la DGII. Conforme a la normativa de la DGII (Ley 32-23),
-                // el eNCF rechazado quedó consumido/inutilizado en los servidores de la DGII (Error 1209 si se reusa).
-                // Para reemitir la factura, se debe asignar un NUEVO correlativo de secuencia libre del rango autorizado.
                 var tenantId = HttpContext.Items["TenantId"]?.ToString()
                     ?? (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null)
                     ?? dto.TenantId
@@ -764,6 +818,36 @@ namespace EcfDgii.Client.Api.Controllers
 
                 var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
                 var effectiveAmbiente = ambiente ?? ResolveAmbienteEnum(rawEnv);
+
+                var creditNoteCapError = await ValidateCreditNoteCapAgainstModifiedDocumentAsync(dto, tenantId, effectiveAmbiente);
+                if (creditNoteCapError != null)
+                {
+                    return BadRequest(new { error = creditNoteCapError });
+                }
+
+                if (!string.IsNullOrWhiteSpace(existingDoc.DgiiResponseXml) &&
+                    existingDoc.DgiiResponseXml.Contains("no puede ser mayor al monto total o balance disponible del NCF modificado", StringComparison.OrdinalIgnoreCase) &&
+                    dto.Totals != null)
+                {
+                    var isForeignRetry = !string.IsNullOrWhiteSpace(dto.Currency?.Code) &&
+                                         !string.Equals(dto.Currency.Code.Trim(), "DOP", StringComparison.OrdinalIgnoreCase) &&
+                                         (dto.Currency?.ExchangeRate ?? 0m) > 0m;
+                    var incomingTotalDop = isForeignRetry
+                        ? Math.Round(dto.Totals.MontoTotal * dto.Currency!.ExchangeRate, 2, MidpointRounding.AwayFromZero)
+                        : dto.Totals.MontoTotal;
+
+                    if (existingDoc.TotalAmount > 0m && incomingTotalDop >= existingDoc.TotalAmount - 0.05m)
+                    {
+                        return BadRequest(new
+                        {
+                            error = $"[Rechazado] [615] El campo NCFModificado de la sección InformacionReferencia no es válido. El monto total de la Nota de Crédito Electrónica ({incomingTotalDop:F2}) no puede ser mayor al monto total o balance disponible del NCF modificado '{dto.References?.CorrectsENcf}'."
+                        });
+                    }
+                }
+
+                // El documento previo fue rechazado por la DGII. Conforme a la normativa de la DGII (Ley 32-23),
+                // el eNCF rechazado quedó consumido/inutilizado en los servidores de la DGII (Error 1209 si se reusa).
+                // Para reemitir la factura, se debe asignar un NUEVO correlativo de secuencia libre del rango autorizado.
                 var isFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(tenantId, dto, rawEnv, Request.Headers.ContainsKey("X-Tenant-Id"));
                 var sequenceScope = isFallback ? "default-tenant" : $"{tenantId}:{effectiveAmbiente}";
                 string newEncf;
