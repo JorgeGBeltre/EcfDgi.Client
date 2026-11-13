@@ -24,24 +24,6 @@ using Xunit;
 
 namespace EcfDgii.Client.UnitTests.Documents
 {
-    /// <summary>
-    /// Validates the ACTUAL generated e-CF XML — signed with a real EcfXmlSigner (not a mock), so the
-    /// ds:Signature element lands exactly where DocumentsController.SignAndSendAsync really puts it
-    /// (appended as the last child of the root &lt;ECF&gt; element, per EcfXmlSigner.SignXml) — against
-    /// DGII's own published XSD schemas (checked into this repo under "Documentación Técnica (XSD)").
-    ///
-    /// An xs:sequence-based schema is ORDER-sensitive: if InformacionReferencia or Retencion (added
-    /// this round for tipo 34/41; their placement was inferred from the spec's field-level
-    /// obligatoriedad tables, not a worked XML example) are in the wrong position, this fails
-    /// immediately with a precise line/element error — the only way to convert that inference into a
-    /// verified fact without spending a real submission attempt against Certificación.
-    ///
-    /// This file now ALSO exercises the real pre-signature validation gate DocumentsController runs
-    /// when EcfClientOptions:ValidateSchemasLocal/XsdDirectoryPath are configured (previously that
-    /// capability existed only in EcfClient.SendEcfAsync — post-signature, and silently never
-    /// activated because nothing ever set XsdDirectoryPath). The Tipo31/34/41 tests above additionally
-    /// still directly call EcfSchemaValidator against the stored XML as a second, independent check.
-    /// </summary>
     public class EcfDocumentXsdValidationTests
     {
         private static string FindRepoRoot()
@@ -79,17 +61,13 @@ namespace EcfDgii.Client.UnitTests.Documents
             ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-XSD" });
 
-            // Export/reload rather than hand the ephemeral cert straight to EcfXmlSigner: the
-            // in-memory cert's private-key handle is tied to the RSA instance's lifetime, which is
-            // disposed when this factory method returns — well before the test actually signs a
-            // document. Reloading from exported PFX bytes gives the signer its own independent handle.
             using var caRsa = RSA.Create(2048);
             var caReq = new CertificateRequest("CN=Test Root CA, O=Test CA, C=DO", caRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             caReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: true, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
             using var caCert = caReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
 
             using var leafRsa = RSA.Create(2048);
-            var leafReq = new CertificateRequest("CN=101889063, O=WILLY CHIC DOMINICANA SRL, C=DO", leafRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var leafReq = new CertificateRequest("CN=101000001, O=EMPRESA DEMO SRL, C=DO", leafRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             var serial = new byte[] { 1, 2, 3, 4 };
             using var leafCert = leafReq.Create(caCert, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1), serial);
             using var leafCertWithKey = leafCert.CopyWithPrivateKey(leafRsa);
@@ -99,8 +77,6 @@ namespace EcfDgii.Client.UnitTests.Documents
                 ? new EcfXmlSigner(pfxPath: "", pfxPassword: "")
                 : new EcfXmlSigner(cert);
 
-            // Spies on the real signer so a test can assert the pre-signature XSD gate short-circuits
-            // BEFORE ever calling it — a structurally-broken document must never reach signing/DGII.
             var signerSpyMock = new Mock<IEcfXmlSignerSpy> { CallBase = false };
             signerSpyMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
                 .Returns((string xml, string rnc) => realSigner.SignXml(xml, rnc));
@@ -109,7 +85,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var clockMock = new Mock<IClock>();
             clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddDays(1));
-            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063", RazonSocial = "WILLY CHIC DOMINICANA SRL" });
+            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101000001", RazonSocial = "EMPRESA DEMO SRL" });
 
             var ecfClientOptions = Options.Create(new EcfClientOptions
             {
@@ -127,7 +103,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             return (controller, db, signerSpyMock, ecfClientMock);
         }
 
-        /// <summary>Lets Moq spy on IEcfXmlSigner calls while delegating to a real signer underneath.</summary>
         public interface IEcfXmlSignerSpy : IEcfXmlSigner;
 
         [Fact]
@@ -140,7 +115,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
@@ -158,14 +133,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo31_WithIsoFechaEmision_AsErpConnectorActuallySendsIt_IsNormalizedAndValidAgainstDgiiXsd()
         {
-            // Every other test in this file leaves Header.FechaEmision null, which falls through to
-            // BuildXmlFromCanonical's own dd-MM-yyyy default — so the whole suite was green while the
-            // ONE format a real caller actually sends was never exercised. ERPConnector's
-            // ApiSubmitStage builds this field as IssueDate.ToString("yyyy-MM-dd") (ISO 8601), which
-            // does not match DGII's FechaValidationType pattern (dd-MM-yyyy) at all.
-            //
-            // ISO is the right thing for a jurisdiction-neutral connector to send; converting it into
-            // DGII's format is this service's job, not the connector's.
             var (controller, db, _, _) = MakeRealController("E310000000802");
             var dto = new CanonicalDocumentDto
             {
@@ -173,7 +140,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                     FechaEmision = "2026-08-06",
                 },
@@ -185,8 +152,6 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var stored = await db.EcfDocuments.SingleAsync();
 
-            // Not just "schema-valid": the same calendar day, day-first. A month/day swap (08-06-2026)
-            // would also satisfy the XSD pattern while filing the document under the wrong date.
             Assert.Contains("<FechaEmision>06-08-2026</FechaEmision>", stored.SignedXmlContent!);
 
             var validation = new EcfSchemaValidator().Validate(stored.SignedXmlContent!, XsdPath("e-CF 31 v.1.0.xsd"));
@@ -196,10 +161,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo31_WithExemptLines_DeclaresThemAsMontoExento_NotAsTaxedBase()
         {
-            // The XSD has a MontoExento element and this builder never emitted it: every exempt peso
-            // was folded into MontoGravadoTotal/MontoGravadoI1, declaring a taxed base larger than the
-            // one ITBIS was actually owed on. Schema-valid the whole time — a semantic misstatement no
-            // structural check can catch, which is exactly why it needs its own test.
             var (controller, db, _, _) = MakeRealController("E310000000804");
             var dto = new CanonicalDocumentDto
             {
@@ -207,12 +168,12 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto
                 {
-                    MontoSubtotal = 150m,        // legacy field: taxed + exempt
+                    MontoSubtotal = 150m,
                     MontoGravadoTotal = 100m,
                     MontoExento = 50m,
                     MontoItbis = 18m,
@@ -236,9 +197,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo31_WithMultipleTaxRates_DeclaresEachInItsOwnDgiiBucket()
         {
-            // 18% → I1, 16% → I2, 0% → I3. Before this, every taxed peso went into I1 regardless of
-            // its real rate, and ITBIS1/2/3 (the rate declarations themselves) were never emitted at
-            // all — so a 16%-rated line was filed as if 18% had been charged on it.
             var (controller, db, _, _) = MakeRealController("E310000000806");
             var dto = new CanonicalDocumentDto
             {
@@ -246,7 +204,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto
@@ -290,9 +248,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo31_WithARateDgiiHasNoBucketFor_IsRejectedInsteadOfFiledUnderTheNearestOne()
         {
-            // DGII has exactly three ITBIS slots (18/16/0). A rate that isn't one of them cannot be
-            // declared truthfully, and quietly folding it into I1 would misstate the tax charged —
-            // the same class of silent-wrongness as the exempt-as-taxed bug. Fail loudly instead.
             var (controller, db, _, _) = MakeRealController("E310000000807");
             var dto = new CanonicalDocumentDto
             {
@@ -300,7 +255,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto
@@ -313,17 +268,12 @@ namespace EcfDgii.Client.UnitTests.Documents
             var result = await controller.SubmitCanonicalDocument(dto);
 
             Assert.IsType<BadRequestObjectResult>(result);
-            // Rejected before a sequence is spent, like every other type-specific guard here.
             Assert.False(await db.EcfDocuments.AnyAsync());
         }
 
         [Fact]
         public async Task Tipo31_WithOnlyLegacyMontoSubtotal_KeepsPreSplitBehaviour()
         {
-            // Version-skew guard: EcfDgi.Client and ERPConnector deploy independently (container on the
-            // Pi vs. Windows service). An older connector sends only MontoSubtotal — that must still
-            // produce exactly what it produced before the split existed, never a silently smaller
-            // taxed base.
             var (controller, db, _, _) = MakeRealController("E310000000805");
             var dto = new CanonicalDocumentDto
             {
@@ -331,7 +281,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 150m, MontoItbis = 18m, MontoTotal = 168m },
@@ -348,10 +298,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo31_WithFechaEmisionAlreadyInDgiiFormat_PassesThroughUnchanged()
         {
-            // Regression guard, not a driver — this already passed before NormalizeFechaDgii existed.
-            // It exists to pin the one "improvement" that would silently corrupt data: relaxing the
-            // normalizer to a lenient DateTime.TryParse. Under InvariantCulture that reads 06-08-2026
-            // month-first as 8 June and re-emits 08-06-2026 — still schema-valid, wrong calendar day.
             var (controller, db, _, _) = MakeRealController("E310000000803");
             var dto = new CanonicalDocumentDto
             {
@@ -359,7 +305,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                     FechaEmision = "06-08-2026",
                 },
@@ -376,11 +322,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo34_WithIsoFechaNcfModificado_IsNormalizedAndValidAgainstDgiiXsd()
         {
-            // FechaNCFModificado is the same FechaValidationType as FechaEmision (e-CF 34 XSD line
-            // 414), reached by the same "caller-supplied string written into the XML verbatim" path —
-            // the identical defect, one field over. No live caller populates it today (ApiSubmitStage
-            // sends only CorrectsENcf/CodigoModificacion/RazonModificacion), so this was latent rather
-            // than broken in production, and it stays latent only until credit notes are wired up.
             var (controller, db, _, _) = MakeRealController("E340000000802");
             var dto = new CanonicalDocumentDto
             {
@@ -388,7 +329,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E34",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 50, MontoItbis = 9, MontoTotal = 59 },
@@ -421,10 +362,10 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E34",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "EMPRESA DEMO SRL",
                     RncComprador = "",
-                    RazonSocialComprador = "SAINT PREUX LOINES",
+                    RazonSocialComprador = "FOREIGN CLIENT TEST",
                     FechaEmision = "22-10-2026",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 1500, MontoItbis = 0, MontoTotal = 1500 },
@@ -454,10 +395,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo32_GeneratedXml_IsValidAgainstDgiiXsd()
         {
-            // Tipo 32 (Factura de Consumo) had NO test at all, and it is the type most of this
-            // company's real QuickBooks traffic maps to (B02 → E32). Its IdDoc has no
-            // FechaVencimientoSecuencia element whatsoever — the builder emitted one for every type
-            // except 34, so every single consumo invoice failed schema validation at position 133.
             var (controller, db, _, _) = MakeRealController("E320000000801");
             var dto = new CanonicalDocumentDto
             {
@@ -465,7 +402,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E32",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RazonSocialComprador = "Consumidor Final",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
@@ -485,11 +422,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task LineWithoutQuantity_IsDeclaredAsOneUnit_BecauseDgiiForbidsZero()
         {
-            // CantidadItem is Decimal18D1or2ValidationTypeMayorCero — strictly greater than zero. Real
-            // QuickBooks invoices carry lines with no quantity at all (discounts, freight, service
-            // charges entered as an amount only), and passing that 0 straight through failed the whole
-            // document. Declaring one unit priced at the line's own amount keeps quantity × price =
-            // amount coherent, which a bare 1.00 with the original unit price would not.
             var (controller, db, _, _) = MakeRealController("E310000000810");
             var dto = new CanonicalDocumentDto
             {
@@ -497,7 +429,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 500m, MontoItbis = 90m, MontoTotal = 590m },
@@ -513,7 +445,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var xml = (await db.EcfDocuments.SingleAsync()).SignedXmlContent!;
             Assert.DoesNotContain("<CantidadItem>0.00</CantidadItem>", xml);
-            Assert.Contains("<CantidadItem>2.00</CantidadItem>", xml);   // the real quantity is untouched
+            Assert.Contains("<CantidadItem>2.00</CantidadItem>", xml);
             Assert.Contains("<CantidadItem>1.00</CantidadItem>", xml);
             Assert.Contains("<PrecioUnitarioItem>100.00</PrecioUnitarioItem>", xml);
 
@@ -531,15 +463,15 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 400m, MontoItbis = 72m, MontoTotal = 472m },
                 Lines =
                 [
-                    new CanonicalLineDto { LineNumber = 1, ItemName = "Porcelanato 60x60", Quantity = 2m, UnitPrice = 200m, Amount = 400m },
+                    new CanonicalLineDto { LineNumber = 1, ItemName = "Producto Estándar 60x60", Quantity = 2m, UnitPrice = 200m, Amount = 400m },
                     new CanonicalLineDto { LineNumber = 2, ItemName = "Total Bultos", Quantity = 232.00m, UnitPrice = 0.00m, Amount = 0.00m },
-                    new CanonicalLineDto { LineNumber = 3, ItemName = "P-142501", Quantity = 0.00m, UnitPrice = 0.00m, Amount = 0.00m },
+                    new CanonicalLineDto { LineNumber = 3, ItemName = "REF-000001", Quantity = 0.00m, UnitPrice = 0.00m, Amount = 0.00m },
                     new CanonicalLineDto { LineNumber = 4, ItemName = "TOTAL METROS", Quantity = 733.92m, UnitPrice = 0.00m, Amount = 0.00m },
                 ],
             };
@@ -548,14 +480,12 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
 
             var xml = (await db.EcfDocuments.SingleAsync(d => d.SourceTxnId == "TXN-ZERO-LINES")).SignedXmlContent!;
-            
-            // Las líneas informativas con valor 0 o precio 0 NO deben aparecer en el XML
+
             Assert.DoesNotContain("<NombreItem>Total Bultos</NombreItem>", xml);
-            Assert.DoesNotContain("<NombreItem>P-142501</NombreItem>", xml);
+            Assert.DoesNotContain("<NombreItem>REF-000001</NombreItem>", xml);
             Assert.DoesNotContain("<NombreItem>TOTAL METROS</NombreItem>", xml);
-            
-            // La línea real sí debe estar presente y ser el único ítem
-            Assert.Contains("<NombreItem>Porcelanato 60x60</NombreItem>", xml);
+
+            Assert.Contains("<NombreItem>Producto Estándar 60x60</NombreItem>", xml);
             Assert.Contains("<NumeroLinea>1</NumeroLinea>", xml);
             Assert.DoesNotContain("<NumeroLinea>2</NumeroLinea>", xml);
 
@@ -573,7 +503,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceReference = new SourceReferenceDto { Provider = "QuickBooksDesktop", TxnId = "TXN-MIXED-LINES" },
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "130862346", RazonSocialEmisor = "Empresa de Prueba",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa de Prueba",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto
@@ -585,10 +515,10 @@ namespace EcfDgii.Client.UnitTests.Documents
                 },
                 Lines =
                 [
-                    new CanonicalLineDto { LineNumber = 1, ItemName = "MOTOCICLETA ZS125-76", Quantity = 14m, UnitPrice = 84198.1357m, Amount = 1178773.90m, IndicadorFacturacion = "1" },
+                    new CanonicalLineDto { LineNumber = 1, ItemName = "VEHICULO MODELO TEST", Quantity = 14m, UnitPrice = 84198.1357m, Amount = 1178773.90m, IndicadorFacturacion = "1" },
                     new CanonicalLineDto { LineNumber = 2, ItemName = "PRIMERA PLACA", Quantity = 14m, UnitPrice = 8490.8371m, Amount = 118871.72m, IndicadorFacturacion = "4" },
                     new CanonicalLineDto { LineNumber = 3, ItemName = "ENDOSO DE MATRICULA", Quantity = 1m, UnitPrice = 2000.00m, Amount = 2000.00m, IndicadorFacturacion = "4" },
-                    new CanonicalLineDto { LineNumber = 4, ItemName = "ZS125-76 AZUL CHASIS: LBMPCJL33T1607771", Quantity = 0m, UnitPrice = 0m, Amount = 0m },
+                    new CanonicalLineDto { LineNumber = 4, ItemName = "MODELO TEST AZUL SERIE: TEST0000000000001", Quantity = 0m, UnitPrice = 0m, Amount = 0m },
                 ],
             };
 
@@ -597,10 +527,8 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var xml = (await db.EcfDocuments.SingleAsync(d => d.SourceTxnId == "TXN-MIXED-LINES")).SignedXmlContent!;
 
-            // 0-amount chassis line is omitted from DGII XML
-            Assert.DoesNotContain("LBMPCJL33T1607771", xml);
+            Assert.DoesNotContain("TEST0000000000001", xml);
 
-            // Items have respective IndicadorFacturacion (1 for motorcycle, 4 for placa and endoso)
             Assert.Contains("<IndicadorFacturacion>1</IndicadorFacturacion>", xml);
             Assert.Contains("<IndicadorFacturacion>4</IndicadorFacturacion>", xml);
 
@@ -611,10 +539,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo31_WithoutRncComprador_IsRejectedBeforeSpendingASequence()
         {
-            // e-CF 31's Comprador has RNCComprador minOccurs="1" — a crédito fiscal cannot exist
-            // without identifying the buyer. Previously the builder simply omitted the element when
-            // QuickBooks had no RNC for that customer, producing a document that failed schema
-            // validation AFTER an eNCF had already been allocated. Refuse before that.
             var (controller, db, _, _) = MakeRealController("E310000000811");
             var dto = new CanonicalDocumentDto
             {
@@ -622,7 +546,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RazonSocialComprador = "Cliente Sin RNC",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
@@ -637,15 +561,12 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo32_WithNoBuyerDataAtAll_StillEmitsTheRequiredCompradorElement()
         {
-            // Comprador itself is minOccurs="1" in tipo 32 even though every one of its children is
-            // optional — a consumo invoice to an anonymous walk-in customer still needs the element
-            // present. The builder used to omit the whole block when it had nothing to put inside.
             var (controller, db, _, _) = MakeRealController("E320000000802");
             var dto = new CanonicalDocumentDto
             {
                 SourceReference = new SourceReferenceDto { TxnId = "TXN-XSD-32-SINCOMPRADOR", EditSequence = "1" },
                 TipoComprobante = "E32",
-                Header = new CanonicalHeaderDto { RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic" },
+                Header = new CanonicalHeaderDto { RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo" },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
             };
 
@@ -669,7 +590,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E34",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 50, MontoItbis = 9, MontoTotal = 59 },
@@ -700,7 +621,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E41",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000005", RazonSocialComprador = "Proveedor Informal SRL",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
@@ -723,14 +644,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task WithoutARealCertificate_DocumentIsMarkedUnsigned_AndNeverSentToDgii()
         {
-            // EcfXmlSigner silently self-generates a certificate when none is configured, so a
-            // document signed with it was indistinguishable from a properly signed one: state
-            // "Signed", then the DGII call fails and it lands on "Uncertain" — which says "we don't
-            // know if DGII got it" when the truth is "this could never have been valid".
-            //
-            // Unsigned states the real condition: no DGII-issued credential, so nothing was
-            // transmitted. The XML is still built and signed so it can be inspected in a test
-            // environment; only the transmission is skipped.
             var (controller, db, signerSpy, ecfClientMock) = MakeRealController("E310000000808", useFallbackCertificate: true);
             var dto = new CanonicalDocumentDto
             {
@@ -738,7 +651,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
@@ -750,7 +663,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var stored = await db.EcfDocuments.SingleAsync();
             Assert.Equal("Unsigned", stored.State);
-            Assert.False(string.IsNullOrEmpty(stored.SignedXmlContent)); // still inspectable
+            Assert.False(string.IsNullOrEmpty(stored.SignedXmlContent));
             signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once);
             ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         }
@@ -758,7 +671,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task WithARealCertificate_DocumentIsStillTransmitted()
         {
-            // Guard for the other side of the branch: a real credential must behave exactly as before.
             var (controller, db, _, ecfClientMock) = MakeRealController("E310000000809");
             var dto = new CanonicalDocumentDto
             {
@@ -766,7 +678,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
@@ -775,8 +687,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             await controller.SubmitCanonicalDocument(dto);
 
             var stored = await db.EcfDocuments.SingleAsync();
-            // DGII returned a TrackId: the signature is confirmed real, which is what "Signed" means
-            // here — the counterpart to "Unsigned". Local signing alone does not earn this state.
             Assert.Equal("Signed", stored.State);
             ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         }
@@ -784,10 +694,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task StructurallyInvalidDocument_IsRejected_BeforeReachingDgii_WhenGateIsEnabled()
         {
-            // Validates the SIGNED xml (see DocumentsController.SignAndSendAsync's own comment on
-            // why: the real XSDs require a signature slot, so a pre-signature check would always
-            // fail regardless of content) — signing still happens (it's a cheap, local operation),
-            // but the real DGII round-trip must never happen for a document that can't pass schema.
             var (controller, db, signerSpy, ecfClientMock) = MakeRealController("E410000000900", enableXsdGate: true);
 
             var dto = new CanonicalDocumentDto
@@ -796,15 +702,12 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E41",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000005", RazonSocialComprador = "Proveedor Informal SRL",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
                 Retention = new CanonicalRetentionDto
                 {
-                    // 99 is not a valid IndicadorAgenteRetencionoPercepcionType value (1="R"/2="P") —
-                    // a genuinely schema-invalid document that still passes SubmitCanonicalDocument's
-                    // own presence-only guard (which only checks Retention is non-null).
                     IndicadorAgenteRetencionoPercepcion = 99,
                     MontoItbisRetenido = 18m,
                 },
@@ -815,18 +718,13 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.IsType<BadRequestObjectResult>(result);
             var stored = await db.EcfDocuments.SingleAsync();
             Assert.Equal("SchemaInvalid", stored.State);
-            signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once); // signing IS cheap/local, still happens
-            ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never); // DGII round-trip must not happen
+            signerSpy.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+            ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact]
         public async Task SchemaInvalidDocument_CanBeRetried_ReusingTheSameEncf()
         {
-            // SchemaInvalid and Unsigned both mean the same thing about transmission: the XSD gate or
-            // the missing certificate stopped us BEFORE any DGII call, so nothing is in flight. If
-            // they aren't treated as never-transmitted, a document that failed on a builder bug holds
-            // its eNCF hostage forever — resubmitting the same TxnId just returns the stale bad state,
-            // and the only "recovery" is burning a fresh number on a fixed build.
             var (controller, db, _, _) = MakeRealController("E410000000902", enableXsdGate: true);
             var badDto = new CanonicalDocumentDto
             {
@@ -834,7 +732,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E41",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000005", RazonSocialComprador = "Proveedor Informal SRL",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100m, MontoItbis = 18m, MontoTotal = 118m },
@@ -844,14 +742,13 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.IsType<BadRequestObjectResult>(await controller.SubmitCanonicalDocument(badDto));
             Assert.Equal("SchemaInvalid", (await db.EcfDocuments.SingleAsync()).State);
 
-            // Same TxnId, same EditSequence, now with a valid value — the retry a fixed build makes.
             badDto.Retention!.IndicadorAgenteRetencionoPercepcion = 1;
             var retry = await controller.SubmitCanonicalDocument(badDto);
 
             Assert.True(retry is AcceptedResult, (retry as BadRequestObjectResult)?.Value?.ToString() ?? retry.GetType().Name);
             var recovered = await db.EcfDocuments.SingleAsync();
             Assert.Equal("Signed", recovered.State);
-            Assert.Equal("E410000000902", recovered.ENcf); // the SAME number, not a fresh one
+            Assert.Equal("E410000000902", recovered.ENcf);
         }
 
         [Fact]
@@ -864,7 +761,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
@@ -888,7 +785,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
@@ -918,7 +815,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E31",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = new string('B', 180),
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
@@ -941,9 +838,9 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E46",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "Willy Chic",
-                    RncComprador = "", // Sin RNC Dominicano
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "Empresa Demo",
+                    RncComprador = "",
                     RazonSocialComprador = "Foreign Client Corp",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 500, MontoTotal = 500 },
@@ -968,7 +865,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E33",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
@@ -1003,7 +900,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E33",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 },
@@ -1024,7 +921,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E43",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 500m, MontoItbis = 0m, MontoTotal = 500m },
                 Lines = [new CanonicalLineDto { LineNumber = 1, ItemName = "Café y azúcar para oficina", Quantity = 1m, UnitPrice = 500m, Amount = 500m }],
@@ -1057,7 +954,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E44",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Zona Franca del Norte SAS",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoItbis = 0m, MontoTotal = 1000m },
@@ -1090,7 +987,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E45",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "401007421", RazonSocialComprador = "Ministerio de Hacienda",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoItbis = 180m, MontoTotal = 1180m },
@@ -1122,7 +1019,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E45",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RazonSocialComprador = "Institucion Sin RNC",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 1000m, MontoItbis = 180m, MontoTotal = 1180m },
@@ -1143,7 +1040,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E46",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "US-987654321", RazonSocialComprador = "Miami Apparel Imports LLC",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 2500m, MontoItbis = 0m, MontoTotal = 2500m },
@@ -1179,18 +1076,18 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E46",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "US-987654321", RazonSocialComprador = "Miami Apparel Imports LLC",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 176000m, MontoItbis = 0m, MontoTotal = 176000m },
                 Lines = [new CanonicalLineDto
                 {
                     LineNumber = 1,
-                    ItemName = "WILLY TIPO CLUB 24X9X34GRS",
+                    ItemName = "PRODUCTO EXPORTACION DEMO",
                     Quantity = 200m,
                     UnitPrice = 880m,
                     Amount = 176000m,
-                    IndicadorFacturacion = "1" // ERP erroneously sent 1 (18% tax)
+                    IndicadorFacturacion = "1"
                 }],
             };
 
@@ -1200,7 +1097,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync(d => d.ENcf == "E460000000802");
             var xml = stored.SignedXmlContent!;
 
-            // Verify DGII Rule 244: Line IndicadorFacturacion must be forced to 3 (Zero Rate), not 1
             Assert.Contains("<IndicadorFacturacion>3</IndicadorFacturacion>", xml);
             Assert.DoesNotContain("<IndicadorFacturacion>1</IndicadorFacturacion>", xml);
 
@@ -1218,18 +1114,18 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E46",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "US-987654321", RazonSocialComprador = "Miami Apparel Imports LLC",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 176000m, MontoItbis = 0m, MontoTotal = 176000m },
                 Lines = [new CanonicalLineDto
                 {
                     LineNumber = 1,
-                    ItemName = "WILLY TIPO CLUB 24X9X34GRS",
+                    ItemName = "PRODUCTO EXPORTACION DEMO",
                     Quantity = 200m,
                     UnitPrice = 880m,
                     Amount = 176000m,
-                    IndicadorFacturacion = "4" // ERP erroneously sent 4 (Exempt)
+                    IndicadorFacturacion = "4"
                 }],
             };
 
@@ -1239,7 +1135,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync(d => d.ENcf == "E460000000803");
             var xml = stored.SignedXmlContent!;
 
-            // Verify DGII Rule 244: Line IndicadorFacturacion must be forced to 3 (Zero Rate), never 4 (Exempt)
             Assert.Contains("<IndicadorFacturacion>3</IndicadorFacturacion>", xml);
             Assert.DoesNotContain("<IndicadorFacturacion>4</IndicadorFacturacion>", xml);
 
@@ -1257,7 +1152,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E47",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "DE-123456789", RazonSocialComprador = "Software Cloud GmbH",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 3000m, MontoItbis = 0m, MontoTotal = 3000m },
@@ -1295,7 +1190,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 <ARECF>
   <DetalleAcusedeRecibo>
     <Version>1.0</Version>
-    <RNCEmisor>101889063</RNCEmisor>
+    <RNCEmisor>101000001</RNCEmisor>
     <RNCComprador>130000000</RNCComprador>
     <eNCF>E310000000801</eNCF>
     <Estado>0</Estado>
@@ -1324,7 +1219,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 Header = new CanonicalHeaderDto
                 {
                     FechaEmision = "2026-09-10",
-                    RncComprador = "101889063",
+                    RncComprador = "101000001",
                     RazonSocialComprador = "Juan Pérez Consumidor",
                 },
                 Totals = new CanonicalTotalsDto
@@ -1401,7 +1296,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceReference = new SourceReferenceDto { TxnId = "TXN-32-PASSPORT" },
                 Header = new CanonicalHeaderDto
                 {
-                    FechaEmision = "10/09/2026", // tests slash delimiter normalization
+                    FechaEmision = "10/09/2026",
                     RncComprador = "PASSPORT-A987654",
                     RazonSocialComprador = "Turista Extranjero",
                 },
@@ -1452,8 +1347,8 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E41",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000005",
                     RazonSocialComprador = "Proveedor Informal SRL",
                     FechaEmision = "2026-09-10",
@@ -1511,10 +1406,10 @@ namespace EcfDgii.Client.UnitTests.Documents
                 TipoComprobante = "E41",
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000005",
-                    RazonSocialComprador = "Vicente Maldonado",
+                    RazonSocialComprador = "Proveedor Persona Física",
                     FechaEmision = "2026-10-20",
                 },
                 Totals = new CanonicalTotalsDto
@@ -1550,11 +1445,9 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync();
             var xml = stored.SignedXmlContent!;
 
-            // DGII rule 11160 requires TotalITBISRetenido and MontoITBISRetenido to be emitted as 0.00 when withholding applies
             Assert.Contains("<TotalITBISRetenido>0.00</TotalITBISRetenido>", xml);
             Assert.Contains("<MontoITBISRetenido>0.00</MontoITBISRetenido>", xml);
 
-            // ISR retention must be emitted
             Assert.Contains("<TotalISRRetencion>3660.00</TotalISRRetencion>", xml);
             Assert.Contains("<MontoISRRetenido>3660.00</MontoISRRetenido>", xml);
 
@@ -1637,7 +1530,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 Header = new CanonicalHeaderDto
                 {
                     FechaEmision = "2026-10-30",
-                    RazonSocialComprador = "WILLY CHIC DOLAR",
+                    RazonSocialComprador = "CLIENTE MONEDA EXTRANJERA SRL",
                 },
                 Currency = new CanonicalCurrencyDto
                 {
@@ -1752,7 +1645,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.True(result is AcceptedResult, (result as BadRequestObjectResult)?.Value?.ToString() ?? result.GetType().Name);
 
             var stored = await db.EcfDocuments.SingleAsync();
-            // Gravado DOP = 6016.00, Exento DOP = 3008.00, ITBIS DOP = round(6016 * 0.18, 2) = 1082.88 => Total = 10106.88
             Assert.Equal(10106.88m, stored.TotalAmount);
             Assert.Equal(1082.88m, stored.ItbisAmount);
 
@@ -1773,7 +1665,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo46_And_Tipo47_UsdForeignCurrency_PassRespectiveDgiiXsds()
         {
-            // 1. E46 Exportación in USD
             var (c46, db46, _, _) = MakeRealController("E460000000099");
             var dto46 = new CanonicalDocumentDto
             {
@@ -1799,7 +1690,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var val46 = new EcfSchemaValidator().Validate(xml46, XsdPath("e-CF 46 v.1.0.xsd"));
             Assert.True(val46.IsValid, string.Join("\n", val46.Errors));
 
-            // 2. E47 Pagos al Exterior in USD with 27% ISR retention
             var (c47, db47, _, _) = MakeRealController("E470000000099");
             var dto47 = new CanonicalDocumentDto
             {
@@ -1882,10 +1772,10 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceReference = new SourceReferenceDto { TxnId = "CFB4A-1793645147", EditSequence = "1" },
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
-                    RncComprador = "101812761",
-                    RazonSocialComprador = "EDESSA SA",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "EMPRESA DEMO SRL",
+                    RncComprador = "130000010",
+                    RazonSocialComprador = "DISTRIBUIDORA DEMO SA",
                     FechaEmision = "2026-11-02"
                 },
                 Totals = new CanonicalTotalsDto
@@ -1895,7 +1785,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                     MontoItbis = 156685.09m,
                     MontoTotal = 1027157.79m
                 },
-                Lines = [new() { LineNumber = 1, ItemName = "CREMICA", Quantity = 1m, UnitPrice = 870472.70m, Amount = 870472.70m, IndicadorFacturacion = "1" }],
+                Lines = [new() { LineNumber = 1, ItemName = "PRODUCTO COMERCIAL A", Quantity = 1m, UnitPrice = 870472.70m, Amount = 870472.70m, IndicadorFacturacion = "1" }],
                 References = new CanonicalReferencesDto
                 {
                     CorrectsENcf = "B0400022008",
@@ -1914,7 +1804,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task PreFoldedNetDiscountLines_ReconstructGrossUnitPriceAndPassXsdValidation()
         {
-            // Production scenario 100082607 (SURTICRISS): Qty=25, Net UnitPrice=807.324, Net Amount=20183.10, DiscountAmount=411.90
             var (controller31, db31, _, _) = MakeRealController("E310000000907");
             var dto31 = new CanonicalDocumentDto
             {
@@ -1923,10 +1812,10 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceReference = new SourceReferenceDto { TxnId = "CFB68-1793645512", EditSequence = "1" },
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
-                    RncComprador = "130388318",
-                    RazonSocialComprador = "SURTICRISS",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "EMPRESA DEMO SRL",
+                    RncComprador = "130000011",
+                    RazonSocialComprador = "COMERCIAL COMPRADOR SRL",
                     FechaEmision = "2026-11-02"
                 },
                 Totals = new CanonicalTotalsDto
@@ -1942,7 +1831,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                     new()
                     {
                         LineNumber = 1,
-                        ItemName = "CREMICA QUESO 12X12X36GR",
+                        ItemName = "PRODUCTO ALIMENTICIO TIPO A",
                         Quantity = 25m,
                         UnitPrice = 807.324m,
                         Amount = 20183.10m,
@@ -1961,7 +1850,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var val31 = new EcfSchemaValidator().Validate(doc31.SignedXmlContent!, XsdPath("e-CF 31 v.1.0.xsd"));
             Assert.True(val31.IsValid, string.Join("\n", val31.Errors));
 
-            // Production scenario 200120316 (VENTAS DE OFICINA EMPLEADOS): 3 fractional lines with pre-folded discounts
             var (controller32, db32, _, _) = MakeRealController("E320000000316");
             var dto32 = new CanonicalDocumentDto
             {
@@ -1970,9 +1858,9 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceReference = new SourceReferenceDto { TxnId = "CFC46-1793654457", EditSequence = "1" },
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
-                    RazonSocialComprador = "VENTAS DE OFICINA EMPLEADOS",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "EMPRESA DEMO SRL",
+                    RazonSocialComprador = "CONSUMIDOR DEMO",
                     FechaEmision = "2026-11-02"
                 },
                 Totals = new CanonicalTotalsDto
@@ -1985,9 +1873,9 @@ namespace EcfDgii.Client.UnitTests.Documents
                 },
                 Lines =
                 [
-                    new() { LineNumber = 1, ItemName = "CREMICA LECHE 10X24X18GR", Quantity = 0.1m, UnitPrice = 625.4m, Amount = 62.54m, DiscountAmount = 6.95m, IndicadorFacturacion = "1" },
-                    new() { LineNumber = 2, ItemName = "CREMICA MANTEQUILLA 12X12X36GR", Quantity = 0.0833m, UnitPrice = 741.42m, Amount = 61.76m, DiscountAmount = 6.86m, IndicadorFacturacion = "1" },
-                    new() { LineNumber = 3, ItemName = "GOZADERA CHOCOLATE BLANCO 6X200UND", Quantity = 0.16666m, UnitPrice = 732.21m, Amount = 122.03m, DiscountAmount = 13.56m, IndicadorFacturacion = "1" }
+                    new() { LineNumber = 1, ItemName = "PRODUCTO LOTE A", Quantity = 0.1m, UnitPrice = 625.4m, Amount = 62.54m, DiscountAmount = 6.95m, IndicadorFacturacion = "1" },
+                    new() { LineNumber = 2, ItemName = "PRODUCTO LOTE B", Quantity = 0.0833m, UnitPrice = 741.42m, Amount = 61.76m, DiscountAmount = 6.86m, IndicadorFacturacion = "1" },
+                    new() { LineNumber = 3, ItemName = "PRODUCTO LOTE C", Quantity = 0.16666m, UnitPrice = 732.21m, Amount = 122.03m, DiscountAmount = 13.56m, IndicadorFacturacion = "1" }
                 ]
             };
 
@@ -2004,7 +1892,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Tipo34_CancellingTipo43InDop_AndReissuingTipo43InUsd_PassDgiiXsd()
         {
-            // Step 1: E34 (CodigoModificacion = 1) annulling E430000000014 in DOP (10,807.02)
             var (controller34, db34, _, _) = MakeRealController("E340000000364");
             var dto34 = new CanonicalDocumentDto
             {
@@ -2013,9 +1900,9 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceReference = new SourceReferenceDto { TxnId = "NC-ANULA-E430000000014", EditSequence = "1" },
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
-                    RazonSocialComprador = "WILLY CHIC DOLAR",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "EMPRESA DEMO SRL",
+                    RazonSocialComprador = "CLIENTE MONEDA EXTRANJERA SRL",
                     FechaEmision = "2026-11-02"
                 },
                 Currency = new CanonicalCurrencyDto { Code = "DOP", ExchangeRate = 1m },
@@ -2067,7 +1954,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var val34 = new EcfSchemaValidator().Validate(xml34, XsdPath("e-CF 34 v.1.0.xsd"));
             Assert.True(val34.IsValid, string.Join("\n", val34.Errors));
 
-            // Step 2: Replacement E43 emitted in USD @ 60.16 (USD 10,807.02 -> DOP 650,150.32)
             var (controller43, db43, _, _) = MakeRealController("E430000000015");
             var dto43 = new CanonicalDocumentDto
             {
@@ -2076,8 +1962,8 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceReference = new SourceReferenceDto { TxnId = "BILL-B1300002709-REISSUE", EditSequence = "1" },
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063",
-                    RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                    RncEmisor = "101000001",
+                    RazonSocialEmisor = "EMPRESA DEMO SRL",
                     FechaEmision = "2026-11-02"
                 },
                 Currency = new CanonicalCurrencyDto { Code = "USD", ExchangeRate = 60.16m },

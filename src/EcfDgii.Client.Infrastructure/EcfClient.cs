@@ -29,8 +29,8 @@ namespace EcfDgii.Client
         private const decimal RfceThreshold = 250_000.00m;
 
         public EcfClient(
-            EcfClientOptions? options = null, 
-            IEcfTransport? transport = null, 
+            EcfClientOptions? options = null,
+            IEcfTransport? transport = null,
             IEcfSequenceProvider? sequenceProvider = null,
             IEcfXmlSigner? signer = null,
             IEcfSchemaValidator? schemaValidator = null,

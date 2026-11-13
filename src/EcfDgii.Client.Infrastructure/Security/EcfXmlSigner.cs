@@ -15,7 +15,6 @@ namespace EcfDgii.Client.Infrastructure.Security
         private readonly X509Certificate2 _certificate;
         private bool _disposed;
 
-        /// <inheritdoc />
         public bool UsesFallbackCertificate { get; }
 
         public EcfXmlSigner(string pfxPath, string pfxPassword)
@@ -25,8 +24,6 @@ namespace EcfDgii.Client.Infrastructure.Security
                 using var rsa = RSA.Create(2048);
                 var req = new CertificateRequest("CN=FALLBACK, O=FALLBACK CERTIFICATE, C=DO", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
                 _certificate = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
-                // Recorded, not just tolerated: this instance cannot produce a document DGII will
-                // accept, and every caller downstream needs to be able to say so out loud.
                 UsesFallbackCertificate = true;
             }
             else
@@ -103,18 +100,11 @@ namespace EcfDgii.Client.Infrastructure.Security
             if (string.IsNullOrEmpty(cleanTarget))
                 return false;
 
-            // 1. Si es certificado fallback/autofirmado sin identidad fiscal real, permitir firma local
             if (UsesFallbackCertificate)
                 return true;
 
-            // 2. Coincidencia estructurada en Subject (RNC o Cédula)
-            // Extraer identificadores del Subject del certificado:
-            // - SERIALNUMBER (OID 2.5.4.5): ej. IDCDO-00100000001
-            // - organizationIdentifier (OID 2.5.4.97): ej. VATDO-101000001
-            // - Cédula / RNC embebido en CN o Subject
             var subject = _certificate.Subject ?? string.Empty;
-            
-            // Buscar coincidencias exactas de dígitos del RNC/Cédula dentro del Subject
+
             var matches = System.Text.RegularExpressions.Regex.Matches(subject, @"(?<=(IDCDO|VATDO|RNC|CEDULA)?[-:\s]?)(\d{9,11})");
             foreach (System.Text.RegularExpressions.Match match in matches)
             {
@@ -124,12 +114,11 @@ namespace EcfDgii.Client.Infrastructure.Security
                 }
             }
 
-            // También verificar en Subject Alternative Names (SAN) si existen
             try
             {
                 foreach (var ext in _certificate.Extensions)
                 {
-                    if (ext.Oid?.Value == "2.5.29.17") // Subject Alternative Name
+                    if (ext.Oid?.Value == "2.5.29.17")
                     {
                         var sanText = ext.Format(false);
                         var sanMatches = System.Text.RegularExpressions.Regex.Matches(sanText, @"\d{9,11}");
@@ -145,14 +134,8 @@ namespace EcfDgii.Client.Infrastructure.Security
             }
             catch
             {
-                // Ignorar error al leer extensiones
             }
 
-            // 3. Certificados cualificados de persona física para procedimientos tributarios (Viafirma / Avansi / DGII)
-            // Bajo la normativa de la DGII (Norma General 06-2018, Ley 32-23), los contribuyentes (personas jurídicas con RNC de 9 dígitos)
-            // delegan la firma de e-CF a una persona física autorizada (representante legal / contador) en la Oficina Virtual.
-            // Dichos certificados contienen en el Subject la cédula del representante (SERIALNUMBER=IDCDO-XXXXXXXXXXX) y
-            // dnQualifier indicando 'QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES' (o equivalente en español).
             var isTaxProcedures = subject.Contains("TAX PROCEDURES", StringComparison.OrdinalIgnoreCase) ||
                                   subject.Contains("PROCEDIMIENTOS TRIBUTARIOS", StringComparison.OrdinalIgnoreCase);
             var isNaturalPerson = subject.Contains("NATURAL PERSON", StringComparison.OrdinalIgnoreCase) ||
@@ -162,8 +145,6 @@ namespace EcfDgii.Client.Infrastructure.Security
 
             if ((isTaxProcedures || isNaturalPerson) && isDominican)
             {
-                // Si el certificado tiene un RNC corporativo explícito de 9 dígitos (ej. VATDO-133664692),
-                // debe coincidir con cleanTarget. Si tiene un RNC corporativo diferente, no es válido para este target.
                 var corporateMatches = System.Text.RegularExpressions.Regex.Matches(subject, @"(?<=(VATDO|RNC)[-:\s]?)(\d{9})\b");
                 var hasExplicitOtherCorporateRnc = false;
                 foreach (System.Text.RegularExpressions.Match cm in corporateMatches)
@@ -176,9 +157,6 @@ namespace EcfDgii.Client.Infrastructure.Security
                     }
                 }
 
-                // Si no tiene un RNC corporativo diferente en el Subject, es un certificado de persona física
-                // delegado para procedimientos tributarios con cédula dominicana (11 dígitos), válido para actuar
-                // en representación del contribuyente.
                 if (!hasExplicitOtherCorporateRnc && System.Text.RegularExpressions.Regex.IsMatch(subject, @"(IDCDO|SERIALNUMBER|CEDULA)[-:\s=]?\d{11}"))
                 {
                     return true;

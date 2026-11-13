@@ -104,7 +104,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .IsRequired()
                 .HasDefaultValue(0);
 
-            // Auditing Columns
             builder.Property(e => e.CreatedAt)
                 .HasColumnName("created_at")
                 .IsRequired();
@@ -135,20 +134,14 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasColumnName("ambiente")
                 .HasMaxLength(50);
 
-            // Composite Index (unique) for RncEmisor & ENcf per Ambiente
             builder.HasIndex(e => new { e.RncEmisor, e.ENcf, e.Ambiente })
                 .IsUnique()
                 .HasDatabaseName("uq_ecf_documents_rnc_emisor_encf");
 
-            // Idempotency relies on the (TenantId, SourceTxnId, Ambiente) lookup in DocumentsController being
-            // authoritative. Without a DB-level constraint, two concurrent submits for the same
-            // TxnId can both pass that lookup before either commits, each allocating its own eNCF.
-            // This index makes the second insert fail instead, so it can be caught and reconciled.
             builder.HasIndex(e => new { e.TenantId, e.SourceTxnId, e.Ambiente })
                 .IsUnique()
                 .HasDatabaseName("uq_ecf_documents_tenant_source_txn");
 
-            // Other indexes
             builder.HasIndex(e => e.TrackId)
                 .HasDatabaseName("ix_ecf_documents_track_id");
 
@@ -158,7 +151,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
             builder.HasIndex(e => e.State)
                 .HasDatabaseName("ix_ecf_documents_state");
 
-            // Drives EcfStatusReconciler's "documents due for a status re-check" query.
             builder.HasIndex(e => new { e.State, e.LastStatusCheckAt })
                 .HasDatabaseName("ix_ecf_documents_state_last_status_check_at");
         }

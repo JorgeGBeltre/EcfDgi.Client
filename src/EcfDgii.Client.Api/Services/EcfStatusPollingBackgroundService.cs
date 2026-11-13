@@ -10,13 +10,6 @@ using Microsoft.Extensions.Logging;
 
 namespace EcfDgii.Client.Api.Services
 {
-    /// <summary>
-    /// Runs EcfStatusReconciler on a timer for the lifetime of the app. This is the only thing that
-    /// makes the ⑤/⑥ status-polling gap actually run in production — EcfStatusReconciler itself is
-    /// deliberately kept as a plain scoped class (DbContext-dependent, one pass per call) so it stays
-    /// unit-testable without a real host; this service is the thin, untested wiring around it, same
-    /// split as ERPConnector's ProcessingWorker/InvoiceProcessingEngine.
-    /// </summary>
     public sealed class EcfStatusPollingBackgroundService(
         IServiceScopeFactory scopeFactory,
         EcfStatusPollingOptions options,
@@ -30,9 +23,6 @@ namespace EcfDgii.Client.Api.Services
 
             using var timer = new PeriodicTimer(options.PollingInterval);
 
-            // Run one pass immediately on startup (don't wait a full interval before the first
-            // check — a restart shouldn't silently pause polling for up to PollingInterval), then on
-            // the timer's cadence thereafter.
             await RunOnePassAsync(stoppingToken);
 
             try
@@ -44,7 +34,6 @@ namespace EcfDgii.Client.Api.Services
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // Normal shutdown.
             }
         }
 
@@ -69,8 +58,6 @@ namespace EcfDgii.Client.Api.Services
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                // One bad pass (e.g. a transient DB error) must not kill the background service for
-                // the rest of the process lifetime — log and try again on the next tick.
                 logger.LogError(ex, "Fallo en el pase de polling de estado DGII; se reintentará en el próximo ciclo.");
             }
         }

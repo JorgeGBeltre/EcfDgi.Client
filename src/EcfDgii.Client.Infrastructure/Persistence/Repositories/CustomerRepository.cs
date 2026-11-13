@@ -39,7 +39,7 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Repositories
 
         public void Delete(Customer customer)
         {
-            _dbContext.Customers.Remove(customer); // This will be intercepted and soft deleted
+            _dbContext.Customers.Remove(customer);
         }
     }
 }

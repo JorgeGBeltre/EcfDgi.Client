@@ -24,11 +24,11 @@ namespace EcfDgii.Client.Api.Controllers
                 return BadRequest(new { error = "Header 'Idempotency-Key' is required for POST /api/ecf/send." });
             }
 
-            var tenantId = !string.IsNullOrWhiteSpace(command.TenantId) 
-                ? command.TenantId 
+            var tenantId = !string.IsNullOrWhiteSpace(command.TenantId)
+                ? command.TenantId
                 : (Request.Headers.TryGetValue("X-Tenant-Id", out var hTenant) ? hTenant.ToString() : null);
-            var env = !string.IsNullOrWhiteSpace(command.Ambiente) 
-                ? command.Ambiente 
+            var env = !string.IsNullOrWhiteSpace(command.Ambiente)
+                ? command.Ambiente
                 : (Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : null);
 
             var updatedCommand = command with { TenantId = tenantId, Ambiente = env };

@@ -37,40 +37,33 @@ namespace EcfDgii.Client.IntegrationTests
             var loginCmd = new LoginUserCommand(user, pass);
             var response = await _client.PostAsJsonAsync("api/auth/login", loginCmd);
             var result = await response.Content.ReadFromJsonAsync<AuthResponseDto>();
-            
-            _client.DefaultRequestHeaders.Authorization = 
+
+            _client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", result!.Token);
         }
 
         [Fact]
         public async Task GetCustomers_WithoutAuth_ReturnsUnauthorized()
         {
-            // Clear authorization
             _client.DefaultRequestHeaders.Authorization = null;
 
-            // Act
             var response = await _client.GetAsync("api/customers");
 
-            // Assert
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         }
 
         [Fact]
         public async Task CreateCustomer_WithAuth_CreatesAndReturns()
         {
-            // Arrange (MED-248)
             await AuthenticateAsync();
-            var command = new CreateCustomerCommand("Integrator Client", "int@client.com", "101672919");
+            var command = new CreateCustomerCommand("Integrator Client", "int@client.com", "101000009");
 
-            // Act
             var response = await _client.PostAsJsonAsync("api/customers", command);
 
-            // Assert
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
             var id = await response.Content.ReadFromJsonAsync<Guid>();
             Assert.NotEqual(Guid.Empty, id);
 
-            // Verify was added to DB
             var verifyResponse = await _client.GetAsync($"api/customers/{id}");
             Assert.Equal(HttpStatusCode.OK, verifyResponse.StatusCode);
             var customer = await verifyResponse.Content.ReadFromJsonAsync<CustomerDto>();

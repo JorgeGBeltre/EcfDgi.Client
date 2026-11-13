@@ -32,12 +32,11 @@ namespace EcfDgii.Client.UnitTests.Ecf
         [Fact]
         public async Task Handle_ValidRequest_ShouldSendRfceAndSaveToDb()
         {
-            // Arrange
             var rfce = new Rfce
             {
                 Encabezado = new RfceEncabezado
                 {
-                    Emisor = new RfceEmisor { RncEmisor = "101672919" },
+                    Emisor = new RfceEmisor { RncEmisor = "101000009" },
                     IdDoc = new RfceIdDoc { ENcf = "E320000000001" },
                     Totales = new RfceTotales { MontoTotal = 1000.0m }
                 }
@@ -57,10 +56,8 @@ namespace EcfDgii.Client.UnitTests.Ecf
             _unitOfWorkMock.Setup(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(1);
 
-            // Act
             var result = await _handler.Handle(command, CancellationToken.None);
 
-            // Assert
             Assert.True(result.IsSuccess);
             Assert.Equal("Aceptado", result.Value?.Estado);
             _ecfClientMock.Verify(client => client.SendRfceAsync(rfce, It.IsAny<CancellationToken>()), Times.Once);

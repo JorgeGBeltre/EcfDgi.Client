@@ -22,7 +22,6 @@ namespace EcfDgii.Client.Infrastructure
     {
         public static IServiceCollection AddInfrastructureServices(this IServiceCollection services, IConfiguration configuration)
         {
-            // DB Context
             var connectionString = configuration.GetConnectionString("DefaultConnection");
             if (string.IsNullOrWhiteSpace(connectionString))
             {
@@ -51,7 +50,6 @@ namespace EcfDgii.Client.Infrastructure
                 });
             }
 
-            // Redis Infrastructure Setup
             var redisConnectionString = configuration.GetConnectionString("Redis");
             if (string.IsNullOrWhiteSpace(redisConnectionString))
             {
@@ -93,17 +91,9 @@ namespace EcfDgii.Client.Infrastructure
 
             services.AddSingleton<ICacheService, RedisCacheService>();
 
-            // JWT Settings Configuration
             services.Configure<JwtSettings>(configuration.GetSection("JwtSettings"));
 
-            // SDK Options Configuration
             services.Configure<EcfClientOptions>(configuration.GetSection("EcfClientOptions"));
-            // XsdDirectoryPath defaults to a path anchored at AppContext.BaseDirectory (where
-            // EcfDgii.Client.Api.csproj copies the real DGII XSDs alongside the published app) when
-            // config doesn't set one explicitly — this is what actually turns local schema
-            // validation ON by default (EcfClient.SendEcfAsync's check, and DocumentsController's own
-            // pre-DGII gate, both read this same option). Previously this was always empty/unset
-            // anywhere in this repo's config, so the validation code existed but silently never ran.
             services.PostConfigure<EcfClientOptions>(options =>
             {
                 var flatAmbiente = configuration["Ambiente"] ?? configuration["AMBIENTE"];
@@ -119,7 +109,6 @@ namespace EcfDgii.Client.Infrastructure
             });
             services.AddSingleton<IEcfSchemaValidator, EcfSchemaValidator>();
 
-            // Register Services
             services.AddScoped<IUnitOfWork, UnitOfWork>();
             services.AddScoped<ICustomerRepository, CustomerRepository>();
             services.AddScoped<IUserRepository, UserRepository>();
@@ -136,7 +125,6 @@ namespace EcfDgii.Client.Infrastructure
                 return new EcfXmlSigner(options.CertificatePath ?? "", options.CertificatePassword ?? "");
             });
 
-            // Register EcfClient wrapped with Redis Caching Decorator
             services.AddSingleton<IEcfClient>(sp =>
             {
                 var options = sp.GetRequiredService<IOptions<EcfClientOptions>>().Value;

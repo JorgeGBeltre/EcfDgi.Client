@@ -73,10 +73,8 @@ namespace EcfDgii.Client.Infrastructure.Persistence
                 entity.HasIndex(e => new { e.TenantId, e.TipoComprobante }).IsUnique().HasDatabaseName("uq_ecf_sequences_tenant_tipo");
             });
 
-            // Apply all configurations from current assembly
             modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
 
-            // Apply global soft delete filter to all entities deriving from AuditableEntity
             foreach (var entityType in modelBuilder.Model.GetEntityTypes())
             {
                 if (typeof(AuditableEntity).IsAssignableFrom(entityType.ClrType))
@@ -112,7 +110,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence
                         break;
 
                     case EntityState.Deleted:
-                        // Intercept hard delete and turn into soft delete
                         entry.State = EntityState.Modified;
                         entry.Entity.IsDeleted = true;
                         entry.Entity.DeletedAt = DateTime.UtcNow;

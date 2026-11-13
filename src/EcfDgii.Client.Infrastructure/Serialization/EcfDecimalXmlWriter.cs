@@ -10,14 +10,13 @@ namespace EcfDgii.Client.Infrastructure.Serialization
     {
         private readonly XmlWriter _innerWriter;
         private readonly Stack<string> _elementStack = new Stack<string>();
-        
-        // List of all tag names representing decimal fields in DGII specifications
+
         private static readonly HashSet<string> DecimalElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "MontoGravadoTotal", "MontoGravadoI1", "MontoGravadoI2", "MontoGravadoI3", 
-            "MontoExento", "TotalITBIS", "TotalITBIS1", "TotalITBIS2", "TotalITBIS3", 
-            "MontoImpuestoAdicional", "MontoTotal", "MontoNoFacturable", "MontoPeriodo", 
-            "MontoPago", "MontoImpuestoSelectivoConsumoEspecifico", "MontoImpuestoSelectivoConsumoAdvalorem", 
+            "MontoGravadoTotal", "MontoGravadoI1", "MontoGravadoI2", "MontoGravadoI3",
+            "MontoExento", "TotalITBIS", "TotalITBIS1", "TotalITBIS2", "TotalITBIS3",
+            "MontoImpuestoAdicional", "MontoTotal", "MontoNoFacturable", "MontoPeriodo",
+            "MontoPago", "MontoImpuestoSelectivoConsumoEspecifico", "MontoImpuestoSelectivoConsumoAdvalorem",
             "OtrosImpuestosAdicionales", "MontoSubtotal", "MontoItbis", "Quantity", "UnitPrice", "Amount"
         };
 

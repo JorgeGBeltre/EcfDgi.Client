@@ -25,17 +25,14 @@ namespace EcfDgii.Client.UnitTests.Customers
         [Fact]
         public async Task Handle_ValidRequest_ShouldCreateCustomerAndReturnId()
         {
-            // Arrange
-            var command = new CreateCustomerCommand("Test Company", "test@test.com", "101672919");
+            var command = new CreateCustomerCommand("Test Company", "test@test.com", "101000009");
             _customerRepositoryMock.Setup(repo => repo.AddAsync(It.IsAny<Customer>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
             _unitOfWorkMock.Setup(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(1);
 
-            // Act
             var result = await _handler.Handle(command, CancellationToken.None);
 
-            // Assert
             Assert.True(result.IsSuccess);
             Assert.NotEqual(Guid.Empty, result.Value);
             _customerRepositoryMock.Verify(repo => repo.AddAsync(It.Is<Customer>(c => c.Name == command.Name && c.Email == command.Email && c.Rnc == command.Rnc), It.IsAny<CancellationToken>()), Times.Once);

@@ -48,7 +48,7 @@ namespace EcfDgii.Client.UnitTests.Security
         {
             var resolver = CreateResolver();
 
-            var result = await resolver.ResolveSignerAsync("133664692", CancellationToken.None);
+            var result = await resolver.ResolveSignerAsync("130000002", CancellationToken.None);
 
             Assert.Same(_defaultSignerMock.Object, result);
         }
@@ -62,7 +62,7 @@ namespace EcfDgii.Client.UnitTests.Security
             };
             var resolver = CreateResolver(config);
 
-            var result = await resolver.ResolveSignerAsync("133664692", CancellationToken.None);
+            var result = await resolver.ResolveSignerAsync("130000002", CancellationToken.None);
 
             Assert.Same(_defaultSignerMock.Object, result);
         }
@@ -70,11 +70,10 @@ namespace EcfDgii.Client.UnitTests.Security
         [Fact]
         public void DecryptPassword_EncV3WithJwtSettingsSecret_DecryptsCorrectly()
         {
-            const string sharedSecret = "6QG04PHsCO43eY9AOtGiI6c96nAUAQ9yIoIE6a0Ri2LQSpgxIQNdGvYVXWkvlEpAwR7ITkuD3j4-U0-9w8ipnQ";
-            const string tenantCode = "sede-principal-133628481";
+            const string sharedSecret = "UnitTestDummySharedSecretKey_MinimumThirtyTwoBytesLong_0123456789!";
+            const string tenantCode = "sede-principal-130000003";
             const string expectedPassword = "TestCertPassword!";
 
-            // Encrypt using the exact Ecf.API v3 envelope format (HKDF-SHA256 + AAD)
             var key = HKDF.DeriveKey(
                 HashAlgorithmName.SHA256,
                 Encoding.UTF8.GetBytes(sharedSecret),

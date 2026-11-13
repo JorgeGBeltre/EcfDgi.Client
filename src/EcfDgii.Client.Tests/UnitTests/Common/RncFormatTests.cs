@@ -6,8 +6,8 @@ namespace EcfDgii.Client.UnitTests.Common
     public class RncFormatTests
     {
         [Theory]
-        [InlineData("101672919")]      // 9-digit RNC
-        [InlineData("00101672919")]    // 11-digit cédula shape
+        [InlineData("101000009")]
+        [InlineData("00100000019")]
         public void IsValid_AcceptsNineOrElevenAllDigitValues(string value)
         {
             Assert.True(RncFormat.IsValid(value));
@@ -17,9 +17,9 @@ namespace EcfDgii.Client.UnitTests.Common
         [InlineData(null)]
         [InlineData("")]
         [InlineData("   ")]
-        [InlineData("12345678")]       // 8 digits
-        [InlineData("1234567890")]     // 10 digits
-        [InlineData("10167291A")]      // non-digit
+        [InlineData("12345678")]
+        [InlineData("1234567890")]
+        [InlineData("10167291A")]
         public void IsValid_RejectsMissingOrMalformedValues(string? value)
         {
             Assert.False(RncFormat.IsValid(value));

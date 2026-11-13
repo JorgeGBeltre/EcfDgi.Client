@@ -37,7 +37,6 @@ CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
@@ -49,7 +48,6 @@ try
 {
     Log.Information("Starting web host");
 
-    // Add services to the container
     builder.Services.AddMemoryCache(options =>
     {
         options.SizeLimit = 100_000;
@@ -76,10 +74,6 @@ try
     builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
     builder.Services.AddSingleton<IClock, SystemClock>();
 
-    // Closes the ⑤/⑥ DGII post-send status-polling gap: without this, "SentToDgii" was fully
-    // terminal and a document DGII later rejects on verification would sit marked Sent forever.
-    // Values are configurable (EcfStatusPolling section) because MaxPollingWindowHours in particular
-    // is a conservative stand-in, not a confirmed DGII deadline — see EcfStatusPollingOptions.Default.
     var pollingSection = builder.Configuration.GetSection("EcfStatusPolling");
     var pollingIntervalSeconds = pollingSection.GetValue<int?>("PollingIntervalSeconds")
         ?? (pollingSection.GetValue<int?>("PollingIntervalMinutes") * 60)
@@ -92,9 +86,6 @@ try
     builder.Services.AddSingleton(pollingOptions);
     builder.Services.AddHostedService<EcfStatusPollingBackgroundService>();
 
-    // Fail loudly at startup if this instance's emisor RNC or razón social is missing/malformed,
-    // instead of DocumentsController silently trusting a caller-supplied value for either (RazonSocial
-    // previously had no override at all — see EcfEmisorOptions's doc comment).
     builder.Services.AddOptions<EcfEmisorOptions>()
         .Bind(builder.Configuration.GetSection(EcfEmisorOptions.SectionName))
         .Validate(o => RncFormat.IsValid(o.Rnc),
@@ -103,7 +94,6 @@ try
             $"{EcfEmisorOptions.SectionName}:{nameof(EcfEmisorOptions.RazonSocial)} is required.")
         .ValidateOnStart();
 
-    // Register Security, Anti-Replay, Key Resolution & Durable Idempotency
     builder.Services.AddSingleton<INonceCache>(sp =>
     {
         var memCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>();
@@ -113,17 +103,11 @@ try
     builder.Services.AddScoped<IWorkerKeyResolver, ConfigurationWorkerKeyResolver>();
     builder.Services.AddSingleton<IIdempotencyStore, DbIdempotencyStore>();
 
-    // Register Clean Architecture Layer Services
     builder.Services.AddApplicationServices();
     builder.Services.AddInfrastructureServices(builder.Configuration);
 
-    // Configure JWT Authentication
     var jwtSettingsSection = builder.Configuration.GetSection("JwtSettings");
     var jwtSettings = jwtSettingsSection.Get<JwtSettings>();
-    // string.IsNullOrWhiteSpace, not ?? — appsettings.json now ships "Secret": "" (an explicit
-    // empty string, not absent/null) so the check has something to fail loudly against outside
-    // Development. ?? only substitutes on null, so an empty string silently produced a zero-length
-    // HMAC key here instead of falling back to the default.
     var jwtSecretForKey = builder.Configuration["JwtSettings:Secret"]
         ?? builder.Configuration["JWT_SECRET"]
         ?? builder.Configuration["Jwt:SecretKey"]
@@ -255,10 +239,8 @@ try
 
     builder.Services.AddSingleton<Microsoft.AspNetCore.Mvc.ModelBinding.Validation.IObjectModelValidator, NullObjectModelValidator>();
 
-    // Configure OpenApi Support (Scalar UI)
     builder.Services.AddOpenApi();
 
-    // Configure Health Checks
     var healthChecksBuilder = builder.Services.AddHealthChecks()
         .AddDbContextCheck<ApplicationDbContext>();
 
@@ -268,7 +250,6 @@ try
         healthChecksBuilder.AddRedis(redisConnectionString, name: "redis");
     }
 
-    // Configure OpenTelemetry Tracing and Metrics
     builder.Services.AddOpenTelemetry()
         .ConfigureResource(resource => resource.AddService("EcfDgii.Client.Api"))
         .WithTracing(tracing =>
@@ -285,15 +266,8 @@ try
                 .AddOtlpExporter();
         });
 
-
     var app = builder.Build();
 
-    // Fail-fast check for default worker secrets in Non-Development environments (Point #10).
-    // This originally read a "WorkerKeys" array section ({KeyId, Secret} children) that nothing
-    // ever populates — ConfigurationWorkerKeyResolver (the code that actually authenticates
-    // workers) reads a flat "WorkerSecretKey" key or WORKER_SECRET_KEY env var instead. The two
-    // never agreed, so this check was a silent no-op in every environment. Now checks the same key
-    // the resolver does.
     if (!app.Environment.IsDevelopment())
     {
         var workerSecret = app.Configuration["WORKER_SECRET_KEY"] ?? app.Configuration["WorkerSecretKey"];
@@ -304,10 +278,6 @@ try
         }
     }
 
-    // Fail-fast check for a missing/default JWT signing secret in Non-Development environments.
-    // Without this, a missing JwtSettings:Secret silently falls back to the hardcoded string a few
-    // lines above ("DefaultSecretKeyForTesting_..."), visible to anyone with this source — anyone
-    // could mint a valid admin JWT for a deployment that never set a real secret.
     if (!app.Environment.IsDevelopment())
     {
         var configuredJwtSecret = jwtSettings?.Secret;
@@ -318,12 +288,6 @@ try
         }
     }
 
-    // Fail-fast check for a missing EcfClientOptions:RncEmisor in Non-Development environments.
-    // This is a SEPARATE identity key from EcfEmisor:Rnc (which governs the signed XML's <Emisor>
-    // block, validated above via ValidateOnStart) — this one feeds EcfTokenManager's DGII
-    // semilla-signing/token-cache-key path. Discovered because the committed appsettings.json
-    // default for BOTH keys was a stray test-fixture RNC, not the real emisor, and only
-    // EcfEmisor:Rnc had a startup check until now.
     if (!app.Environment.IsDevelopment())
     {
         var ecfClientRncEmisor = app.Configuration["EcfClientOptions:RncEmisor"];
@@ -336,12 +300,6 @@ try
         }
     }
 
-    // Fail-fast check for a missing/unloadable/expired DGII signing certificate in Non-Development
-    // environments. Without this, EcfXmlSigner (EcfDgii.Client.Infrastructure/Security/EcfXmlSigner.cs)
-    // silently falls back to a dummy self-signed certificate when CertificatePath is missing or
-    // doesn't exist — the app starts clean, looks healthy, and signs every e-CF with a certificate
-    // DGII will reject. That fallback exists so local Development doesn't need a real DGII
-    // certificate; every other environment must have one, loadable, and currently valid.
     if (!app.Environment.IsDevelopment())
     {
         var certSection = app.Configuration.GetSection("EcfClientOptions");
@@ -358,7 +316,7 @@ try
         try
         {
             using var cert = X509CertificateLoader.LoadPkcs12FromFile(certPath, certPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
-            var now = DateTime.Now; // X509Certificate2.NotBefore/NotAfter are local time
+            var now = DateTime.Now;
             if (now < cert.NotBefore || now > cert.NotAfter)
             {
                 throw new InvalidOperationException(
@@ -390,10 +348,8 @@ try
         }
     }
 
-    // Configure the HTTP request pipeline
     app.UseMiddleware<GlobalExceptionMiddleware>();
 
-    // MED-142: Forwarded headers for reverse proxy (Traefik / Nginx) to reflect client IP and HTTPS scheme
     var forwardedHeadersOptions = new ForwardedHeadersOptions
     {
         ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
@@ -412,7 +368,6 @@ try
 
     if (!app.Environment.IsDevelopment())
     {
-        // HTTPS redirection only when port is configured or not behind TLS terminating reverse proxy
         var httpsPort = app.Configuration["HTTPS_PORT"] ?? app.Configuration["ASPNETCORE_HTTPS_PORT"];
         if (!string.IsNullOrWhiteSpace(httpsPort))
         {
@@ -420,8 +375,6 @@ try
         }
     }
 
-    // Automatically apply migrations at startup for relational databases before serving traffic.
-    // MED-127: Migrate before mapping endpoints and fail fast on migration failure without swallowing.
     try
     {
         using var scope = app.Services.CreateScope();
@@ -491,11 +444,11 @@ static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
             DO $$
             BEGIN
                 IF EXISTS (
-                    SELECT 1 FROM information_schema.tables 
+                    SELECT 1 FROM information_schema.tables
                     WHERE table_schema = 'public' AND table_name = 'ecf_documents'
                 ) THEN
                     IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
+                        SELECT 1 FROM information_schema.columns
                         WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'signed_rfce_content'
                     ) THEN
                         ALTER TABLE ecf_documents ADD COLUMN signed_rfce_content text;
@@ -503,7 +456,7 @@ static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
                 END IF;
 
                 IF EXISTS (
-                    SELECT 1 FROM information_schema.tables 
+                    SELECT 1 FROM information_schema.tables
                     WHERE table_schema = 'public' AND table_name = 'customers'
                 ) THEN
                     INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
@@ -516,7 +469,7 @@ static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
                 END IF;
 
                 IF EXISTS (
-                    SELECT 1 FROM information_schema.columns 
+                    SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'last_status_check_at'
                 ) THEN
                     INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
@@ -525,7 +478,7 @@ static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
                 END IF;
 
                 IF EXISTS (
-                    SELECT 1 FROM information_schema.columns 
+                    SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'ambiente'
                 ) THEN
                     INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
@@ -534,14 +487,13 @@ static void EnsureMigrationHistoryBaseline(ApplicationDbContext context)
                 END IF;
 
                 IF EXISTS (
-                    SELECT 1 FROM information_schema.columns 
+                    SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = 'ecf_documents' AND column_name = 'signed_rfce_content'
                 ) THEN
                     INSERT INTO ""__EFMigrationsHistory"" (""MigrationId"", ""ProductVersion"")
                     VALUES ('20261005010000_AddSignedRfceContentColumn', '10.0.10')
                     ON CONFLICT (""MigrationId"") DO NOTHING;
 
-                    -- Auto-heal RFCE security_code to match CodigoSeguridadeCF
                     UPDATE ecf_documents
                     SET security_code = substring(signed_rfce_content from '<CodigoSeguridadeCF>([^<]+)</CodigoSeguridadeCF>')
                     WHERE signed_rfce_content LIKE '%<CodigoSeguridadeCF>%'

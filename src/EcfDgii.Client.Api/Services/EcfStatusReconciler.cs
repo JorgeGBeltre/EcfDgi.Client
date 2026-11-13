@@ -21,15 +21,6 @@ namespace EcfDgii.Client.Api.Services
         TimeSpan MaxPollingWindow,
         int BatchSize = 50)
     {
-        /// <summary>
-        /// MaxPollingWindow defaults to 72 hours — the only concrete DGII regulatory timeframe found
-        /// in the DGII_md reference docs (the contingency-mode remittance deadline, "Informe Técnico
-        /// e-CF v1.0"). DGII's own documentation for the ConsultaEstado service itself does not state
-        /// an explicit deadline for how long an e-CF can remain unconfirmed before it should be
-        /// escalated — this value is a reasonable, conservative stand-in, NOT a confirmed figure for
-        /// this specific scenario. Flagged for the business owner to confirm/override via
-        /// EcfStatusPolling:MaxPollingWindowHours in configuration before relying on it operationally.
-        /// </summary>
         public static EcfStatusPollingOptions Default => new(
             PollingInterval: TimeSpan.FromMinutes(15),
             MinDocumentAge: TimeSpan.FromMinutes(2),
@@ -37,26 +28,6 @@ namespace EcfDgii.Client.Api.Services
             BatchSize: 50);
     }
 
-    /// <summary>
-    /// Closes the ⑤/⑥ gap: prior to this, "SentToDgii" was fully terminal — nothing ever polled DGII
-    /// for what happened to a document afterward. Per DGII's own documented ConsultaEstado vocabulary
-    /// (DGII_md/"Descripcion Tecnica Servicios DGII.md"), an e-CF DGII initially accepts on receipt
-    /// CAN later be rejected on verification ("Rechazado") — without this reconciler, that rejection
-    /// would never be observed and the document would sit marked Sent, with fiscal consequence,
-    /// indefinitely. One reconciliation pass:
-    ///  - Skips documents younger than MinDocumentAge (DGII's own status query can lag behind actual
-    ///    receipt — same rationale as DocumentsController.MinimumUncertainAgeBeforeReconciliation).
-    ///  - Skips documents polled more recently than PollingInterval.
-    ///  - Escalates to RequiresManualReview (without spending another DGII call) once a document has
-    ///    been unconfirmed longer than MaxPollingWindow.
-    ///  - Otherwise queries DGII and maps the result: Aceptado/Aceptado condicional → AcceptedByDgii,
-    ///    Rechazado → RejectedByDgii (logged critical — this is the consequential case), anything else
-    ///    (No encontrado, En proceso, an unrecognized value) leaves the document SentToDgii to be
-    ///    retried next pass.
-    /// A transport failure calling DGII (exception) is treated like an inconclusive answer: attempt
-    /// counters advance so the MaxPollingWindow clock still runs, but the document's State is left
-    /// untouched — an outage must not be mistaken for a DGII verdict.
-    /// </summary>
     public sealed class EcfStatusReconciler(
         ApplicationDbContext db,
         IEcfClient ecfClient,
@@ -75,8 +46,6 @@ namespace EcfDgii.Client.Api.Services
             "Rechazado",
         };
 
-        /// <summary>Runs one reconciliation pass. Returns the number of documents actually processed
-        /// (escalated or queried) — not the total number of SentToDgii documents in the database.</summary>
         public async Task<int> ReconcileAsync(CancellationToken ct)
         {
             var now = clock.UtcNow.UtcDateTime;
@@ -84,7 +53,6 @@ namespace EcfDgii.Client.Api.Services
             var pollDueCutoff = now - options.PollingInterval;
             var batchSize = options.BatchSize > 0 ? options.BatchSize : 50;
 
-            // MED-163: AsNoTracking + Select only the columns needed for reconciliation to avoid materializing unbounded XML columns
             var due = await db.EcfDocuments
                 .AsNoTracking()
                 .Where(d => (d.State == "Signed" || d.State == "SentToDgii" || d.State == "Uncertain")
@@ -204,7 +172,6 @@ namespace EcfDgii.Client.Api.Services
                             }
                             catch
                             {
-                                // Fallback to ConsultarEstadoAsync below
                             }
                         }
 

@@ -20,7 +20,6 @@ namespace EcfDgii.Client.Infrastructure.Security
         private readonly IEcfXmlSigner _defaultSigner;
         private readonly ILogger<TenantSignerResolver> _logger;
 
-        // Cache signers by normalized RNC with expiration to avoid re-reading DB and parsing PFX on every request
         private readonly ConcurrentDictionary<string, (IEcfXmlSigner Signer, DateTime ExpiresAt)> _cache = new();
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
         private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
@@ -160,13 +159,11 @@ namespace EcfDgii.Client.Infrastructure.Security
                 return _defaultSigner;
             }
 
-            // 1. Revisar caché en memoria
             if (_cache.TryGetValue(cleanRnc, out var cached) && cached.ExpiresAt > DateTime.UtcNow)
             {
                 return cached.Signer;
             }
 
-            // MED-128: Protección contra cache stampede mediante per-key SemaphoreSlim
             var lockObj = _locks.GetOrAdd(cleanRnc, _ => new SemaphoreSlim(1, 1));
             await lockObj.WaitAsync(ct);
             try
@@ -176,7 +173,6 @@ namespace EcfDgii.Client.Infrastructure.Security
                     return cached.Signer;
                 }
 
-                // 2. Intentar cargar desde la tabla "Tenants" en PostgreSQL (ecf_db)
                 if (!string.IsNullOrWhiteSpace(_connectionString) &&
                     !_connectionString.Equals("InMemory", StringComparison.OrdinalIgnoreCase))
                 {
@@ -185,7 +181,6 @@ namespace EcfDgii.Client.Infrastructure.Security
                         await using var conn = new NpgsqlConnection(_connectionString);
                         await conn.OpenAsync(ct);
 
-                        // MED-128: Comparar columna Rnc directamente sin REPLACE() para aprovechar el índice B-tree
                         var formattedRnc = cleanRnc.Length == 9
                             ? $"{cleanRnc[..1]}-{cleanRnc[1..3]}-{cleanRnc[3..8]}-{cleanRnc[8]}"
                             : (cleanRnc.Length == 11 ? $"{cleanRnc[..3]}-{cleanRnc[3..10]}-{cleanRnc[10]}" : cleanRnc);
@@ -267,7 +262,6 @@ namespace EcfDgii.Client.Infrastructure.Security
                     }
                 }
 
-                // 3. Revisar archivos en disco (/app/certificates o certificates)
                 var certDirs = new[] { "/app/certificates", "certificates" };
                 foreach (var dir in certDirs)
                 {
@@ -309,7 +303,6 @@ namespace EcfDgii.Client.Infrastructure.Security
                     }
                 }
 
-                // 4. Fallback seguro al firmador por defecto
                 _logger.LogInformation("No se encontró certificado específico para RNC {Rnc}. Utilizando firmador por defecto.", cleanRnc);
                 return _defaultSigner;
             }

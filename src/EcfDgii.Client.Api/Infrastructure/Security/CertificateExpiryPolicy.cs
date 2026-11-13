@@ -2,11 +2,6 @@ using System;
 
 namespace EcfDgii.Client.Api.Infrastructure.Security
 {
-    /// <summary>
-    /// Renewing a DGII signing certificate with a certificate authority takes days, not minutes.
-    /// Finding out on expiry day means stopping invoicing while renewal is in progress — this exists
-    /// so the warning arrives while there's still time to act on it.
-    /// </summary>
     public static class CertificateExpiryPolicy
     {
         public static readonly TimeSpan WarningThreshold = TimeSpan.FromDays(30);

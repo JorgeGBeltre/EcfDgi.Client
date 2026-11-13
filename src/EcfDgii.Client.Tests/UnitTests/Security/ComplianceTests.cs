@@ -19,11 +19,10 @@ namespace EcfDgii.Client.UnitTests.Security
         [Fact]
         public void TimbreUrl_ShouldContainCorrectParameterSpelling_codigoseguridad()
         {
-            // Arrange
             var ecfReq = new TimbreEcfRequest
             {
-                RncEmisor = "101672919",
-                RncComprador = "101889063",
+                RncEmisor = "101000009",
+                RncComprador = "101000001",
                 ENcf = "E310000000001",
                 FechaEmision = "10-10-2020",
                 MontoTotal = 100.50m,
@@ -33,28 +32,25 @@ namespace EcfDgii.Client.UnitTests.Security
 
             var fcReq = new TimbreFcRequest
             {
-                RncEmisor = "101672919",
+                RncEmisor = "101000009",
                 ENcf = "E320000000001",
                 MontoTotal = 100.50m,
                 CodigoSeguridad = "abcd12"
             };
 
-            // Act
             var ecfUrl = EcfSecurityUtils.BuildTimbreUrl("https://example.com/timbre", ecfReq);
             var fcUrl = EcfSecurityUtils.BuildTimbreFcUrl("https://example.com/timbrefc", fcReq);
 
-            // Assert
             Assert.Contains("codigoseguridad=", ecfUrl);
-            Assert.DoesNotContain("codigoseuridad=", ecfUrl); // verify no typo
+            Assert.DoesNotContain("codigoseuridad=", ecfUrl);
 
             Assert.Contains("codigoseguridad=", fcUrl);
-            Assert.DoesNotContain("codigoseuridad=", fcUrl); // verify no typo
+            Assert.DoesNotContain("codigoseuridad=", fcUrl);
         }
 
         [Fact]
         public void EcfSchemaValidator_ShouldValidateCorrectRfceXml()
         {
-            // Arrange
             var rfce = new Rfce
             {
                 Encabezado = new RfceEncabezado
@@ -69,8 +65,8 @@ namespace EcfDgii.Client.UnitTests.Security
                     },
                     Emisor = new RfceEmisor
                     {
-                        RncEmisor = "101889063",
-                        RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                        RncEmisor = "101000001",
+                        RazonSocialEmisor = "EMPRESA DEMO SRL",
                         FechaEmision = "10-10-2020"
                     },
                     Comprador = new RfceComprador
@@ -91,25 +87,22 @@ namespace EcfDgii.Client.UnitTests.Security
             var xml = serializer.Serialize(rfce);
 
             var signer = new EcfXmlSigner(string.Empty, string.Empty);
-            var signedXml = signer.SignXml(xml, "101889063");
+            var signedXml = signer.SignXml(xml, "101000001");
 
             var validator = new EcfSchemaValidator();
-            
+
             var xsdPath = ResolveXsdFile("RFCE 32 v.1.0.xsd");
 
-            // Act
             var result = validator.Validate(signedXml, xsdPath);
 
-            // Assert
             Assert.True(result.IsValid, string.Join("; ", result.Errors));
         }
 
         [Fact]
         public async System.Threading.Tasks.Task TokenManager_ShouldSuccessfullyParseExpirationWithMilliseconds()
         {
-            // Arrange
             var responseXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><RespuestaAutenticacion><token>test-token-value</token><expira>2026-08-04T23:55:06.893Z</expira><expedido>2026-08-04T22:55:06.893Z</expedido></RespuestaAutenticacion>";
-            
+
             var handlerMock = new Mock<HttpMessageHandler>();
             handlerMock.Protected()
                 .Setup<System.Threading.Tasks.Task<HttpResponseMessage>>(
@@ -131,24 +124,21 @@ namespace EcfDgii.Client.UnitTests.Security
                 AutenticacionUrl = "https://example.com/auth"
             };
 
-            var tokenManager = new EcfTokenManager(httpClient, signerMock.Object, config, "101672919");
+            var tokenManager = new EcfTokenManager(httpClient, signerMock.Object, config, "101000009");
 
-            // Act
             var token = await tokenManager.GetTokenAsync();
 
-            // Assert
             Assert.Equal("test-token-value", token);
         }
 
         [Fact]
         public void EcfSchemaValidator_ShouldValidateCorrectAnecfXml()
         {
-            // Arrange
             var anecfXml = @"<?xml version=""1.0"" encoding=""utf-8""?>
 <ANECF>
   <Encabezado>
     <Version>1.0</Version>
-    <RncEmisor>101672919</RncEmisor>
+    <RncEmisor>101000009</RncEmisor>
     <CantidadeNCFAnulados>1</CantidadeNCFAnulados>
     <FechaHoraAnulacioneNCF>10-10-2020 09:00:00</FechaHoraAnulacioneNCF>
   </Encabezado>
@@ -171,26 +161,23 @@ namespace EcfDgii.Client.UnitTests.Security
             var validator = new EcfSchemaValidator();
             var xsdPath = ResolveXsdFile("ANECF v.1.0.xsd");
 
-            // Act
             var result = validator.Validate(anecfXml, xsdPath);
 
-            // Assert
             Assert.True(result.IsValid, string.Join("; ", result.Errors));
         }
 
         [Fact]
         public void EcfSchemaValidator_ShouldValidateCorrectAcecfXml()
         {
-            // Arrange
             var acecfXml = @"<?xml version=""1.0"" encoding=""utf-8""?>
 <ACECF>
   <DetalleAprobacionComercial>
     <Version>1.0</Version>
-    <RNCEmisor>101672919</RNCEmisor>
+    <RNCEmisor>101000009</RNCEmisor>
     <eNCF>E310000000001</eNCF>
     <FechaEmision>10-10-2020</FechaEmision>
     <MontoTotal>100.50</MontoTotal>
-    <RNCComprador>101889063</RNCComprador>
+    <RNCComprador>101000001</RNCComprador>
     <Estado>1</Estado>
     <FechaHoraAprobacionComercial>10-10-2020 09:00:00</FechaHoraAprobacionComercial>
   </DetalleAprobacionComercial>
@@ -199,10 +186,8 @@ namespace EcfDgii.Client.UnitTests.Security
             var validator = new EcfSchemaValidator();
             var xsdPath = ResolveXsdFile("ACECF v.1.0.xsd");
 
-            // Act
             var result = validator.Validate(acecfXml, xsdPath);
 
-            // Assert
             Assert.True(result.IsValid, string.Join("; ", result.Errors));
         }
 

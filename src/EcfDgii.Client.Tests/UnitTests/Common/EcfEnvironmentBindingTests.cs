@@ -47,7 +47,7 @@ namespace EcfDgii.Client.UnitTests.Common
             var inMemorySettings = new Dictionary<string, string?>
             {
                 { "EcfClientOptions:Environment", envValue },
-                { "EcfClientOptions:RncEmisor", "101889063" }
+                { "EcfClientOptions:RncEmisor", "101000001" }
             };
 
             var configuration = new ConfigurationBuilder()
@@ -67,7 +67,7 @@ namespace EcfDgii.Client.UnitTests.Common
             {
                 { "Ambiente", "Produccion" },
                 { "EcfClientOptions:Environment", "Produccion" },
-                { "EcfClientOptions:RncEmisor", "101889063" },
+                { "EcfClientOptions:RncEmisor", "101000001" },
                 { "EcfClientOptions:CertificatePath", "dummy.pfx" },
                 { "EcfClientOptions:CertificatePassword", "secret" }
             };

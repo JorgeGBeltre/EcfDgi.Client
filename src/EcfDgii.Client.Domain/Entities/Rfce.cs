@@ -39,10 +39,10 @@ namespace EcfDgii.Client.Domain.Entities
     public class RfceIdDoc
     {
         public string TipoeCF { get; set; } = "32";
-        
+
         [XmlElement("eNCF")]
         public string ENcf { get; set; } = string.Empty;
-        
+
         public int TipoIngresos { get; set; }
         public int TipoPago { get; set; }
 

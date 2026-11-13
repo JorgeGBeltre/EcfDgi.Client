@@ -35,7 +35,7 @@ namespace EcfDgii.Client.Domain.Entities
         public string Estado { get; set; }
 
         [XmlArray("mensajes")]
-        [XmlArrayItem("MensajeCodigo")] // Check MD for exact tag if nested
+        [XmlArrayItem("MensajeCodigo")]
         [JsonPropertyName("mensajes")]
         public List<MensajeCodigo> Mensajes { get; set; }
 

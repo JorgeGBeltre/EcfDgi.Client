@@ -12,8 +12,6 @@ namespace EcfDgii.Client.UnitTests.Dgii
 {
     public class DgiiDirectTransportTests
     {
-        /// <summary>Routes every request to a canned response, capturing the Authorization header of
-        /// each request seen so a test can assert which token was actually sent.</summary>
         private sealed class ScriptedHandler : HttpMessageHandler
         {
             private readonly Func<int, HttpResponseMessage> _responseFor;
@@ -57,7 +55,7 @@ namespace EcfDgii.Client.UnitTests.Dgii
             tokenManagerMock.Setup(t => t.GetTokenAsync(It.IsAny<CancellationToken>())).ReturnsAsync("tok-1");
             var transport = new DgiiDirectTransport(new HttpClient(handler), tokenManagerMock.Object, MakeConfig());
 
-            var result = await transport.ConsultarEstadoAsync(new ConsultaEstadoRequest("101889063", "E310000000001"));
+            var result = await transport.ConsultarEstadoAsync(new ConsultaEstadoRequest("101000001", "E310000000001"));
 
             Assert.Equal("Aceptado", result.Estado);
             Assert.Equal(1, handler.CallCount);
@@ -67,9 +65,6 @@ namespace EcfDgii.Client.UnitTests.Dgii
         [Fact]
         public async Task ConsultarEstadoAsync_OnFirstTry401_InvalidatesToken_AndRetriesOnceWithAFreshOne()
         {
-            // The whole point of reactive 401 handling: a token DGII rejects mid-window (early
-            // revocation, clock skew) must not permanently break polling for the rest of that token's
-            // nominal lifetime — the transport has to notice the 401 and get a fresh token itself.
             var handler = new ScriptedHandler(call => call == 1 ? Unauthorized() : EstadoOk("Rechazado"));
             var tokenManagerMock = new Mock<IEcfTokenManager>();
             tokenManagerMock.SetupSequence(t => t.GetTokenAsync(It.IsAny<CancellationToken>()))
@@ -77,7 +72,7 @@ namespace EcfDgii.Client.UnitTests.Dgii
                 .ReturnsAsync("fresh-token");
             var transport = new DgiiDirectTransport(new HttpClient(handler), tokenManagerMock.Object, MakeConfig());
 
-            var result = await transport.ConsultarEstadoAsync(new ConsultaEstadoRequest("101889063", "E310000000001"));
+            var result = await transport.ConsultarEstadoAsync(new ConsultaEstadoRequest("101000001", "E310000000001"));
 
             Assert.Equal("Rechazado", result.Estado);
             Assert.Equal(2, handler.CallCount);
@@ -88,9 +83,6 @@ namespace EcfDgii.Client.UnitTests.Dgii
         [Fact]
         public async Task ConsultarEstadoAsync_TwoConsecutive401s_DoesNotRetryForever_GivesUpAfterOneRetry()
         {
-            // A second 401 (fresh token also rejected — a real outage, not a stale-token blip) must
-            // surface as a failed call, not loop: an unbounded reactive-retry would turn one bad
-            // response into an infinite request storm against DGII.
             var handler = new ScriptedHandler(_ => Unauthorized());
             var tokenManagerMock = new Mock<IEcfTokenManager>();
             tokenManagerMock.SetupSequence(t => t.GetTokenAsync(It.IsAny<CancellationToken>()))
@@ -99,7 +91,7 @@ namespace EcfDgii.Client.UnitTests.Dgii
             var transport = new DgiiDirectTransport(new HttpClient(handler), tokenManagerMock.Object, MakeConfig());
 
             await Assert.ThrowsAsync<HttpRequestException>(() =>
-                transport.ConsultarEstadoAsync(new ConsultaEstadoRequest("101889063", "E310000000001")));
+                transport.ConsultarEstadoAsync(new ConsultaEstadoRequest("101000001", "E310000000001")));
 
             Assert.Equal(2, handler.CallCount);
             tokenManagerMock.Verify(t => t.InvalidateAsync(It.IsAny<CancellationToken>()), Times.Once);

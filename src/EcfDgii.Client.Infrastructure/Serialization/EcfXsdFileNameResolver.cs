@@ -2,14 +2,6 @@ using System.Xml;
 
 namespace EcfDgii.Client.Infrastructure.Serialization
 {
-    /// <summary>
-    /// Resolves which DGII XSD file (checked into the repo under "Documentación Técnica (XSD)",
-    /// copied next to the published app — see EcfDgii.Client.Api.csproj) applies to a given XML
-    /// document, by inspecting its root element and, for an e-CF, its TipoeCF. Extracted from
-    /// EcfClient's private GetXsdFileName so DocumentsController can run the SAME resolution logic
-    /// for a pre-signature validation gate — duplicating this by hand in two places would let them
-    /// silently drift (the exact "written once, trusted twice" pattern this session keeps finding).
-    /// </summary>
     public static class EcfXsdFileNameResolver
     {
         public static string Resolve(string xmlContent)
@@ -44,7 +36,6 @@ namespace EcfDgii.Client.Infrastructure.Serialization
             }
             catch
             {
-                // Fallback en caso de que ocurra algún error al parsear el XML
             }
 
             return string.Empty;

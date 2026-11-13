@@ -25,7 +25,6 @@ namespace EcfDgii.Client.IntegrationTests
                 WorkerSecretKey = "WorkerSecretKey"
             };
 
-            // Setup default successful mock response for SDK calls
             _factory.EcfClientMock
                 .Setup(m => m.SendRfceAsync(It.IsAny<Rfce>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new RfceRecepcionResponse
@@ -65,7 +64,6 @@ namespace EcfDgii.Client.IntegrationTests
             var client = _factory.CreateClient();
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
             var nonce = Guid.NewGuid().ToString("N");
-            // RawTarget literal containing accents, spaces, and encoded query
             var rawTarget = "/api/ecf/status?rncEmisor=101010101&comprobante=Factura%20Electr%C3%B3nica";
 
             var canonicalString = CanonicalRequestHelper.BuildCanonicalString("GET", rawTarget, timestamp, nonce, string.Empty);
@@ -115,7 +113,6 @@ namespace EcfDgii.Client.IntegrationTests
             var canonicalString = CanonicalRequestHelper.BuildCanonicalString("GET", testPath, timestamp, nonce, string.Empty);
             var signature = CanonicalRequestHelper.ComputeHmacSha256("WorkerSecretKey", canonicalString);
 
-            // Attempt 1: Valid signed request to protected route
             var req1 = new HttpRequestMessage(HttpMethod.Get, testPath);
             req1.Headers.Add(WorkerAuthenticationHandler.KeyIdHeader, "default-worker-id");
             req1.Headers.Add(WorkerAuthenticationHandler.TimestampHeader, timestamp);
@@ -125,7 +122,6 @@ namespace EcfDgii.Client.IntegrationTests
             var resp1 = await client.SendAsync(req1);
             Assert.True(resp1.IsSuccessStatusCode || resp1.StatusCode == HttpStatusCode.BadRequest);
 
-            // Attempt 2: Replay with same Nonce
             var req2 = new HttpRequestMessage(HttpMethod.Get, testPath);
             req2.Headers.Add(WorkerAuthenticationHandler.KeyIdHeader, "default-worker-id");
             req2.Headers.Add(WorkerAuthenticationHandler.TimestampHeader, timestamp);
@@ -145,7 +141,6 @@ namespace EcfDgii.Client.IntegrationTests
             var idempotencyKey = "test-idempotency-" + Guid.NewGuid().ToString("N");
             var bodyJson = "{\"rfceModel\":{\"encabezado\":{\"idDoc\":{\"eNcf\":\"E310000000001\"},\"emisor\":{\"rncEmisor\":\"101010101\"},\"totales\":{\"montoTotal\":100.0}}}}";
 
-            // First POST request
             var req1 = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
             {
                 Content = new StringContent(bodyJson, Encoding.UTF8, "application/json")
@@ -155,7 +150,6 @@ namespace EcfDgii.Client.IntegrationTests
             var resp1 = await client.SendAsync(req1);
             Assert.Equal(HttpStatusCode.OK, resp1.StatusCode);
 
-            // Second POST request with identical Idempotency-Key and body
             var req2 = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
             {
                 Content = new StringContent(bodyJson, Encoding.UTF8, "application/json")
@@ -172,7 +166,6 @@ namespace EcfDgii.Client.IntegrationTests
         [Fact]
         public async Task KeyRotation_PreservesIdempotency_AcrossDifferentWorkerKeys()
         {
-            // Worker 1 sends initial request with KeyId = default-worker-id
             var clientKey1 = CreateSignedClient(new SigningDelegatingHandlerOptions
             {
                 WorkerKeyId = "default-worker-id",
@@ -191,10 +184,9 @@ namespace EcfDgii.Client.IntegrationTests
             var resp1 = await clientKey1.SendAsync(req1);
             Assert.Equal(HttpStatusCode.OK, resp1.StatusCode);
 
-            // Worker 2 (rotated key) sends retry request with same X-Idempotency-Key
             var clientKey2 = CreateSignedClient(new SigningDelegatingHandlerOptions
             {
-                WorkerKeyId = "default-worker-id", // Same tenant, active key
+                WorkerKeyId = "default-worker-id",
                 WorkerSecretKey = "WorkerSecretKey"
             });
 
@@ -218,7 +210,6 @@ namespace EcfDgii.Client.IntegrationTests
             var scopedKey = $"default-tenant:{idempotencyKey}";
             var bodyJson = "{\"rfceModel\":{\"encabezado\":{\"idDoc\":{\"eNcf\":\"E310000000001\"},\"emisor\":{\"rncEmisor\":\"101010101\"},\"totales\":{\"montoTotal\":100.0}}}}";
 
-            // Manually insert a stuck 'Processing' record created 10 minutes ago (> 5 min lease)
             using (var scope = _factory.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -235,7 +226,6 @@ namespace EcfDgii.Client.IntegrationTests
                 await db.SaveChangesAsync();
             }
 
-            // Client sends request with same Idempotency-Key -> Lease is reclaimed instead of returning 409
             var client = CreateSignedClient();
             var req = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
             {
@@ -254,7 +244,6 @@ namespace EcfDgii.Client.IntegrationTests
             var client = CreateSignedClient();
             var idempotencyKey = "mismatch-key-" + Guid.NewGuid().ToString("N");
 
-            // First POST request
             var req1 = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
             {
                 Content = new StringContent("{\"rfceModel\":{\"encabezado\":{\"idDoc\":{\"eNcf\":\"E310000000001\"},\"emisor\":{\"rncEmisor\":\"101010101\"},\"totales\":{\"montoTotal\":100.0}}}}", Encoding.UTF8, "application/json")
@@ -262,7 +251,6 @@ namespace EcfDgii.Client.IntegrationTests
             req1.Headers.Add("X-Idempotency-Key", idempotencyKey);
             await client.SendAsync(req1);
 
-            // Second POST request with same Key but different body
             var req2 = new HttpRequestMessage(HttpMethod.Post, "/api/ecf/send-rfce")
             {
                 Content = new StringContent("{\"rfceModel\":{\"encabezado\":{\"idDoc\":{\"eNcf\":\"E310000000002\"},\"emisor\":{\"rncEmisor\":\"999999999\"},\"totales\":{\"montoTotal\":500.0}}}}", Encoding.UTF8, "application/json")

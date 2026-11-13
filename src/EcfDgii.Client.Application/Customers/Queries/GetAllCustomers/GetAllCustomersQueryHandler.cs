@@ -21,7 +21,7 @@ namespace EcfDgii.Client.Application.Customers.Queries.GetAllCustomers
         public async Task<Result<List<CustomerDto>>> Handle(GetAllCustomersQuery request, CancellationToken cancellationToken)
         {
             var customers = await _customerRepository.GetAllAsync(cancellationToken);
-            
+
             var dtos = customers.Select(c => new CustomerDto
             {
                 Id = c.Id,

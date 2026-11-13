@@ -38,7 +38,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
     {
         private readonly IServiceScopeFactory _scopeFactory;
 
-        // Invariant: HttpClient Timeout (15s) < LeaseTimeout (5m) < Max DGII Processing Timeout (3m)
         public static readonly TimeSpan LeaseTimeout = TimeSpan.FromMinutes(5);
 
         public DbIdempotencyStore(IServiceScopeFactory scopeFactory)
@@ -56,7 +55,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
             {
                 if (!string.Equals(existing.PayloadHash, payloadHash, StringComparison.OrdinalIgnoreCase))
                 {
-                    // Si el intento previo falló con error del cliente o validación (>= 400), permitir que el nuevo payload corregido sea procesado
                     if (existing.StatusCode >= 400)
                     {
                         existing.PayloadHash = payloadHash;
@@ -77,8 +75,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 {
                     if (existing.StatusCode >= 200 && existing.StatusCode < 300)
                     {
-                        // Defense-in-depth: if the underlying fiscal document was subsequently rejected by DGII,
-                        // do not return the stale cached acceptance/signed response. Allow re-emission.
                         bool wasRejected = false;
                         if (!string.IsNullOrWhiteSpace(existing.ResponseBody) && existing.ResponseBody.Contains("\"eNcf\":"))
                         {
@@ -101,7 +97,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                             }
                             catch
                             {
-                                // In case of parsing error, proceed with standard behavior
                             }
                         }
 
@@ -120,7 +115,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                         }
                     }
 
-                    // Si completó previamente con error (>= 400), permitir reintento
                     existing.Status = IdempotencyStatus.Processing;
                     existing.StatusCode = 0;
                     existing.ResponseBody = string.Empty;
@@ -131,7 +125,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                     return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.Reserved };
                 }
 
-                // Atomic Lease Reclamation for expired 'Processing' reservations (e.g. server crash or reboot)
                 var cutoff = DateTimeOffset.UtcNow - LeaseTimeout;
                 if (existing.Status == IdempotencyStatus.Processing && existing.CreatedAt < cutoff)
                 {
@@ -151,7 +144,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                     }
                     else
                     {
-                        // Fallback for InMemory test database
                         existing.CreatedAt = DateTimeOffset.UtcNow;
                         existing.CreatedByWorkerKeyId = workerKeyId;
                         existing.UpdatedAt = DateTimeOffset.UtcNow;
@@ -181,7 +173,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
             }
             catch (DbUpdateException)
             {
-                // Unique key violation -> Concurrent request reserved key at same time
                 return new IdempotencyReservationResult { Status = IdempotencyReservationStatus.AlreadyProcessing };
             }
         }

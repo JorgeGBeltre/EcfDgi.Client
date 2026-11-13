@@ -28,11 +28,9 @@ namespace EcfDgii.Client.Application.Ecf.Queries.GetEcfStatus
         {
             try
             {
-                // 1. Try local DB search scoped by eNCF and RncEmisor
                 var localDoc = await _documentRepository.GetByENcfAsync(request.ENcf, request.RncEmisor, cancellationToken);
                 if (localDoc != null && (localDoc.State is "AcceptedByDgii" or "Accepted" or "Aceptado") && (string.IsNullOrWhiteSpace(request.RncEmisor) || localDoc.RncEmisor == request.RncEmisor))
                 {
-                    // Map to response model
                     var localResponse = new ConsultaEstadoResponse
                     {
                         Codigo = "0",
@@ -49,8 +47,6 @@ namespace EcfDgii.Client.Application.Ecf.Queries.GetEcfStatus
                     return Result<ConsultaEstadoResponse>.Success(localResponse);
                 }
 
-                // 2. Fetch from DGII
-                // For a live query, we need to supply basic fields. If we don't have RncComprador/CodigoSeguridad locally, they default to null
                 var rncComprador = localDoc?.RncComprador;
                 var secCode = localDoc?.SecurityCode;
 
@@ -61,7 +57,6 @@ namespace EcfDgii.Client.Application.Ecf.Queries.GetEcfStatus
                     secCode,
                     cancellationToken);
 
-                // 3. Update local DB if status changed
                 if (localDoc != null && localDoc.State != liveResponse.Estado)
                 {
                     localDoc.State = liveResponse.Estado;

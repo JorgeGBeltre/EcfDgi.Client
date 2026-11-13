@@ -25,13 +25,13 @@ namespace EcfDgii.Client.UnitTests.Ecf
                     },
                     Emisor = new RfceEmisor
                     {
-                        RncEmisor = "101672919",
-                        RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                        RncEmisor = "101000009",
+                        RazonSocialEmisor = "EMPRESA DEMO SRL",
                         FechaEmision = "10-10-2020"
                     },
                     Comprador = new RfceComprador
                     {
-                        RncComprador = "101889063",
+                        RncComprador = "101000001",
                         RazonSocialComprador = "Cliente Test"
                     },
                     Totales = new RfceTotales
@@ -46,21 +46,18 @@ namespace EcfDgii.Client.UnitTests.Ecf
             var serializer = new EcfXmlSerializer();
             var xml = serializer.Serialize(rfce);
 
-            // Assert tag casing
             Assert.Contains("<Version>1.0</Version>", xml);
             Assert.Contains("<eNCF>E320000000001</eNCF>", xml);
-            Assert.Contains("<RNCEmisor>101672919</RNCEmisor>", xml);
-            Assert.Contains("<RNCComprador>101889063</RNCComprador>", xml);
-            Assert.Contains("<RazonSocialEmisor>WILLY CHIC DOMINICANA SRL</RazonSocialEmisor>", xml);
-            
-            // Assert CodigoSeguridadeCF is child of Encabezado, sibling of Totales
+            Assert.Contains("<RNCEmisor>101000009</RNCEmisor>", xml);
+            Assert.Contains("<RNCComprador>101000001</RNCComprador>", xml);
+            Assert.Contains("<RazonSocialEmisor>EMPRESA DEMO SRL</RazonSocialEmisor>", xml);
+
             Assert.Contains("<CodigoSeguridadeCF>ABCD12</CodigoSeguridadeCF>", xml);
-            
-            // Check that CodigoSeguridadeCF is serialized after Totales but before closing Encabezado
+
             var indexOfTotales = xml.IndexOf("</Totales>");
             var indexOfSecCode = xml.IndexOf("<CodigoSeguridadeCF>");
             var indexOfEncabezado = xml.IndexOf("</Encabezado>");
-            
+
             Assert.True(indexOfTotales < indexOfSecCode);
             Assert.True(indexOfSecCode < indexOfEncabezado);
         }
@@ -82,15 +79,15 @@ namespace EcfDgii.Client.UnitTests.Ecf
                     },
                     Emisor = new RfceEmisor
                     {
-                        RncEmisor = "101672919",
-                        RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL",
+                        RncEmisor = "101000009",
+                        RazonSocialEmisor = "EMPRESA DEMO SRL",
                         FechaEmision = "10-10-2020"
                     },
                     Totales = new RfceTotales
                     {
-                        MontoTotal = 100.5m,      // 1 decimal
-                        MontoGravadoTotal = 100m,  // 0 decimal
-                        TotalITBIS = 18.00m       // 2 decimals
+                        MontoTotal = 100.5m,
+                        MontoGravadoTotal = 100m,
+                        TotalITBIS = 18.00m
                     },
                     CodigoSeguridadeCF = "ABCD12"
                 }

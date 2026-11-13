@@ -13,7 +13,6 @@ permissions:
   contents: write
 
 jobs:
-  # 1. EJECUTAR PRUEBAS
   test:
     runs-on: ubuntu-latest
 
@@ -38,7 +37,6 @@ jobs:
       - name: Ejecutar pruebas unitarias con cobertura
         run: dotnet test EcfDgii.Client.slnx -c Release --no-build --verbosity normal --collect:"XPlat Code Coverage"
 
-  # 2. AUTO-MERGE A MAIN
   merge-to-main:
     needs: test
     if: github.event_name != 'pull_request'
@@ -63,7 +61,6 @@ jobs:
           git merge origin/develop --no-edit -m "Auto-merge develop to main"
           git push origin main
 
-  # 3. PUBLICAR EN HOSTINGER
   deploy-to-hostinger:
     needs: merge-to-main
     if: github.event_name != 'pull_request'
@@ -108,7 +105,7 @@ jobs:
           ls -la publish
 
       - name: Copiar artefactos al servidor VPS
-        uses: appleboy/scp-action@v0.1.7 # v0.1.7
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOSTINGER_SERVER }}
           username: ${{ secrets.HOSTINGER_USERNAME }}
@@ -120,7 +117,7 @@ jobs:
           overwrite: true
 
       - name: Desplegar contenedor Docker vía SSH
-        uses: appleboy/ssh-action@v1.2.0 # v1.2.0
+        uses: appleboy/ssh-action@v1.2.0
         env:
           ASPNETCORE_ENVIRONMENT: Production
           DOTNET_ENVIRONMENT: Production
@@ -129,8 +126,9 @@ jobs:
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR || '101889063' }}
+          RNC_EMISOR: ${{ vars.DGII_RNC_EMISOR || secrets.DGII_RNC_EMISOR }}
           AMBIENTE: ${{ vars.DGII_AMBIENTE || secrets.DGII_AMBIENTE || 'Produccion' }}
+          TRAEFIK_HOST: ${{ vars.TRAEFIK_HOST || secrets.TRAEFIK_HOST }}
           WORKER_SECRET_KEY: ${{ secrets.WORKER_SECRET_KEY }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           CERT_PASSWORD: ${{ secrets.DGII_CERTIFICATE_PASSWORD }}
@@ -142,7 +140,7 @@ jobs:
           port: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
           timeout: 120s
           command_timeout: 10m
-          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,REDIS_PASSWORD,RNC_EMISOR,AMBIENTE,WORKER_SECRET_KEY,JWT_SECRET,CERT_PASSWORD,DEPLOY_SHA
+          envs: ASPNETCORE_ENVIRONMENT,DOTNET_ENVIRONMENT,ASPNETCORE_URLS,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,REDIS_PASSWORD,RNC_EMISOR,AMBIENTE,TRAEFIK_HOST,WORKER_SECRET_KEY,JWT_SECRET,CERT_PASSWORD,DEPLOY_SHA
           script: |
             set -e
 
@@ -153,7 +151,6 @@ jobs:
 
             cd "$DEPLOY_PATH"
 
-            # Recuperar credenciales desde el archivo .env existente en el VPS si no vinieron en GitHub Secrets
             if [ -z "${WORKER_SECRET_KEY}" ] && [ -f "$ENV_FILE" ]; then
               WORKER_SECRET_KEY=$(grep -E '^(WORKER_SECRET_KEY|WorkerSecretKey)=' "$ENV_FILE" | head -n 1 | cut -d '=' -f2- || true)
             fi
@@ -166,14 +163,21 @@ jobs:
             if [ -z "${RNC_EMISOR}" ] && [ -f "$ENV_FILE" ]; then
               RNC_EMISOR=$(grep -E '^(RncEmisor|EcfEmisor__Rnc)=' "$ENV_FILE" | head -n 1 | cut -d '=' -f2- || true)
             fi
+            if [ -z "${TRAEFIK_HOST}" ] && [ -f "$ENV_FILE" ]; then
+              TRAEFIK_HOST=$(grep -E '^TRAEFIK_HOST=' "$ENV_FILE" | head -n 1 | cut -d '=' -f2- || true)
+            fi
+            if [ -z "${TRAEFIK_HOST}" ]; then
+              TRAEFIK_HOST=$(docker inspect "$CONTAINER_NAME" --format '{{index .Config.Labels "traefik.http.routers.ecf-dgii.rule"}}' 2>/dev/null | awk -F'\140' '{print $2}' || true)
+            fi
 
-            # Fallbacks seguros comprobados para evitar interrupción de servicio si no están en GitHub Secrets ni en servidor
-            WORKER_SECRET_KEY="${WORKER_SECRET_KEY:-6QG04PHsCO43eY9AOtGiI6c96nAUAQ9yIoIE6a0Ri2LQSpgxIQNdGvYVXWkvlEpAwR7ITkuD3j4-U0-9w8ipnQ}"
             JWT_SECRET="${JWT_SECRET:-${WORKER_SECRET_KEY}}"
-            RNC_EMISOR="${RNC_EMISOR:-101889063}"
 
             if [ -z "${RNC_EMISOR}" ]; then
-              echo "ERROR: RNC_EMISOR is required but not configured in vars or secrets."
+              echo "ERROR: RNC_EMISOR is required in vars/secrets or existing .env."
+              exit 1
+            fi
+            if [ -z "${TRAEFIK_HOST}" ]; then
+              echo "ERROR: TRAEFIK_HOST is required in vars/secrets, .env, or existing container label."
               exit 1
             fi
             if [ -z "${WORKER_SECRET_KEY}" ]; then
@@ -239,6 +243,7 @@ jobs:
             STORAGE_ENCRYPTION_KEY=${JWT_SECRET}
             EcfClientOptions__RncEmisor=${RNC_EMISOR}
             EcfEmisor__Rnc=${RNC_EMISOR}
+            TRAEFIK_HOST=${TRAEFIK_HOST}
             EcfClientOptions__CertificatePath=/app/certificates/default.pfx
             EcfClientOptions__CertificatePassword=${CERT_PASSWORD}
             EOF
@@ -265,7 +270,7 @@ jobs:
               --memory 1g \
               --pids-limit 100 \
               --label "traefik.enable=true" \
-              --label "traefik.http.routers.ecf-dgii.rule=Host(\`dgii.app.willychicrd.com\`)" \
+              --label "traefik.http.routers.ecf-dgii.rule=Host(\`${TRAEFIK_HOST}\`)" \
               --label "traefik.http.routers.ecf-dgii.entrypoints=websecure" \
               --label "traefik.http.routers.ecf-dgii.tls.certresolver=letsencrypt" \
               --label "traefik.http.services.ecf-dgii.loadbalancer.server.port=8080" \

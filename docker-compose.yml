@@ -27,7 +27,6 @@ services:
       - ASPNETCORE_URLS=http://+:8080
       - DOTNET_SYSTEM_NET_DISABLE_IPV6=1
       - TZ=America/Santo_Domingo
-      # Conexión compartida a la base de datos central ecf_db
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT:-}
       - ConnectionStrings__Redis=${CONNECTION_STRING_REDIS:-ecf_dgii_redis:6379,password=${REDIS_PASSWORD},abortConnect=false}
       - EcfEmisor__Rnc=${ECF_EMISOR_RNC:?ECF_EMISOR_RNC is required}

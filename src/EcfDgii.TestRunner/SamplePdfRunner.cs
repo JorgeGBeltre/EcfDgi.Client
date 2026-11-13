@@ -12,21 +12,24 @@ using QuestPDF.Infrastructure;
 
 namespace EcfDgii.TestRunner
 {
-    public class WillyChicPdfRunner
+    public class SamplePdfRunner
     {
-        private const string RncEmisor = "101889063";
-        private const string RncEmisorFormatted = "101-88906-3";
-        private const string RazonSocialEmisor = "WILLY CHIC DOMINICANA SRL";
-        private const string TelefonoEmisor = "8099557597";
-        private const string CorreoEmisor = "contabilidad@willychicrd.com";
-        private const string DireccionEmisor = "Autopista Duarte Km. 13 ½, Parque Industrial Dualas, Nave 5 Pantoja, Santo Domingo";
+        private const string RncEmisor = "101000001";
+        private const string RncEmisorFormatted = "101-00000-1";
+        private const string RazonSocialEmisor = "EMPRESA DEMO SRL";
+        private const string TelefonoEmisor = "8095550100";
+        private const string CorreoEmisor = "facturacion@example.com";
+        private const string DireccionEmisor = "Av. Principal No. 100, Santo Domingo";
         private const string SucursalEmisor = "SEDE PRINCIPAL";
 
-        private readonly string _xmlsDir = @"C:\Users\Jorge\Desktop\Willychic\Simulacion_Operaciones_Reales\XMLs";
-        private readonly string _pdfsDir = @"C:\Users\Jorge\Desktop\Willychic\Simulacion_Operaciones_Reales\PDFs";
-        private readonly string _logoPath = @"C:\Users\Jorge\Desktop\Willychic\Willychic_Logo.png";
+        private readonly string _xmlsDir = Environment.GetEnvironmentVariable("SAMPLE_XMLS_DIR")
+            ?? Path.Combine(".", "sample_output", "Simulacion", "XMLs");
+        private readonly string _pdfsDir = Environment.GetEnvironmentVariable("SAMPLE_PDFS_DIR")
+            ?? Path.Combine(".", "sample_output", "Simulacion", "PDFs");
+        private readonly string _logoPath = Environment.GetEnvironmentVariable("SAMPLE_LOGO_PATH")
+            ?? Path.Combine(".", "sample_output", "sample_logo.png");
 
-        public WillyChicPdfRunner()
+        public SamplePdfRunner()
         {
             QuestPDF.Settings.License = LicenseType.Community;
         }
@@ -54,7 +57,7 @@ namespace EcfDgii.TestRunner
         public void GenerateAll()
         {
             Console.WriteLine("=========================================================================================================");
-            Console.WriteLine("GENERANDO 25 REPRESENTACIONES IMPRESAS (PDF) OFICIALES - WILLY CHIC DOMINICANA SRL (101889063)");
+            Console.WriteLine("GENERANDO 25 REPRESENTACIONES IMPRESAS (PDF) DE PRUEBA - EMPRESA DEMO SRL (101000001)");
             Console.WriteLine("=========================================================================================================");
 
             if (!Directory.Exists(_xmlsDir))
@@ -91,16 +94,10 @@ namespace EcfDgii.TestRunner
                 }
             }
 
-            // Create ZIP of all PDFs
-            var zipPath = Path.Combine(Path.GetDirectoryName(_pdfsDir)!, "PDFS_Simulacion_101889063.zip");
+            var zipPath = Path.Combine(Path.GetDirectoryName(_pdfsDir) ?? ".", "PDFS_Simulacion_101000001.zip");
             if (File.Exists(zipPath)) File.Delete(zipPath);
             ZipFile.CreateFromDirectory(_pdfsDir, zipPath);
             Console.WriteLine($"\n[ZIP OK] Archivo ZIP creado: {zipPath}");
-
-            var desktopZip = @"C:\Users\Jorge\Desktop\Ecf\PDFS_Simulacion_101889063.zip";
-            if (File.Exists(desktopZip)) File.Delete(desktopZip);
-            File.Copy(zipPath, desktopZip);
-            Console.WriteLine($"[ZIP OK] Copiado a: {desktopZip}");
 
             Console.WriteLine("=========================================================================================================");
             Console.WriteLine($"PROCESO COMPLETADO: {count} de {xmlFiles.Length} PDFs generados exitosamente en: {_pdfsDir}");
@@ -143,7 +140,6 @@ namespace EcfDgii.TestRunner
                 };
             }
 
-            // Date format presentation: dd/MM/yyyy
             string fechaEmisionDisplay = fechaEmision;
             if (DateTime.TryParseExact(fechaEmision, "dd-MM-yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dtEmis))
             {
@@ -187,7 +183,6 @@ namespace EcfDgii.TestRunner
 
         private void RenderPdf(InvoiceData c, byte[]? logoBytes, string destinationPath)
         {
-            // DGII Official QR Code URL for Certecf (Test / Certificación)
             string qrUrl;
             if (c.IsRfce)
             {
@@ -206,7 +201,6 @@ namespace EcfDgii.TestRunner
                         $"&codigoseguridad={Uri.EscapeDataString(c.SecurityCode)}";
             }
 
-            // High resolution scannable QR PNG (optimal density 10 px/module with quiet zone)
             byte[] qrBytes;
             using (var qrGen = new QRCodeGenerator())
             using (var qrData = qrGen.CreateQrCode(qrUrl, QRCodeGenerator.ECCLevel.M))
@@ -230,12 +224,10 @@ namespace EcfDgii.TestRunner
                     page.PageColor(Colors.White);
                     page.DefaultTextStyle(x => x.FontSize(8).FontFamily("Arial").FontColor("#111827"));
 
-                    // 1. ENCABEZADO EN DOS COLUMNAS
                     page.Header().Column(col =>
                     {
                         col.Item().Row(row =>
                         {
-                            // Columna Izquierda: Logo y datos fiscales de WILLY CHIC DOMINICANA SRL
                             row.RelativeItem(5.8f).Column(c1 =>
                             {
                                 if (logoBytes != null && logoBytes.Length > 0)
@@ -262,7 +254,6 @@ namespace EcfDgii.TestRunner
                                 c1.Item().Text($"Sucursal: {SucursalEmisor}").FontSize(8f).FontColor(Colors.Grey.Medium);
                             });
 
-                            // Columna Derecha: Recuadro Fiscal e-CF
                             row.RelativeItem(4.2f).Border(0.8f, Unit.Point).BorderColor("#C5CAD1").Column(card =>
                             {
                                 card.Item().Background("#E5E7EB").PaddingVertical(4).PaddingHorizontal(6)
@@ -282,7 +273,6 @@ namespace EcfDgii.TestRunner
                                         r.RelativeItem().AlignRight().Text(c.FechaEmisionFormatted).FontSize(8f);
                                     });
 
-                                    // Vence el e-NCF: solo para comprobantes con fecha de vencimiento (no 32 ni 34)
                                     if (c.TipoEcf != "32" && c.TipoEcf != "34")
                                     {
                                         body.Item().PaddingTop(2).Row(r =>
@@ -328,10 +318,8 @@ namespace EcfDgii.TestRunner
 
                     page.Content().PaddingTop(7).Column(col =>
                     {
-                        // 2. Banda de dos recuadros: Facturar a y Condiciones comerciales
                         col.Item().Row(row =>
                         {
-                            // Recuadro 1: Facturar a
                             row.RelativeItem().Border(0.5f, Unit.Point).BorderColor("#C5CAD1").Padding(6).Column(box =>
                             {
                                 box.Item().Text("Facturar a").FontSize(8f).FontColor(Colors.Grey.Darken1);
@@ -362,7 +350,6 @@ namespace EcfDgii.TestRunner
 
                             row.Spacing(8f);
 
-                            // Recuadro 2: Condiciones comerciales
                             row.RelativeItem().Border(0.5f, Unit.Point).BorderColor("#C5CAD1").Padding(6).Column(box =>
                             {
                                 box.Item().Row(r =>
@@ -380,21 +367,20 @@ namespace EcfDgii.TestRunner
                                 box.Item().PaddingTop(3).Row(r =>
                                 {
                                     r.AutoItem().Text("Vendedor").FontSize(8f).FontColor(Colors.Grey.Darken1);
-                                    r.RelativeItem().AlignRight().Text("Víctor Medina").Bold().FontSize(8f);
+                                    r.RelativeItem().AlignRight().Text("Vendedor Demo").Bold().FontSize(8f);
                                 });
                             });
                         });
 
-                        // 3. Tabla de detalle (Exactamente 5 columnas con estilo del tenant)
                         col.Item().PaddingTop(7).Table(tbl =>
                         {
                             tbl.ColumnsDefinition(cols =>
                             {
-                                cols.RelativeColumn(4.6f); // Descripción
-                                cols.RelativeColumn(1.3f); // Und.
-                                cols.RelativeColumn(1.1f); // Cant.
-                                cols.RelativeColumn(1.3f); // Precio
-                                cols.RelativeColumn(1.7f); // Valor
+                                cols.RelativeColumn(4.6f);
+                                cols.RelativeColumn(1.3f);
+                                cols.RelativeColumn(1.1f);
+                                cols.RelativeColumn(1.3f);
+                                cols.RelativeColumn(1.7f);
                             });
 
                             tbl.Header(h =>
@@ -434,10 +420,8 @@ namespace EcfDgii.TestRunner
                             }
                         });
 
-                        // 4. Totales y Bloque Fiscal DGII (QR con Código de Seguridad y Fecha Firma)
                         col.Item().PaddingTop(10).Row(row =>
                         {
-                            // Lado Izquierdo: QR Code DGII y debajo Código de Seguridad + Fecha Firma
                             row.RelativeItem(5.2f).Column(qrCol =>
                             {
                                 qrCol.Item().Row(qrRow =>
@@ -453,7 +437,6 @@ namespace EcfDgii.TestRunner
                                     .FontSize(6.5f).Italic().FontColor(Colors.Grey.Darken2);
                             });
 
-                            // Lado Derecho: Recuadro de Totales y Monto en Letras
                             row.RelativeItem(4.8f).Column(tCol =>
                             {
                                 tCol.Item().Table(t =>
@@ -465,17 +448,14 @@ namespace EcfDgii.TestRunner
                                         cols.RelativeColumn(2.5f);
                                     });
 
-                                    // Subtotal
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).Text("SUBTOTAL").Bold().FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).AlignCenter().Text("RD$").FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Padding(4).AlignRight().Text(subtotal.ToString("N2")).FontSize(8f);
 
-                                    // ITBIS
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).Text("ITBIS").Bold().FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).AlignCenter().Text("RD$").FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Padding(4).AlignRight().Text(c.TotalItbis.ToString("N2")).FontSize(8f);
 
-                                    // TOTAL
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten2).Padding(4).Text("TOTAL").Bold().FontSize(8.5f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten2).Padding(4).AlignCenter().Text("RD$").Bold().FontSize(8.5f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Padding(4).AlignRight().Text(c.MontoTotal.ToString("N2")).Bold().FontSize(8.5f);

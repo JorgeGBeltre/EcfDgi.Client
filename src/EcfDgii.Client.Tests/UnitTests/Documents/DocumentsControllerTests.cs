@@ -21,14 +21,6 @@ using Xunit;
 
 namespace EcfDgii.Client.UnitTests.Documents
 {
-    /// <summary>
-    /// EF Core's InMemory provider never actually throws on a unique-index violation (see the note
-    /// at the bottom of this file), so a real concurrent-insert race can't be reproduced by hitting
-    /// the store. This test double throws a crafted DbUpdateException — wrapping a real Npgsql
-    /// PostgresException with the exact SqlState/ConstraintName a live Postgres would report — the
-    /// first time it sees a tracked EcfDocument insert, and plants a "winner" row at that same
-    /// moment to stand in for the concurrent request that (in a real race) committed first.
-    /// </summary>
     public class ThrowOnceOnInsertDbContext : ApplicationDbContext
     {
         private readonly string _dbName;
@@ -76,8 +68,6 @@ namespace EcfDgii.Client.UnitTests.Documents
 
     public class DocumentsControllerTests
     {
-        // A minimal well-formed "signed" XML containing the ds:SignatureValue node that
-        // EcfSecurityUtils.CalcularCodigoSeguridad requires to compute the security code.
         private const string FakeSignedXml =
             "<ECF xmlns:ds='http://www.w3.org/2000/09/xmldsig#'>" +
             "<ds:Signature><ds:SignatureValue>ZmFrZS1zaWduYXR1cmU=</ds:SignatureValue></ds:Signature>" +
@@ -102,11 +92,9 @@ namespace EcfDgii.Client.UnitTests.Documents
             {
                 SourceReference = new SourceReferenceDto { TxnId = txnId, EditSequence = editSequence },
                 TipoComprobante = "E31",
-                // RncComprador is required for E31 (the XSD has it minOccurs="1") — these tests are
-                // about idempotency/concurrency/emisor override, so the buyer just needs to be valid.
                 Header = new CanonicalHeaderDto
                 {
-                    RncEmisor = "101889063", RazonSocialEmisor = "Willy Chic",
+                    RncEmisor = "101000001", RazonSocialEmisor = "Empresa Demo",
                     RncComprador = "130000000", RazonSocialComprador = "Cliente de Prueba",
                 },
                 Totals = new CanonicalTotalsDto { MontoSubtotal = 100, MontoItbis = 18, MontoTotal = 118 }
@@ -122,16 +110,11 @@ namespace EcfDgii.Client.UnitTests.Documents
         {
             if (clockMock == null)
             {
-                // Default: always "well after" any timestamp SaveChangesAsync stamps with the real
-                // system clock, so existing-document age gates never block a test unless it
-                // explicitly opts in with its own clockMock.
                 clockMock = new Mock<IClock>();
                 clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddDays(1));
             }
 
-            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063", RazonSocial = "Willy Chic Dominicana SRL" });
-            // XSD gate opt-in, off by default here — these tests predate it and exercise other
-            // concerns; EcfDocumentXsdValidationTests.cs exercises the gate itself directly.
+            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101000001", RazonSocial = "Empresa Demo SRL" });
             var ecfClientOptions = Options.Create(new EcfClientOptions { ValidateSchemasLocal = false });
 
             var controller = new DocumentsController(
@@ -153,9 +136,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task NewDocument_UsesConfiguredEmisorRnc_RegardlessOfWhatDtoSends()
         {
-            // The RNC this API instance signs and transmits under is an instance-level fact — a
-            // wrong or missing value on the incoming DTO must never silently produce a validly
-            // signed e-CF under someone else's RNC.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -168,23 +148,19 @@ namespace EcfDgii.Client.UnitTests.Documents
                 .Returns((string xml, string rnc) => FakeSignedXml);
 
             var dto = MakeDto("TXN-WRONGRNC", "1");
-            dto.Header.RncEmisor = "999999999"; // deliberately not the configured instance RNC
+            dto.Header.RncEmisor = "999999999";
 
             var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
             await controller.SubmitCanonicalDocument(dto);
 
             var stored = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("101889063", stored.RncEmisor); // configured RNC won, not the DTO's
-            signerMock.Verify(s => s.SignXml(It.IsAny<string>(), "101889063"), Times.Once);
+            Assert.Equal("101000001", stored.RncEmisor);
+            signerMock.Verify(s => s.SignXml(It.IsAny<string>(), "101000001"), Times.Once);
         }
 
         [Fact]
         public async Task NewDocument_UsesConfiguredEmisorRazonSocial_RegardlessOfWhatDtoSends()
         {
-            // Same reasoning as the RNC test above, and the same gap: the RNC override was built
-            // three rounds ago, but RazonSocialEmisor was never given the same treatment — a caller
-            // (or a bug on the ERPConnector side) could put an arbitrary razón social under this
-            // instance's own enforced RNC in the signed XML.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -194,37 +170,30 @@ namespace EcfDgii.Client.UnitTests.Documents
                 .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-602" });
             var signerMock = new Mock<IEcfXmlSigner>();
             signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
-                // Pass the pre-signature XML through (so we can inspect the RazonSocialEmisor it
-                // carries) while still injecting a real ds:SignatureValue node — CalcularCodigoSeguridad
-                // requires one to exist, same as FakeSignedXml above does for the other tests.
                 .Returns((string xml, string rnc) => xml.Replace(
                     "</ECF>",
                     "<ds:Signature xmlns:ds='http://www.w3.org/2000/09/xmldsig#'>" +
                     "<ds:SignatureValue>ZmFrZS1zaWduYXR1cmU=</ds:SignatureValue></ds:Signature></ECF>"));
 
             var dto = MakeDto("TXN-WRONGRAZON", "1");
-            dto.Header.RazonSocialEmisor = "Empresa Impostora SRL"; // deliberately not the configured instance value
+            dto.Header.RazonSocialEmisor = "Empresa Impostora SRL";
 
             var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
             await controller.SubmitCanonicalDocument(dto);
 
             var stored = await db.EcfDocuments.SingleAsync();
-            Assert.Contains("<RazonSocialEmisor>Willy Chic Dominicana SRL</RazonSocialEmisor>", stored.SignedXmlContent);
+            Assert.Contains("<RazonSocialEmisor>Empresa Demo SRL</RazonSocialEmisor>", stored.SignedXmlContent);
             Assert.DoesNotContain("Empresa Impostora", stored.SignedXmlContent);
         }
-
-        // --- Tipo 34 (Nota de Crédito) ---
 
         [Fact]
         public async Task NewDocument_Tipo34_MissingCorrectsENcf_ReturnsBadRequest_BeforeAllocatingASequence()
         {
-            // DGII: NCFModificado is obligatorio (1) for tipo 34 — per
-            // "Formato Comprobante Fiscal Electrónico (e-CF) V1.0 (1).md" lines 1105-1136.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             var dto = MakeDto("TXN-NC-1", "1");
             dto.TipoComprobante = "E34";
-            dto.References = new CanonicalReferencesDto(); // CorrectsENcf/CodigoModificacion left unset
+            dto.References = new CanonicalReferencesDto();
 
             var controller = MakeController(db, sequenceManagerMock, new Mock<IEcfClient>(), new Mock<IEcfXmlSigner>());
             var result = await controller.SubmitCanonicalDocument(dto);
@@ -266,7 +235,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             dto.References = new CanonicalReferencesDto
             {
                 CorrectsENcf = "E310000000001",
-                CodigoModificacion = 3, // Corrige montos
+                CodigoModificacion = 3,
                 RazonModificacion = "error en precio",
             };
 
@@ -301,7 +270,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             {
                 CorrectsENcf = "E310000000008",
                 CodigoModificacion = 3,
-                FechaNcfModificado = "2026-09-16", // 35 días antes (>30 días)
+                FechaNcfModificado = "2026-09-16",
                 RazonModificacion = "Nota de Crédito"
             };
 
@@ -333,7 +302,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             {
                 CorrectsENcf = "E310000000008",
                 CodigoModificacion = 3,
-                FechaNcfModificado = "2026-10-05", // 16 días antes (<=30 días)
+                FechaNcfModificado = "2026-10-05",
                 RazonModificacion = "Nota de Crédito"
             };
 
@@ -345,13 +314,9 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Contains("<IndicadorNotaCredito>0</IndicadorNotaCredito>", stored.XmlContent);
         }
 
-        // --- Tipo 41 (Comprobante de Compras) ---
-
         [Fact]
         public async Task NewDocument_Tipo41_MissingRncComprador_ReturnsBadRequest()
         {
-            // DGII: RNCComprador is obligatorio (1) for tipo 41 (the informal vendor's RNC/Cédula) —
-            // unlike 31/32/33/34 where it's condicional.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             var dto = MakeDto("TXN-COMPRA-1", "1");
@@ -368,8 +333,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task NewDocument_Tipo41_MissingRetention_ReturnsBadRequest()
         {
-            // DGII: Retención area is obligatorio (1) only for tipo 41 (and 47) — the buyer withholds
-            // ITBIS/ISR on behalf of the informal seller completing the e-CF on its behalf.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             var dto = MakeDto("TXN-COMPRA-2", "1");
@@ -385,10 +348,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task NewDocument_Tipo41_EmisorStaysConfiguredIdentity_ComprarorIsTheVendor_RetencionEmitted_NoTipoIngresos()
         {
-            // Per the spec, <Emisor><RNCEmisor> must be a DGII-authorized Facturador Electrónico — an
-            // informal vendor can never satisfy that, so Emisor stays Willy Chic's own configured
-            // identity; the vendor's identity goes in <Comprador>, not a field-swap. TipoIngresos is
-            // "No corresponde" (0) for tipo 41 — must be omitted, not emitted as "1" like every other type.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), "E41", It.IsAny<CancellationToken>()))
@@ -401,7 +360,7 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var dto = MakeDto("TXN-COMPRA-3", "1");
             dto.TipoComprobante = "E41";
-            dto.Header.RncComprador = "130000005"; // the informal vendor
+            dto.Header.RncComprador = "130000005";
             dto.Header.RazonSocialComprador = "Proveedor Informal SRL";
             dto.Retention = new CanonicalRetentionDto
             {
@@ -415,20 +374,18 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             Assert.IsType<AcceptedResult>(result);
             var stored = await db.EcfDocuments.SingleAsync();
-            Assert.Equal("101889063", stored.RncEmisor); // Emisor stayed Willy Chic, not the vendor
-            Assert.Contains("<RNCEmisor>101889063</RNCEmisor>", stored.XmlContent);
-            Assert.Contains("<RNCComprador>130000005</RNCComprador>", stored.XmlContent); // vendor as Comprador
+            Assert.Equal("101000001", stored.RncEmisor);
+            Assert.Contains("<RNCEmisor>101000001</RNCEmisor>", stored.XmlContent);
+            Assert.Contains("<RNCComprador>130000005</RNCComprador>", stored.XmlContent);
             Assert.DoesNotContain("<TipoIngresos>", stored.XmlContent);
             Assert.Contains("<IndicadorAgenteRetencionoPercepcion>1</IndicadorAgenteRetencionoPercepcion>", stored.XmlContent);
             Assert.Contains("<MontoITBISRetenido>18.00</MontoITBISRetenido>", stored.XmlContent);
-            Assert.DoesNotContain("<MontoISRRetenido>", stored.XmlContent); // null, conditional field omitted
+            Assert.DoesNotContain("<MontoISRRetenido>", stored.XmlContent);
         }
 
         [Fact]
         public async Task NewDocument_Tipo31_StillEmitsTipoIngresos_AndNoRetencionBlock()
         {
-            // Regression guard: the tipo-41 branching above must not change behavior for a normal
-            // factura (tipo 31), the only path exercised by every other test in this file.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -443,7 +400,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             await controller.SubmitCanonicalDocument(MakeDto("TXN-701", "1"));
 
             var stored = await db.EcfDocuments.SingleAsync();
-            Assert.Contains("<TipoIngresos>01</TipoIngresos>", stored.XmlContent); // zero-padded per DGII's TipoIngresosValidationType
+            Assert.Contains("<TipoIngresos>01</TipoIngresos>", stored.XmlContent);
             Assert.DoesNotContain("<Retencion>", stored.XmlContent);
             Assert.DoesNotContain("<InformacionReferencia>", stored.XmlContent);
         }
@@ -458,7 +415,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var ecfClientMock = new Mock<IEcfClient>();
             var signerMock = new Mock<IEcfXmlSigner>();
 
-            // First attempt: signing fails.
             signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
                 .Throws(new InvalidOperationException("certificate not found"));
 
@@ -471,7 +427,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("SigningFailed", stored.State);
             Assert.Equal("E310000000001", stored.ENcf);
 
-            // Second attempt (retry): signing now succeeds.
             signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
                 .Returns((string xml, string rnc) => FakeSignedXml);
             ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -485,7 +440,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("Signed",afterRetry.State);
             Assert.Equal("E310000000001", afterRetry.ENcf);
 
-            // The eNCF must never be allocated twice for the same TxnId.
             sequenceManagerMock.Verify(
                 s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
                 Times.Once);
@@ -503,7 +457,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
                 .Returns((string xml, string rnc) => FakeSignedXml);
 
-            // First attempt: transport to DGII throws -> Uncertain. We genuinely don't know if it landed.
             ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new Exception("timeout"));
 
@@ -513,15 +466,9 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync();
             Assert.Equal("Uncertain", stored.State);
             Assert.Equal("E310000000002", stored.ENcf);
-            // ReconcileUncertainAsync's "prefer TrackId when we have one" branch is unreachable today
-            // only because SignAndSendAsync never sets TrackId before an Uncertain transition. This
-            // pins that assumption down: if someone later makes SendEcfAsync's exception path capture
-            // a partial TrackId, this test forces a decision instead of leaving the preference silently
-            // unimplemented for a case that's now actually reachable.
             Assert.Null(stored.TrackId);
 
-            // Retry: must reconcile with DGII before blindly resending. DGII confirms it never got it.
-            ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101889063", "E310000000002", null, null, It.IsAny<CancellationToken>()))
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101000001", "E310000000002", null, null, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ConsultaEstadoResponse { Codigo = "0", Estado = "No encontrado" });
             ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-2" });
@@ -535,7 +482,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("E310000000002", afterRetry.ENcf);
 
             ecfClientMock.Verify(
-                c => c.ConsultarEstadoAsync("101889063", "E310000000002", null, null, It.IsAny<CancellationToken>()),
+                c => c.ConsultarEstadoAsync("101000001", "E310000000002", null, null, It.IsAny<CancellationToken>()),
                 Times.Once);
             sequenceManagerMock.Verify(
                 s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
@@ -545,9 +492,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Uncertain_Retry_TooSoonAfterFailure_SkipsReconciliation_StaysUncertain()
         {
-            // DGII's status query can lag behind actual receipt. Trusting a "No encontrado" that
-            // arrives moments after the transmission failure risks resending something DGII already
-            // has. Below the minimum age, reconciliation must not even be attempted.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync("default-tenant", "E31", It.IsAny<CancellationToken>()))
@@ -565,7 +509,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var stored = await db.EcfDocuments.SingleAsync();
             Assert.Equal("Uncertain", stored.State);
 
-            // Retry just 5 seconds later — well inside the reconciliation window.
             var tooSoonClockMock = new Mock<IClock>();
             tooSoonClockMock.Setup(c => c.UtcNow)
                 .Returns(() => new DateTimeOffset(stored.UpdatedAt!.Value, TimeSpan.Zero).AddSeconds(5));
@@ -580,7 +523,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             ecfClientMock.Verify(
                 c => c.ConsultarEstadoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
                 Times.Never);
-            // SendEcfAsync was only ever called once — the original failed attempt. No resend.
             ecfClientMock.Verify(
                 c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
                 Times.Once);
@@ -589,9 +531,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task Uncertain_Retry_ReconciliationQueryThrows_StaysUncertain_DoesNotResend()
         {
-            // If we still can't tell whether DGII has it, the only safe outcome is "stay Uncertain".
-            // Falling through to a resend here is exactly the double-transmission risk this whole
-            // reconciliation path exists to prevent.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync("default-tenant", "E31", It.IsAny<CancellationToken>()))
@@ -607,8 +546,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             await controller.SubmitCanonicalDocument(MakeDto("TXN-DGIIDOWN", "1"));
             Assert.Equal("Uncertain", (await db.EcfDocuments.SingleAsync()).State);
 
-            // Retry (default clock mock is far in the future, so the age gate passes), but DGII
-            // itself is unreachable this time.
             ecfClientMock.Setup(c => c.ConsultarEstadoAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new Exception("DGII unreachable"));
 
@@ -642,8 +579,7 @@ namespace EcfDgii.Client.UnitTests.Documents
             await controller.SubmitCanonicalDocument(MakeDto("TXN-9", "1"));
             Assert.Equal("Uncertain", (await db.EcfDocuments.SingleAsync()).State);
 
-            // Retry: DGII confirms it DID receive the first transmission. Must not resend a duplicate.
-            ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101889063", "E310000000009", null, null, It.IsAny<CancellationToken>()))
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101000001", "E310000000009", null, null, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ConsultaEstadoResponse { Codigo = "1", Estado = "Aceptado" });
 
             var controller2 = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
@@ -654,8 +590,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("Signed",afterRetry.State);
             Assert.Equal("E310000000009", afterRetry.ENcf);
 
-            // SendEcfAsync was invoked exactly once — during the first (failed) attempt.
-            // The retry must not transmit a second, duplicate e-CF once DGII confirms it has one.
             ecfClientMock.Verify(
                 c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
                 Times.Once);
@@ -664,8 +598,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task SequenceAllocated_Retry_ReusesEncf_InsteadOfSilentlyReturningUnsentDocument()
         {
-            // Simulates a crash right after the eNCF was allocated and persisted, but before
-            // signing ever started (the process never reached SignAndSendAsync).
             var db = NewDb();
             var crashedDoc = new EcfDocument
             {
@@ -673,7 +605,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceTxnId = "TXN-5",
                 EditSequence = "1",
                 ENcf = "E310000000005",
-                RncEmisor = "101889063",
+                RncEmisor = "101000001",
                 XmlContent = "<ECF><IdDoc><eNCF>E310000000005</eNCF></IdDoc></ECF>",
                 State = "SequenceAllocated"
             };
@@ -691,7 +623,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
             var result = await controller.SubmitCanonicalDocument(MakeDto("TXN-5", "1"));
 
-            // Must actually sign and send — not silently report the never-transmitted document as done.
             Assert.IsType<AcceptedResult>(result);
             var afterRetry = await db.EcfDocuments.SingleAsync();
             Assert.Equal("Signed",afterRetry.State);
@@ -708,8 +639,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task SigningFailed_EditSequenceChanged_RetriesWithNewContent_ReusesEncf_NotConflict()
         {
-            // Nothing ever left the process on the first attempt, so an edited invoice is safe
-            // to retry under the same eNCF — unlike a document that was already transmitted.
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync("default-tenant", "E31", It.IsAny<CancellationToken>()))
@@ -723,7 +652,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             await controller.SubmitCanonicalDocument(MakeDto("TXN-6", "1"));
             Assert.Equal("SigningFailed", (await db.EcfDocuments.SingleAsync()).State);
 
-            // Retry with an edited invoice (different totals + EditSequence).
             signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
                 .Returns((string xml, string rnc) => FakeSignedXml);
             ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -765,13 +693,11 @@ namespace EcfDgii.Client.UnitTests.Documents
             var first = await controller.SubmitCanonicalDocument(MakeDto("TXN-3", "1"));
             Assert.IsType<AcceptedResult>(first);
 
-            // The QuickBooks invoice was edited after the e-CF was already sent (EditSequence changed).
             var controller2 = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
             var second = await controller2.SubmitCanonicalDocument(MakeDto("TXN-3", "2"));
 
             Assert.IsType<ConflictObjectResult>(second);
 
-            // Must not silently reuse the stale document as if nothing changed.
             var stored = await db.EcfDocuments.SingleAsync();
             Assert.Equal("Signed",stored.State);
         }
@@ -805,18 +731,6 @@ namespace EcfDgii.Client.UnitTests.Documents
                 Times.Once);
         }
 
-        // NOTE: a test proving uq_ecf_documents_tenant_source_txn actually rejects a concurrent
-        // duplicate insert is intentionally not included here. EF Core's InMemory provider does not
-        // enforce unique indexes at all (confirmed empirically: even two Adds in a single
-        // SaveChangesAsync call on one context do not throw) — Microsoft documents InMemory as not
-        // providing relational-integrity guarantees. Verifying this constraint for real requires a
-        // relational provider (SQLite in-memory or a real Postgres via Testcontainers), which this
-        // test project doesn't have set up.
-        //
-        // The tests below instead craft the exact DbUpdateException(PostgresException) shape a real
-        // Postgres would throw and drive DocumentsController's recovery logic against it directly —
-        // see ThrowOnceOnInsertDbContext above.
-
         [Fact]
         public async Task ConcurrentInsert_TenantTxnUniqueViolation_RecoversWithWinnersDocument()
         {
@@ -829,7 +743,7 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SourceTxnId = "TXN-RACE",
                 EditSequence = "1",
                 ENcf = "E310000000201",
-                RncEmisor = "101889063",
+                RncEmisor = "101000001",
                 TrackId = "TRACK-WINNER",
                 XmlContent = "<ECF/>",
                 State = "Signed"
@@ -842,22 +756,19 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync("E310000000202"); // our own, ultimately-wasted allocation
+                .ReturnsAsync("E310000000202");
             var ecfClientMock = new Mock<IEcfClient>();
             var signerMock = new Mock<IEcfXmlSigner>();
 
             var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
             var result = await controller.SubmitCanonicalDocument(MakeDto("TXN-RACE", "1"));
 
-            // Must surface the winner's already-committed document, not crash and not create a
-            // second document for the same invoice.
             var accepted = Assert.IsType<AcceptedResult>(result);
             var value = Assert.IsAssignableFrom<object>(accepted.Value);
             var eNcfProperty = value.GetType().GetProperty("eNcf");
             Assert.Equal("E310000000201", eNcfProperty!.GetValue(value));
 
             Assert.Equal(1, await db.EcfDocuments.CountAsync());
-            // Signing/sending must never be attempted for our losing attempt.
             signerMock.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
             ecfClientMock.Verify(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         }
@@ -865,10 +776,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task ConcurrentInsert_UnrelatedUniqueViolation_PropagatesInsteadOfBeingTreatedAsTxnRace()
         {
-            // A different unique constraint (e.g. an eNCF collision) is a real bug, not a benign
-            // TxnId race. Swallowing it as "just refetch and continue" would hide the actual error
-            // and, worse, could re-run SignAndSendAsync against a document that has nothing to do
-            // with this failure.
             var dbName = Guid.NewGuid().ToString();
             var options = new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(dbName).Options;
             var db = new ThrowOnceOnInsertDbContext(
@@ -891,13 +798,11 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task ConcurrentInsert_NonUniqueViolation_Propagates()
         {
-            // A generic write failure (FK violation, timeout, etc.) must never be reinterpreted as
-            // "someone else already has this TxnId".
             var dbName = Guid.NewGuid().ToString();
             var options = new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(dbName).Options;
             var db = new ThrowOnceOnInsertDbContext(
                 options, dbName,
-                MakeUniqueViolation("23503", null), // foreign_key_violation, not unique_violation
+                MakeUniqueViolation("23503", null),
                 winnerToPlant: null);
 
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
@@ -915,15 +820,12 @@ namespace EcfDgii.Client.UnitTests.Documents
         [Fact]
         public async Task ConcurrentInsert_MatchingViolationButNoWinnerFound_ThrowsClearError_NotNullReference()
         {
-            // Defends the "impossible" branch: the constraint fired, but re-querying for the
-            // supposed winner finds nothing. Must fail loudly and specifically, not with a raw NRE
-            // three layers down from a silently-lost error.
             var dbName = Guid.NewGuid().ToString();
             var options = new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(dbName).Options;
             var db = new ThrowOnceOnInsertDbContext(
                 options, dbName,
                 MakeUniqueViolation("23505", "uq_ecf_documents_tenant_source_txn"),
-                winnerToPlant: null); // nothing actually committed — the "impossible" case
+                winnerToPlant: null);
 
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -958,30 +860,27 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
 
-            // Tenant A in PreCert / Test
             var dtoTenantA = MakeDto("TXN-A", "1");
             dtoTenantA.TenantId = "tenant-a";
             dtoTenantA.Environment = "TestEcf";
-            dtoTenantA.Header.RncEmisor = "133664692";
-            dtoTenantA.Header.RazonSocialEmisor = "Ceramic Chic SRL";
+            dtoTenantA.Header.RncEmisor = "130000002";
+            dtoTenantA.Header.RazonSocialEmisor = "Comercial Ejemplo SRL";
 
             await controller.SubmitCanonicalDocument(dtoTenantA);
 
-            // Tenant B in Cert / Homologacion
             var dtoTenantB = MakeDto("TXN-B", "1");
             dtoTenantB.TenantId = "tenant-b";
             dtoTenantB.Environment = "CertEcf";
-            dtoTenantB.Header.RncEmisor = "101889063";
-            dtoTenantB.Header.RazonSocialEmisor = "Willy Chic Dominicana SRL";
+            dtoTenantB.Header.RncEmisor = "101000001";
+            dtoTenantB.Header.RazonSocialEmisor = "Empresa Demo SRL";
 
             await controller.SubmitCanonicalDocument(dtoTenantB);
 
-            // Tenant A in Produccion
             var dtoTenantAProd = MakeDto("TXN-A-PROD", "1");
             dtoTenantAProd.TenantId = "tenant-a";
             dtoTenantAProd.Environment = "Produccion";
-            dtoTenantAProd.Header.RncEmisor = "133664692";
-            dtoTenantAProd.Header.RazonSocialEmisor = "Ceramic Chic SRL";
+            dtoTenantAProd.Header.RncEmisor = "130000002";
+            dtoTenantAProd.Header.RazonSocialEmisor = "Comercial Ejemplo SRL";
 
             await controller.SubmitCanonicalDocument(dtoTenantAProd);
 
@@ -992,11 +891,11 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var docs = await db.EcfDocuments.OrderBy(d => d.CreatedAt).ToListAsync();
             Assert.Equal("tenant-a", docs[0].TenantId);
-            Assert.Equal("133664692", docs[0].RncEmisor);
+            Assert.Equal("130000002", docs[0].RncEmisor);
             Assert.Equal("tenant-b", docs[1].TenantId);
-            Assert.Equal("101889063", docs[1].RncEmisor);
+            Assert.Equal("101000001", docs[1].RncEmisor);
             Assert.Equal("tenant-a", docs[2].TenantId);
-            Assert.Equal("133664692", docs[2].RncEmisor);
+            Assert.Equal("130000002", docs[2].RncEmisor);
         }
 
         [Fact]
@@ -1004,7 +903,6 @@ namespace EcfDgii.Client.UnitTests.Documents
         {
             var db = NewDb();
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
-            // Return E310000000001 for both environments to simulate both starting from sequence 1
             sequenceManagerMock.Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync("E310000000001");
 
@@ -1018,21 +916,18 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
 
-            // 1. Submit in Certificacion
             var dtoCert = MakeDto("TXN-CERT-1", "1");
             dtoCert.TenantId = "sede-principal";
             dtoCert.Environment = "Certificacion";
             var resultCert = await controller.SubmitCanonicalDocument(dtoCert);
             Assert.IsType<AcceptedResult>(resultCert);
 
-            // 2. Submit in Produccion with same eNCF sequence (starting from 1)
             var dtoProd = MakeDto("TXN-PROD-1", "1");
             dtoProd.TenantId = "sede-principal";
             dtoProd.Environment = "Produccion";
             var resultProd = await controller.SubmitCanonicalDocument(dtoProd);
             Assert.IsType<AcceptedResult>(resultProd);
 
-            // Verify both saved without collision
             var docs = await db.EcfDocuments.OrderBy(d => d.CreatedAt).ToListAsync();
             Assert.Equal(2, docs.Count);
             Assert.Equal("Certificacion", docs[0].Ambiente);
@@ -1048,7 +943,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             var entityType = db.Model.FindEntityType(typeof(EcfDocument));
             Assert.NotNull(entityType);
 
-            // 1. Verify uq_ecf_documents_rnc_emisor_encf includes Ambiente
             var rncEncfIndex = entityType.GetIndexes()
                 .FirstOrDefault(i => i.GetDatabaseName() == "uq_ecf_documents_rnc_emisor_encf");
             Assert.NotNull(rncEncfIndex);
@@ -1058,7 +952,6 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Contains("ENcf", rncEncfProps);
             Assert.Contains("Ambiente", rncEncfProps);
 
-            // 2. Verify uq_ecf_documents_tenant_source_txn includes Ambiente
             var tenantTxnIndex = entityType.GetIndexes()
                 .FirstOrDefault(i => i.GetDatabaseName() == "uq_ecf_documents_tenant_source_txn");
             Assert.NotNull(tenantTxnIndex);
@@ -1073,15 +966,14 @@ namespace EcfDgii.Client.UnitTests.Documents
         public async Task GetBySourceTxnId_And_ReconcileBySourceTxnId_IsolateByEnvironment_AndReuseSignedRfceVerbatim()
         {
             var db = NewDb();
-            const string exactProdRfce = "<RFCE><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COL. SANTA</RazonSocialComprador></Comprador><CodigoSeguridadeCF>naRchs</CodigoSeguridadeCF></Encabezado></RFCE>";
+            const string exactProdRfce = "<RFCE><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COMERCIO DEMO</RazonSocialComprador></Comprador><CodigoSeguridadeCF>DmY123</CodigoSeguridadeCF></Encabezado></RFCE>";
 
-            // Old PreCertificacion row with identical eNCF E320000003190
             db.EcfDocuments.Add(new EcfDocument
             {
-                TenantId = "sede-principal-101889063",
+                TenantId = "sede-principal-101000001",
                 Ambiente = "PreCertificacion",
-                RncEmisor = "101889063",
-                ENcf = "E320000003190",
+                RncEmisor = "101000001",
+                ENcf = "E320000000190",
                 SourceTxnId = "TEST-TXN-OLD",
                 EditSequence = "1",
                 State = "AcceptedByDgii",
@@ -1094,22 +986,21 @@ namespace EcfDgii.Client.UnitTests.Documents
                 SignedXmlContent = FakeSignedXml
             });
 
-            // New Produccion row currently Uncertain after transient socket reset
             db.EcfDocuments.Add(new EcfDocument
             {
-                TenantId = "sede-principal-101889063",
+                TenantId = "sede-principal-101000001",
                 Ambiente = "Produccion",
-                RncEmisor = "101889063",
-                ENcf = "E320000003190",
-                SourceTxnId = "AF148C-1793819502",
+                RncEmisor = "101000001",
+                ENcf = "E320000000190",
+                SourceTxnId = "TXN-DEMO-0190",
                 EditSequence = "1",
                 State = "Uncertain",
                 TrackId = null,
-                SecurityCode = "naRchs",
+                SecurityCode = "DmY123",
                 TotalAmount = 1343.74m,
                 ItbisAmount = 204.98m,
                 CreatedAt = DateTime.UtcNow.AddMinutes(-15),
-                XmlContent = "<ECF><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COL. SANTA</RazonSocialComprador></Comprador></Encabezado></ECF>",
+                XmlContent = "<ECF><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COMERCIO DEMO</RazonSocialComprador></Comprador></Encabezado></ECF>",
                 SignedXmlContent = FakeSignedXml,
                 SignedRfceContent = exactProdRfce
             });
@@ -1117,16 +1008,16 @@ namespace EcfDgii.Client.UnitTests.Documents
 
             var sequenceManagerMock = new Mock<IEcfSequenceManager>();
             var ecfClientMock = new Mock<IEcfClient>();
-            ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101889063", "E320000003190", null, null, It.IsAny<CancellationToken>()))
+            ecfClientMock.Setup(c => c.ConsultarEstadoAsync("101000001", "E320000000190", null, null, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ConsultaEstadoResponse { Estado = "No encontrado" });
-            ecfClientMock.Setup(c => c.SendRfceAsync(exactProdRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()))
+            ecfClientMock.Setup(c => c.SendRfceAsync(exactProdRfce, "101000001E320000000190.xml", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new RfceRecepcionResponse { Codigo = 1, Estado = "Aceptado" });
 
             var signerMock = new Mock<IEcfXmlSigner>();
             var clockMock = new Mock<IClock>();
             clockMock.Setup(c => c.UtcNow).Returns(() => DateTimeOffset.UtcNow.AddHours(1));
 
-            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101889063", RazonSocial = "Willy Chic Dominicana SRL" });
+            var emisorOptions = Options.Create(new EcfEmisorOptions { Rnc = "101000001", RazonSocial = "Empresa Demo SRL" });
             var ecfClientOptions = Options.Create(new EcfClientOptions { Environment = EcfEnvironment.Prod, ValidateSchemasLocal = false });
 
             var controller = new DocumentsController(
@@ -1136,23 +1027,21 @@ namespace EcfDgii.Client.UnitTests.Documents
             {
                 ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
             };
-            controller.Request.Headers["X-Tenant-Id"] = "sede-principal-101889063";
+            controller.Request.Headers["X-Tenant-Id"] = "sede-principal-101000001";
 
-            // 1. Lookup by eNCF scoped to Produccion must NOT return the PreCertificacion row
-            var lookupRes = Assert.IsType<OkObjectResult>(await controller.GetBySourceTxnId("E320000003190", "Produccion"));
+            var lookupRes = Assert.IsType<OkObjectResult>(await controller.GetBySourceTxnId("E320000000190", "Produccion"));
             var lookupJson = System.Text.Json.JsonSerializer.Serialize(lookupRes.Value);
             Assert.Contains("\"state\":\"Uncertain\"", lookupJson);
-            Assert.Contains("\"securityCode\":\"naRchs\"", lookupJson);
+            Assert.Contains("\"securityCode\":\"DmY123\"", lookupJson);
             Assert.Contains("\"environment\":\"Produccion\"", lookupJson);
 
-            // 2. Reconcile scoped to Produccion reuses exactProdRfce verbatim without re-signing or mutating metadata
-            var reconcileRes = Assert.IsType<OkObjectResult>(await controller.ReconcileBySourceTxnId("E320000003190", "Produccion"));
+            var reconcileRes = Assert.IsType<OkObjectResult>(await controller.ReconcileBySourceTxnId("E320000000190", "Produccion"));
             var reconcileJson = System.Text.Json.JsonSerializer.Serialize(reconcileRes.Value);
             Assert.Contains("\"state\":\"AcceptedByDgii\"", reconcileJson);
-            Assert.Contains("\"securityCode\":\"naRchs\"", reconcileJson);
+            Assert.Contains("\"securityCode\":\"DmY123\"", reconcileJson);
 
             signerMock.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
-            ecfClientMock.Verify(c => c.SendRfceAsync(exactProdRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()), Times.Once);
+            ecfClientMock.Verify(c => c.SendRfceAsync(exactProdRfce, "101000001E320000000190.xml", It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]
@@ -1163,15 +1052,15 @@ namespace EcfDgii.Client.UnitTests.Documents
             {
                 TenantId = "sede-principal",
                 Ambiente = "Produccion",
-                RncEmisor = "133664692",
-                ENcf = "E310000000219",
-                SourceTxnId = "ORIG-100000532",
-                EditSequence = "100000532",
+                RncEmisor = "130000002",
+                ENcf = "E310000000010",
+                SourceTxnId = "ORIG-100000010",
+                EditSequence = "100000010",
                 State = "AcceptedByDgii",
-                TrackId = "TRACK-ORIG-219",
+                TrackId = "TRACK-ORIG-010",
                 SecurityCode = "ABC123",
-                TotalAmount = 70623.00m,
-                ItbisAmount = 10773.00m,
+                TotalAmount = 59000.00m,
+                ItbisAmount = 9000.00m,
                 CreatedAt = DateTime.UtcNow.AddDays(-20),
                 XmlContent = "<ECF/>",
                 SignedXmlContent = FakeSignedXml
@@ -1183,39 +1072,39 @@ namespace EcfDgii.Client.UnitTests.Documents
             var signerMock = new Mock<IEcfXmlSigner>();
 
             var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
-            var dto = MakeDto("CC1C-1794488262", "400000086");
+            var dto = MakeDto("TXN-CRN-0001", "400000001");
             dto.TenantId = "sede-principal";
             dto.Environment = "Produccion";
             dto.TipoComprobante = "E34";
-            dto.Header.RncEmisor = "133664692";
-            dto.Header.RazonSocialEmisor = "CERAMIC CHIC SRL";
-            dto.Header.RncComprador = "101721853";
-            dto.Header.RazonSocialComprador = "IMPERTECHO SRL";
+            dto.Header.RncEmisor = "130000002";
+            dto.Header.RazonSocialEmisor = "COMERCIAL EJEMPLO SRL";
+            dto.Header.RncComprador = "130000001";
+            dto.Header.RazonSocialComprador = "CLIENTE CORPORATIVO SRL";
             dto.Totals = new CanonicalTotalsDto
             {
-                MontoSubtotal = 5985000.00m,
-                MontoGravadoTotal = 5985000.00m,
-                MontoItbis = 1077300.00m,
-                MontoTotal = 7062300.00m
+                MontoSubtotal = 5000000.00m,
+                MontoGravadoTotal = 5000000.00m,
+                MontoItbis = 900000.00m,
+                MontoTotal = 5900000.00m
             };
             dto.Lines = new List<CanonicalLineDto>
             {
                 new()
                 {
                     LineNumber = 1,
-                    ItemName = "Porcelanato Salt Soluble 50 x 50 IVORY (CSA5200B) DAN",
-                    Quantity = 126m,
-                    UnitPrice = 47500.00m,
-                    Amount = 5985000.00m,
+                    ItemName = "Producto Estándar Tipo A",
+                    Quantity = 100m,
+                    UnitPrice = 50000.00m,
+                    Amount = 5000000.00m,
                     IndicadorFacturacion = "1"
                 }
             };
             dto.References = new CanonicalReferencesDto
             {
-                CorrectsENcf = "E310000000219",
+                CorrectsENcf = "E310000000010",
                 CodigoModificacion = 3,
                 FechaNcfModificado = "2026-10-16",
-                RazonModificacion = "100000532"
+                RazonModificacion = "Devolución de mercancía"
             };
 
             var result = await controller.SubmitCanonicalDocument(dto);

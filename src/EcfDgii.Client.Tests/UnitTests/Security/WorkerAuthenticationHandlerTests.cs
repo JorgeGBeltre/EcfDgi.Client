@@ -61,7 +61,7 @@ namespace UnitTests.Security
         {
             var context = new DefaultHttpContext();
             context.Request.Headers[WorkerAuthenticationHandler.KeyIdHeader] = "worker-key-1";
-            context.Request.Headers[WorkerAuthenticationHandler.TimestampHeader] = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 400).ToString(); // 400s drift (> 300s)
+            context.Request.Headers[WorkerAuthenticationHandler.TimestampHeader] = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 400).ToString();
             context.Request.Headers[WorkerAuthenticationHandler.NonceHeader] = Guid.NewGuid().ToString("N");
             context.Request.Headers[WorkerAuthenticationHandler.SignatureHeader] = "dummy-signature";
 
@@ -80,7 +80,7 @@ namespace UnitTests.Security
             var keyId = "worker-key-1";
             var secret = "SuperSecretKey123!";
 
-            _nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromMinutes(5)); // Pre-add nonce to trigger replay
+            _nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromMinutes(5));
 
             var canonicalString = CanonicalRequestHelper.BuildCanonicalString("GET", "/api/test", timestamp, nonce, string.Empty);
             var signature = CanonicalRequestHelper.ComputeHmacSha256(secret, canonicalString);
