@@ -13,14 +13,9 @@ using EcfDgii.Client.Infrastructure.Persistence;
 
 namespace EcfDgii.Client.IntegrationTests
 {
-    /// <summary>
-    /// Verifies EcfEmisorOptions' ValidateOnStart actually blocks startup — not just that the
-    /// validation predicate is correct in isolation. A DocumentsController-level unit test can't
-    /// exercise "the host refuses to start"; only building the real host can.
-    /// </summary>
     public class EmisorRncStartupValidationTests
     {
-        private static WebApplicationFactory<Program> MakeFactory(string? rnc, string? razonSocial = "WILLY CHIC DOMINICANA SRL")
+        private static WebApplicationFactory<Program> MakeFactory(string? rnc, string? razonSocial = "EMPRESA DEMO SRL")
         {
             return new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
@@ -50,9 +45,6 @@ namespace EcfDgii.Client.IntegrationTests
             var ex = Record.Exception(() => factory.CreateClient());
 
             Assert.NotNull(ex);
-            // ValidateOnStart wraps OptionsValidationException inside the host-start failure;
-            // assert on the message rather than a specific exception type so this doesn't become
-            // brittle to how ASP.NET Core happens to wrap it in a given version.
             var full = ex!.ToString();
             Assert.Contains("EcfEmisor", full, StringComparison.OrdinalIgnoreCase);
         }
@@ -71,21 +63,19 @@ namespace EcfDgii.Client.IntegrationTests
         [Fact]
         public void ValidEmisorRnc_HostStartsAndOptionsResolveCorrectly()
         {
-            using var factory = MakeFactory(rnc: "101889063");
+            using var factory = MakeFactory(rnc: "101000001");
 
-            using var client = factory.CreateClient(); // must not throw
+            using var client = factory.CreateClient();
 
             using var scope = factory.Services.CreateScope();
             var options = scope.ServiceProvider.GetRequiredService<IOptions<EcfEmisorOptions>>();
-            Assert.Equal("101889063", options.Value.Rnc);
+            Assert.Equal("101000001", options.Value.Rnc);
         }
 
         [Fact]
         public void MissingEmisorRazonSocial_PreventsHostFromStarting()
         {
-            // RazonSocial previously had no validation at all — DocumentsController trusted the
-            // caller-supplied dto.Header.RazonSocialEmisor verbatim, unlike Rnc. This is the fix.
-            using var factory = MakeFactory(rnc: "101889063", razonSocial: "");
+            using var factory = MakeFactory(rnc: "101000001", razonSocial: "");
 
             var ex = Record.Exception(() => factory.CreateClient());
 
@@ -96,13 +86,13 @@ namespace EcfDgii.Client.IntegrationTests
         [Fact]
         public void ValidEmisorRazonSocial_HostStartsAndOptionsResolveCorrectly()
         {
-            using var factory = MakeFactory(rnc: "101889063", razonSocial: "WILLY CHIC DOMINICANA SRL");
+            using var factory = MakeFactory(rnc: "101000001", razonSocial: "EMPRESA DEMO SRL");
 
-            using var client = factory.CreateClient(); // must not throw
+            using var client = factory.CreateClient();
 
             using var scope = factory.Services.CreateScope();
             var options = scope.ServiceProvider.GetRequiredService<IOptions<EcfEmisorOptions>>();
-            Assert.Equal("WILLY CHIC DOMINICANA SRL", options.Value.RazonSocial);
+            Assert.Equal("EMPRESA DEMO SRL", options.Value.RazonSocial);
         }
     }
 }

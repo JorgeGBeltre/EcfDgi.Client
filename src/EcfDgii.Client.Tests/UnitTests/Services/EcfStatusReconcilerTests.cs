@@ -14,13 +14,6 @@ using Xunit;
 
 namespace EcfDgii.Client.UnitTests.Services
 {
-    /// <summary>
-    /// EcfStatusReconciler closes the ⑤/⑥ gap: nothing else in the codebase ever polls DGII for what
-    /// happened to a document AFTER it reached "SentToDgii" — that state was previously fully
-    /// terminal. Without this, an e-CF DGII accepts on receipt and later rejects on verification (a
-    /// real, documented DGII outcome — "Rechazado" per the DGII_md service description) stays marked
-    /// Sent forever, and the mandatory acknowledgment window elapses unnoticed.
-    /// </summary>
     public class EcfStatusReconcilerTests
     {
         private static readonly DateTime FixedNow = new(2026, 8, 6, 12, 0, 0, DateTimeKind.Utc);
@@ -38,7 +31,7 @@ namespace EcfDgii.Client.UnitTests.Services
         private static EcfDocument MakeSentDocument(DateTime sentAt, DateTime? lastCheck = null, string state = "Signed") =>
             new()
             {
-                RncEmisor = "101889063",
+                RncEmisor = "101000001",
                 ENcf = "E310000000001",
                 RncComprador = "130000000",
                 SecurityCode = "ABC123",
@@ -66,11 +59,8 @@ namespace EcfDgii.Client.UnitTests.Services
         [Fact]
         public async Task ReconcileAsync_DocumentTooFresh_IsSkipped_NotQueriedYet()
         {
-            // Matches DocumentsController's own MinimumUncertainAgeBeforeReconciliation precedent:
-            // DGII's own status query can lag behind actual receipt, so polling immediately after
-            // send would just waste a call and see stale "No encontrado" noise.
             using var db = NewDb();
-            var doc = MakeSentDocument(sentAt: FixedNow.AddMinutes(-1)); // younger than MinDocumentAge (2 min)
+            var doc = MakeSentDocument(sentAt: FixedNow.AddMinutes(-1));
             db.EcfDocuments.Add(doc);
             await db.SaveChangesAsync();
 
@@ -92,7 +82,7 @@ namespace EcfDgii.Client.UnitTests.Services
 
             var ecfClientMock = new Mock<IEcfClient>();
             ecfClientMock.Setup(c => c.ConsultarEstadoAsync(
-                    "101889063", "E310000000001", "130000000", "ABC123", It.IsAny<CancellationToken>()))
+                    "101000001", "E310000000001", "130000000", "ABC123", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ConsultaEstadoResponse { Estado = "Aceptado" });
 
             await MakeReconciler(db, ecfClientMock).ReconcileAsync(CancellationToken.None);
@@ -106,8 +96,6 @@ namespace EcfDgii.Client.UnitTests.Services
         [Fact]
         public async Task ReconcileAsync_DgiiSaysRechazado_TransitionsToRejectedByDgii()
         {
-            // The exact scenario the user flagged: accepted-on-receipt, rejected-on-verification —
-            // this must not stay silently marked Sent.
             using var db = NewDb();
             var doc = MakeSentDocument(sentAt: FixedNow.AddHours(-1));
             db.EcfDocuments.Add(doc);
@@ -166,7 +154,7 @@ namespace EcfDgii.Client.UnitTests.Services
         public async Task ReconcileAsync_PolledRecently_IsSkipped_UntilPollingIntervalElapses()
         {
             using var db = NewDb();
-            var doc = MakeSentDocument(sentAt: FixedNow.AddHours(-1), lastCheck: FixedNow.AddMinutes(-5)); // < 15min PollingInterval
+            var doc = MakeSentDocument(sentAt: FixedNow.AddHours(-1), lastCheck: FixedNow.AddMinutes(-5));
             db.EcfDocuments.Add(doc);
             await db.SaveChangesAsync();
 
@@ -181,7 +169,7 @@ namespace EcfDgii.Client.UnitTests.Services
         public async Task ReconcileAsync_ExceedsMaxPollingWindow_EscalatesToRequiresManualReview_WithoutCallingDgiiAgain()
         {
             using var db = NewDb();
-            var doc = MakeSentDocument(sentAt: FixedNow.AddHours(-73), lastCheck: FixedNow.AddHours(-1)); // > 72h MaxPollingWindow
+            var doc = MakeSentDocument(sentAt: FixedNow.AddHours(-73), lastCheck: FixedNow.AddHours(-1));
             db.EcfDocuments.Add(doc);
             await db.SaveChangesAsync();
 
@@ -217,10 +205,6 @@ namespace EcfDgii.Client.UnitTests.Services
         [Fact]
         public async Task ReconcileAsync_StillPicksUpRowsWrittenUnderTheOldSentToDgiiName()
         {
-            // "SentToDgii" was renamed to "Signed" when Signed became the confirmed-by-DGII state.
-            // Rows persisted before that rename must keep being polled: a document DGII already has,
-            // that no pass ever looks at again, is the worst possible outcome of a naming change —
-            // it would sit unverified forever with nothing to reveal it.
             using var db = NewDb();
             db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1), state: "SentToDgii"));
             await db.SaveChangesAsync();
@@ -272,8 +256,8 @@ namespace EcfDgii.Client.UnitTests.Services
         public async Task ReconcileAsync_ReturnsTheNumberOfDocumentsItActuallyProcessed()
         {
             using var db = NewDb();
-            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1))); // due
-            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddMinutes(-1))); // too fresh, skipped
+            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddHours(-1)));
+            db.EcfDocuments.Add(MakeSentDocument(sentAt: FixedNow.AddMinutes(-1)));
             await db.SaveChangesAsync();
 
             var ecfClientMock = new Mock<IEcfClient>();
@@ -290,15 +274,15 @@ namespace EcfDgii.Client.UnitTests.Services
         public async Task ReconcileAsync_UncertainRfceAndDgiiSaysNoEncontrado_RetransmitsSignedRfceVerbatim_AndTransitionsToAcceptedByDgii()
         {
             using var db = NewDb();
-            const string exactSignedRfce = "<RFCE><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COL. SANTA</RazonSocialComprador></Comprador><CodigoSeguridadeCF>naRchs</CodigoSeguridadeCF></Encabezado></RFCE>";
+            const string exactSignedRfce = "<RFCE><Encabezado><Emisor><FechaEmision>04-11-2026</FechaEmision></Emisor><Comprador><RazonSocialComprador>COMERCIO DEMO</RazonSocialComprador></Comprador><CodigoSeguridadeCF>DmY123</CodigoSeguridadeCF></Encabezado></RFCE>";
             var doc = new EcfDocument
             {
-                RncEmisor = "101889063",
-                ENcf = "E320000003190",
-                SecurityCode = "naRchs",
-                TenantId = "sede-principal-101889063",
+                RncEmisor = "101000001",
+                ENcf = "E320000000190",
+                SecurityCode = "DmY123",
+                TenantId = "sede-principal-101000001",
                 Ambiente = "Produccion",
-                SourceTxnId = "AF148C-1793819502",
+                SourceTxnId = "TXN-DEMO-0190",
                 EditSequence = "1",
                 TotalAmount = 1343.74m,
                 ItbisAmount = 204.98m,
@@ -313,19 +297,19 @@ namespace EcfDgii.Client.UnitTests.Services
             var evalNow = DateTime.UtcNow.AddMinutes(10);
             var ecfClientMock = new Mock<IEcfClient>();
             ecfClientMock.Setup(c => c.ConsultarEstadoAsync(
-                    "101889063", "E320000003190", null, "naRchs", It.IsAny<CancellationToken>()))
+                    "101000001", "E320000000190", null, "DmY123", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ConsultaEstadoResponse { Estado = "No encontrado" });
             ecfClientMock.Setup(c => c.SendRfceAsync(
-                    exactSignedRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()))
+                    exactSignedRfce, "101000001E320000000190.xml", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new RfceRecepcionResponse { Codigo = 1, Estado = "Aceptado" });
 
             await MakeReconciler(db, ecfClientMock, MakeClockMock(evalNow)).ReconcileAsync(CancellationToken.None);
 
             var updated = db.EcfDocuments.Single();
             Assert.Equal("AcceptedByDgii", updated.State);
-            Assert.Equal("naRchs", updated.SecurityCode);
+            Assert.Equal("DmY123", updated.SecurityCode);
             Assert.Null(updated.TrackId);
-            ecfClientMock.Verify(c => c.SendRfceAsync(exactSignedRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()), Times.Once);
+            ecfClientMock.Verify(c => c.SendRfceAsync(exactSignedRfce, "101000001E320000000190.xml", It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Fact]
@@ -335,13 +319,13 @@ namespace EcfDgii.Client.UnitTests.Services
             const string exactSignedXml = "<ECF><SignedStandard/></ECF>";
             var doc = new EcfDocument
             {
-                RncEmisor = "101889063",
-                ENcf = "E340000000475",
+                RncEmisor = "101000001",
+                ENcf = "E340000000075",
                 RncComprador = "130000000",
                 SecurityCode = "XyZ987",
-                TenantId = "sede-principal-101889063",
+                TenantId = "sede-principal-101000001",
                 Ambiente = "Produccion",
-                SourceTxnId = "AF148C-475",
+                SourceTxnId = "TXN-DEMO-0075",
                 EditSequence = "1",
                 TotalAmount = 1500.00m,
                 ItbisAmount = 228.81m,
@@ -355,10 +339,10 @@ namespace EcfDgii.Client.UnitTests.Services
             var evalNow = DateTime.UtcNow.AddMinutes(10);
             var ecfClientMock = new Mock<IEcfClient>();
             ecfClientMock.Setup(c => c.ConsultarEstadoAsync(
-                    "101889063", "E340000000475", "130000000", "XyZ987", It.IsAny<CancellationToken>()))
+                    "101000001", "E340000000075", "130000000", "XyZ987", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new ConsultaEstadoResponse { Estado = "No encontrado" });
             ecfClientMock.Setup(c => c.SendEcfAsync(
-                    exactSignedXml, "101889063E340000000475.xml", It.IsAny<CancellationToken>()))
+                    exactSignedXml, "101000001E340000000075.xml", It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRK-PROD-475" });
 
             await MakeReconciler(db, ecfClientMock, MakeClockMock(evalNow)).ReconcileAsync(CancellationToken.None);
@@ -367,7 +351,7 @@ namespace EcfDgii.Client.UnitTests.Services
             Assert.Equal("Signed", updated.State);
             Assert.Equal("TRK-PROD-475", updated.TrackId);
             Assert.Equal("XyZ987", updated.SecurityCode);
-            ecfClientMock.Verify(c => c.SendEcfAsync(exactSignedXml, "101889063E340000000475.xml", It.IsAny<CancellationToken>()), Times.Once);
+            ecfClientMock.Verify(c => c.SendEcfAsync(exactSignedXml, "101000001E340000000075.xml", It.IsAny<CancellationToken>()), Times.Once);
         }
     }
 }

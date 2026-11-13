@@ -14,8 +14,6 @@ namespace EcfDgii.Client.UnitTests.Dgii
 {
     public class EcfTokenManagerTests
     {
-        /// <summary>Returns each queued response in order, then repeats the last one — used for the
-        /// semilla GET + validarsemilla POST pair RenewTokenAsync issues on every renewal.</summary>
         private sealed class SequencedHandler : HttpMessageHandler
         {
             private readonly Queue<Func<HttpResponseMessage>> _responses;
@@ -50,7 +48,7 @@ namespace EcfDgii.Client.UnitTests.Dgii
             signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>())).Returns("<signed/>");
             var httpClient = new HttpClient(handler);
             var config = new EcfEnvironmentConfig { AutenticacionUrl = "https://dgii.example/auth" };
-            return new EcfTokenManager(httpClient, signerMock.Object, config, "101889063");
+            return new EcfTokenManager(httpClient, signerMock.Object, config, "101000001");
         }
 
         [Fact]
@@ -63,15 +61,12 @@ namespace EcfDgii.Client.UnitTests.Dgii
             var second = await manager.GetTokenAsync();
 
             Assert.Equal(first, second);
-            Assert.Equal(2, handler.CallCount); // one semilla GET + one validarsemilla POST — no second renewal
+            Assert.Equal(2, handler.CallCount);
         }
 
         [Fact]
         public async Task InvalidateAsync_ThenGetTokenAsync_ForcesARenewal_EvenThoughTheCachedTokenHadNotExpired()
         {
-            // This is the whole point of reactive 401 handling: DgiiDirectTransport needs a way to say
-            // "the token I was just handed was rejected — throw it away and get a fresh one," independent
-            // of whatever the proactive 5-minute-margin expiry check would otherwise decide.
             var factories = new Func<HttpResponseMessage>[]
             {
                 SemillaResponse,
@@ -88,12 +83,9 @@ namespace EcfDgii.Client.UnitTests.Dgii
 
             Assert.Equal("tok-1", first);
             Assert.Equal("tok-2", second);
-            Assert.Equal(4, handler.CallCount); // two full renewal round-trips
+            Assert.Equal(4, handler.CallCount);
         }
 
-        /// <summary>Unlike SequencedHandler above, exhausts exactly the queued responses without
-        /// repeating the last one — needed when the test asserts an exact total call count across
-        /// two independent renewal round-trips.</summary>
         private sealed class SequencedHandlerExact : HttpMessageHandler
         {
             private readonly Queue<Func<HttpResponseMessage>> _responses;

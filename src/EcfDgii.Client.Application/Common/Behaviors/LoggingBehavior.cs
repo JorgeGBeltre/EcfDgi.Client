@@ -35,7 +35,6 @@ namespace EcfDgii.Client.Application.Common.Behaviors
 
             timer.Stop();
 
-            // MED-143: Inspect response Result to log failure at Warning/Error instead of byte-identical success
             if (response is Result result && result.IsFailure)
             {
                 _logger.LogWarning("Request {RequestName} failed in {ElapsedMilliseconds}ms with error: {Error}, errors: {Errors}",

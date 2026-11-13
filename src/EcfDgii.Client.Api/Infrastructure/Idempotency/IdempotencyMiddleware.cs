@@ -17,7 +17,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
         {
             var idempotencyKey = context.Request.Headers[IdempotencyHeader].FirstOrDefault();
 
-            // Only process idempotency for POST / PUT / PATCH requests with an Idempotency-Key header
             if (string.IsNullOrWhiteSpace(idempotencyKey) ||
                 (context.Request.Method != HttpMethods.Post &&
                  context.Request.Method != HttpMethods.Put &&
@@ -57,14 +56,11 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 tenantId = $"anon:{ip}";
             }
 
-            // Store in context.Items so controllers and middleware share the identical tenant scope
             context.Items["TenantId"] = tenantId;
 
             var keyId = context.User.FindFirst("worker_key_id")?.Value ?? "default-worker";
-            // Key identity is Key = $"{tenantId}:{idempotencyKey}" (Independent of KeyId to safely allow key rotation without duplicating fiscal documents)
             var scopedKey = $"{tenantId}:{idempotencyKey}";
 
-            // Read request body safely to compute SHA-256 payload hash (reuse cached body string from worker auth if present)
             string bodyStr = string.Empty;
             if (context.Items.TryGetValue("RawRequestBody", out var cachedBody) && cachedBody is string s)
             {
@@ -77,7 +73,7 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 {
                     using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, true, 1024, leaveOpen: true);
                     bodyStr = await reader.ReadToEndAsync();
-                    context.Request.Body.Position = 0; // Rewind for model binder / controller
+                    context.Request.Body.Position = 0;
                 }
             }
 
@@ -109,7 +105,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 return;
             }
 
-            // Status == Reserved: Execute pipeline and capture response
             var originalResponseBodyStream = context.Response.Body;
             using var responseBuffer = new MemoryStream();
             context.Response.Body = responseBuffer;
@@ -119,8 +114,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Idempotency
                 await _next(context);
 
                 var sc = context.Response.StatusCode;
-                // Selective caching: Cache ONLY successful business domain results (2xx).
-                // Error responses (>= 400) must not be cached as permanent completed idempotent results to allow callers to correct errors and retry.
                 var shouldCache = sc >= 200 && sc < 300;
 
                 if (shouldCache)

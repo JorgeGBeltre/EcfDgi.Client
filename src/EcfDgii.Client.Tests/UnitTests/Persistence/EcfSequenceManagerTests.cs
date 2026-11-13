@@ -9,15 +9,6 @@ using Xunit;
 
 namespace EcfDgii.Client.UnitTests.Persistence
 {
-    /// <summary>
-    /// The single irreversible mistake in the whole tipo-34/41 rollout: if GetNextEncfAsync did NOT
-    /// discriminate by TipoComprobante, wiring a real credit-memo/bill source into the pipeline would
-    /// hand the first Nota de Crédito an e-NCF from the invoice series — a number consumed in the
-    /// wrong series before DGII, permanently (unlike every other finding this round, which is fixable
-    /// with a code change and a retry). Verified directly against a real ApplicationDbContext
-    /// (InMemory), not by reading EcfSequenceManager.cs alone — reading confirms intent, only running
-    /// it confirms behavior.
-    /// </summary>
     public class EcfSequenceManagerTests
     {
         private static (EcfSequenceManager Manager, ApplicationDbContext Db) MakeManager(string dbName)
@@ -39,7 +30,7 @@ namespace EcfDgii.Client.UnitTests.Persistence
             var firstCreditNote = await manager.GetNextEncfAsync("default-tenant", "E34", CancellationToken.None);
 
             Assert.Equal("E310000000001", firstInvoice);
-            Assert.Equal("E340000000001", firstCreditNote); // NOT "E340000000002" — its own series, not continuing E31's count
+            Assert.Equal("E340000000001", firstCreditNote);
         }
 
         [Fact]
@@ -47,8 +38,8 @@ namespace EcfDgii.Client.UnitTests.Persistence
         {
             var (manager, db) = MakeManager(Guid.NewGuid().ToString());
 
-            await manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None); // E310000000001
-            await manager.GetNextEncfAsync("default-tenant", "E34", CancellationToken.None); // E340000000001, interleaved
+            await manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None);
+            await manager.GetNextEncfAsync("default-tenant", "E34", CancellationToken.None);
             var secondInvoice = await manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None);
             var secondCreditNote = await manager.GetNextEncfAsync("default-tenant", "E34", CancellationToken.None);
 
@@ -71,10 +62,6 @@ namespace EcfDgii.Client.UnitTests.Persistence
         [Fact]
         public async Task GetNextEncfAsync_ExhaustsExactlyAtRangoHasta_NeverIssuingOneNumberPast()
         {
-            // Sister question to the off-by-one fix above: if the START of a range could be mishandled
-            // silently, the END deserves the same scrutiny — exceeding an authorized range is worse
-            // than wasting its first number. Provision a narrow range directly (bypassing the
-            // auto-provision default of 9,999,999,999) to make exhaustion reachable in a test.
             var (manager, db) = MakeManager(Guid.NewGuid().ToString());
             db.Sequences.Add(new EcfDgii.Client.Domain.Entities.EcfSequence
             {
@@ -94,16 +81,11 @@ namespace EcfDgii.Client.UnitTests.Persistence
 
             Assert.Equal("E310000000001", first);
             Assert.Equal("E310000000002", second);
-            Assert.Equal("E310000000003", third); // the last number actually inside the authorized range
+            Assert.Equal("E310000000003", third);
 
             var act = () => manager.GetNextEncfAsync("default-tenant", "E31", CancellationToken.None);
             await Assert.ThrowsAsync<InvalidOperationException>(act);
 
-            // Confirms the persisted counter itself never advanced past the authorized limit either —
-            // not just that the formatted string looked right. AsNoTracking(): `db` already tracks
-            // the entity it Added above with its original SecuenciaActual=0 — without this, EF Core's
-            // identity map returns that stale tracked instance instead of the value the manager's own
-            // (separately-scoped) DbContext instances actually persisted.
             var sequence = await db.Sequences.AsNoTracking().SingleAsync(s => s.TipoComprobante == "E31");
             Assert.Equal(3, sequence.SecuenciaActual);
         }

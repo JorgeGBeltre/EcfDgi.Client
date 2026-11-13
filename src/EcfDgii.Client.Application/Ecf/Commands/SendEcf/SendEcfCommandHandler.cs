@@ -34,7 +34,6 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
             var editSequence = !string.IsNullOrWhiteSpace(request.EditSequence) ? request.EditSequence : "1";
             var ambiente = !string.IsNullOrWhiteSpace(request.Ambiente) ? request.Ambiente : "Certificacion";
 
-            // 1. Pre-commit document before transmitting to DGII to ensure idempotency and unique index protection
             var doc = new EcfDocument
             {
                 TenantId = tenantId,
@@ -61,7 +60,6 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
                 return Result<EcfRecepcionResponse>.Failure($"Failed to persist pre-send document record: {dbEx.Message}");
             }
 
-            // 2. Transmit to DGII
             EcfRecepcionResponse response;
             try
             {
@@ -70,7 +68,6 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
             }
             catch (Exception ex)
             {
-                // Network or transport fault: Mark state Uncertain so reconciler can poll and clarify
                 doc.State = "Uncertain";
                 doc.DgiiResponseXml = $"Error de transmisión: {ex.Message}";
                 try
@@ -78,12 +75,11 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
                     _documentRepository.Update(doc);
                     await _unitOfWork.SaveChangesAsync(cancellationToken);
                 }
-                catch { /* Ignore fallback update error */ }
+                catch {  }
 
                 return Result<EcfRecepcionResponse>.Failure($"Transmission fault while sending e-CF: {ex.Message}");
             }
 
-            // 3. Process DGII response
             var hasError = !string.IsNullOrEmpty(response.Error);
             doc.TrackId = response.TrackId;
             doc.State = hasError ? "Rechazado" : "Recibido";
@@ -93,8 +89,6 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
                 doc.DgiiResponseXml = response.Mensaje;
             }
 
-            // 4. Update local document; if post-transmission persistence fails, do NOT fail the send result
-            // because DGII has already processed and issued TrackId!
             try
             {
                 _documentRepository.Update(doc);
@@ -102,7 +96,6 @@ namespace EcfDgii.Client.Application.Ecf.Commands.SendEcf
             }
             catch (Exception)
             {
-                // Swallow post-transmission DB persistence exception; reconciler will sync state via TrackId/eNCF
             }
 
             if (hasError)

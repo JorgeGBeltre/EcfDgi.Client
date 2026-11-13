@@ -17,8 +17,8 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
         public const string NonceHeader = "X-Request-Nonce";
         public const string SignatureHeader = "X-Request-Signature";
 
-        private const int MaxTimeDriftSeconds = 300; // 5 minute max drift window
-        private const long MaxRequestBodySizeBytes = 10 * 1024 * 1024; // 10 MB max safe limit
+        private const int MaxTimeDriftSeconds = 300;
+        private const long MaxRequestBodySizeBytes = 10 * 1024 * 1024;
 
         private readonly IWorkerKeyResolver _keyResolver;
         private readonly INonceCache _nonceCache;
@@ -42,7 +42,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             var nonce = Request.Headers[NonceHeader].FirstOrDefault();
             var signature = Request.Headers[SignatureHeader].FirstOrDefault();
 
-            // 1. Verify Required Headers
             if (string.IsNullOrWhiteSpace(keyId) ||
                 string.IsNullOrWhiteSpace(timestamp) ||
                 string.IsNullOrWhiteSpace(nonce) ||
@@ -51,7 +50,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail("Missing required authentication headers (X-Worker-Key-Id, X-Request-Timestamp, X-Request-Nonce, X-Request-Signature).");
             }
 
-            // 2. Verify Timestamp & Clock Drift (Cheap check first)
             if (!long.TryParse(timestamp, out var clientTs))
             {
                 return AuthenticateResult.Fail("Invalid timestamp format.");
@@ -66,7 +64,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail($"Request expired due to clock drift (drift: {driftSeconds}s, max allowed: {MaxTimeDriftSeconds}s). Code: timestamp_drift.");
             }
 
-            // 3. Resolve Worker Key Credentials
             WorkerKeyInfo? keyInfo;
             try
             {
@@ -90,13 +87,11 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail("Worker key has expired. Code: key_expired.");
             }
 
-            // Cap nonce length to prevent unbounded memory allocation
             if (nonce.Length > 128)
             {
                 return AuthenticateResult.Fail("Nonce length exceeds maximum allowed limit.");
             }
 
-            // 4. Safely Read Request Body & Verify HMAC Signature FIRST (Before mutating state/nonce cache)
             if (Request.ContentLength.HasValue && Request.ContentLength.Value > MaxRequestBodySizeBytes)
             {
                 return AuthenticateResult.Fail($"Request body exceeds max allowed size of {MaxRequestBodySizeBytes} bytes.");
@@ -108,11 +103,10 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             {
                 using var reader = new StreamReader(Request.Body, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
                 bodyStr = await reader.ReadToEndAsync();
-                Request.Body.Position = 0; // Rewind for model binder / controller
+                Request.Body.Position = 0;
             }
             Context.Items["RawRequestBody"] = bodyStr;
 
-            // Use RawTarget feature for literal, undecoded URI matching (preserves %7E, %2f, accents, spaces & reverse proxy prefixes byte-for-byte)
             var httpFeature = Context.Features.Get<IHttpRequestFeature>();
             var pathAndQuery = httpFeature?.RawTarget;
             if (string.IsNullOrWhiteSpace(pathAndQuery))
@@ -133,15 +127,12 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                 return AuthenticateResult.Fail("Invalid signature. Code: bad_signature.");
             }
 
-            // 5. Verify Anti-Replay Nonce AFTER signature is proven valid (protects cache from unauthenticated DoS)
-            // Use 2 * MaxTimeDriftSeconds to cover the full allowable clock drift window (past and future)
             if (!_nonceCache.TryAddNonce(keyId, nonce, TimeSpan.FromSeconds(2 * MaxTimeDriftSeconds)))
             {
                 Logger.LogWarning("Worker authentication failed: Replayed nonce detected. KeyId: {KeyId}, Nonce: {Nonce}", keyId, nonce);
                 return AuthenticateResult.Fail("Replayed nonce detected. Code: nonce_replayed.");
             }
 
-            // 6. Build Authenticated Principal with Scoped Multi-Tenant Claims
             var claims = new List<Claim>
             {
                 new Claim(ClaimTypes.NameIdentifier, keyInfo.KeyId),

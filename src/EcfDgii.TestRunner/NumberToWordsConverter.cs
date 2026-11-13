@@ -3,10 +3,6 @@ using System.Collections.Generic;
 
 namespace EcfDgii.TestRunner
 {
-    /// <summary>
-    /// Conversor de montos numéricos a texto en letras en pesos dominicanos
-    /// siguiendo las normas ortográficas y gramaticales de la Real Academia Española (RAE).
-    /// </summary>
     public static class NumberToWordsConverter
     {
         private const decimal MaxSupportedAmount = 999_999_999.99m;

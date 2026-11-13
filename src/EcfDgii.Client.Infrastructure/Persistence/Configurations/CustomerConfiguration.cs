@@ -31,7 +31,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasMaxLength(20)
                 .IsRequired();
 
-            // Auditing Columns
             builder.Property(c => c.CreatedAt)
                 .HasColumnName("created_at")
                 .IsRequired();
@@ -58,17 +57,15 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasColumnName("is_deleted")
                 .IsRequired();
 
-            // Indexes
             builder.HasIndex(c => c.Rnc)
                 .HasDatabaseName("ix_customers_rnc");
 
-            // Seed initial data
             builder.HasData(new Customer
             {
                 Id = Guid.Parse("f98f6d61-d24f-4a0b-967b-1d7c0f135b5a"),
                 Name = "Consumidor Final Genérico",
                 Email = "consumidorfinal@ecfdgii.client.com",
-                Rnc = "22400013743", // Test consumer RNC
+                Rnc = "22400013743",
                 CreatedAt = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
                 CreatedBy = "System",
                 IsDeleted = false

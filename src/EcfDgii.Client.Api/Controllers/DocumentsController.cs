@@ -31,26 +31,14 @@ namespace EcfDgii.Client.Api.Controllers
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("FiscalEmissionLimiter")]
     public class DocumentsController : ControllerBase
     {
-        // States where the eNCF was allocated and persisted but nothing has left this process yet
-        // (no XML was ever handed to DGII). A crash-and-retry here is unconditionally safe: reapply
-        // whatever the caller sends now — even if the source invoice was edited in between — and
-        // retry signing/sending under the SAME eNCF. Never allocate a second eNCF for this TxnId.
         private static readonly HashSet<string> NeverTransmittedStates = new(StringComparer.Ordinal)
         {
             "SequenceAllocated",
             "SigningFailed",
-            // Both stop the document strictly BEFORE any DGII call, exactly like the two above:
-            // SchemaInvalid means the local XSD gate refused it, Unsigned means there was no real
-            // certificate to sign with. Leaving them out stranded the eNCF permanently — a document
-            // that failed on a builder bug could never be retried once the bug was fixed, because a
-            // resubmit of the same TxnId just returned the stale failed state and the only way
-            // forward was to spend a fresh number.
             "SchemaInvalid",
             "Unsigned"
         };
 
-        // The specific DB-level guarantee the concurrent-insert recovery below depends on.
-        // Any other unique/FK/etc. violation is a real error and must not be treated as a race.
         private const string TenantSourceTxnUniqueConstraint = "uq_ecf_documents_tenant_source_txn";
         private const string RncEmisorEncfUniqueConstraint = "uq_ecf_documents_rnc_emisor_encf";
 
@@ -75,19 +63,10 @@ namespace EcfDgii.Client.Api.Controllers
             return match.Success ? System.Net.WebUtility.HtmlDecode(match.Groups[1].Value.Trim()) : null;
         }
 
-        // DGII's status query does not necessarily reflect a transmission the instant it lands —
-        // there is a processing window where the e-CF was received but doesn't show up yet on
-        // consultaestado. Trusting "No encontrado" inside that window risks a real fiscal duplicate:
-        // we'd resend something DGII already has. This is deliberately conservative; DGII doesn't
-        // publish a guaranteed bound, so err on the side of waiting rather than double-submitting.
         private static readonly TimeSpan MinimumUncertainAgeBeforeReconciliation = TimeSpan.FromMinutes(2);
 
-        // DGII's FechaValidationType — see NormalizeFechaDgii.
         private const string DgiiDateFormat = "dd-MM-yyyy";
 
-        // DGII defines exactly three ITBIS buckets, keyed by rate: I1 = 18%, I2 = 16%, I3 = 0%
-        // ("gravado a tasa cero", which is NOT the same as exento). A rate outside this map cannot be
-        // declared truthfully in an e-CF, so it is rejected rather than folded into the nearest slot.
         private static readonly IReadOnlyDictionary<int, int> DgiiItbisSlots = new Dictionary<int, int>
         {
             [18] = 1,
@@ -129,8 +108,6 @@ namespace EcfDgii.Client.Api.Controllers
             _signer = signer;
             _logger = logger;
             _clock = clock;
-            // Validated present and well-formed at startup (see Program.cs ValidateOnStart); safe
-            // to trust unconditionally here.
             _emisorRnc = emisorOptions.Value.Rnc;
             _emisorRazonSocial = emisorOptions.Value.RazonSocial;
             _emisorDireccion = emisorOptions.Value.Direccion;
@@ -238,9 +215,6 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
-            // Arbitrary CertificatePath from client body is forbidden for security (HIGH-100)
-
-            // Cargar certificado dinámico real desde PostgreSQL (Tenants)
             if (_signerResolver != null && !string.IsNullOrWhiteSpace(rncEmisor))
             {
                 try
@@ -299,9 +273,6 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
-            // Aislamiento Multi-Tenant:
-            // Si el tenant no proveyó certificado propio ni existe en disco, se advierte y se recurre
-            // al firmador base (_signer), el cual validará rigurosamente el RNC en ValidateCertificateSn durante SignXml.
             if (!isDefaultFallback && rncEmisor != _emisorRnc)
             {
                 _logger.LogWarning(
@@ -408,13 +379,9 @@ namespace EcfDgii.Client.Api.Controllers
                 return BadRequest(new { error = currencyValidationError });
             }
 
-            // Type-specific required fields per DGII's "Formato Comprobante Fiscal Electrónico (e-CF)
-            // V1.0" spec — checked before allocating a sequence, since a document missing these can
-            // never be validly built regardless of what eNCF it gets.
             if (string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(dto.TipoComprobante, "E33", StringComparison.OrdinalIgnoreCase))
             {
-                // Tipo 34 (Nota de Crédito) / Tipo 33 (Nota de Débito): InformacionReferencia is obligatorio (1).
                 if (string.IsNullOrWhiteSpace(dto.References?.CorrectsENcf))
                 {
                     return BadRequest(new { error = $"References.CorrectsENcf (NCFModificado) is required for TipoComprobante {dto.TipoComprobante}." });
@@ -447,7 +414,6 @@ namespace EcfDgii.Client.Api.Controllers
             if (string.Equals(dto.TipoComprobante, "E31", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(dto.TipoComprobante, "E45", StringComparison.OrdinalIgnoreCase))
             {
-                // e-CF 31 (Crédito Fiscal) & e-CF 45 (Gubernamental): RNCComprador is minOccurs="1" in the real XSD.
                 if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                 {
                     return BadRequest(new
@@ -469,8 +435,6 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else if (string.Equals(dto.TipoComprobante, "E32", StringComparison.OrdinalIgnoreCase))
             {
-                // Tipo 32 (Factura de Consumo): si el monto total es >= DOP$250,000.00 se debe identificar
-                // obligatoriamente RNC/Cédula del comprador o Identificador Extranjero (DGII regla de validación).
                 var total = Math.Round((dto.Totals?.MontoTotal ?? 0m) * preValidationExchangeRate, 2, MidpointRounding.AwayFromZero);
                 if (total >= 250000m)
                 {
@@ -494,7 +458,6 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else if (string.Equals(dto.TipoComprobante, "E41", StringComparison.OrdinalIgnoreCase))
             {
-                // Tipo 41 (Comprobante de Compras): RNCComprador is obligatorio (1) here (the informal vendor).
                 if (string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
                 {
                     return BadRequest(new { error = "Header.RncComprador is required for TipoComprobante E41 (the informal vendor's RNC/Cédula)." });
@@ -514,13 +477,11 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else if (string.Equals(dto.TipoComprobante, "E47", StringComparison.OrdinalIgnoreCase))
             {
-                // Tipo 47 (Pagos al Exterior): Retención de ISR es obligatoria (1)
                 if (dto.Retention is null)
                 {
                     return BadRequest(new { error = "Retention is required for TipoComprobante E47." });
                 }
             }
-            // MED-105 & MED-107: Pre-allocation validation of amounts and lines
             if (dto.Totals != null)
             {
                 if (dto.Totals.MontoSubtotal < 0 || dto.Totals.MontoItbis < 0 || dto.Totals.MontoTotal < 0)
@@ -546,7 +507,6 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (dto.Lines != null && dto.Lines.Count > 0)
             {
-                // MED-107: Línea negativa inicial no puede preceder al ítem que descuenta
                 if (dto.Lines[0].Amount < 0 || dto.Lines[0].UnitPrice < 0)
                 {
                     return BadRequest(new { error = "Una línea de descuento no puede preceder al ítem que descuenta." });
@@ -558,11 +518,10 @@ namespace EcfDgii.Client.Api.Controllers
                     return BadRequest(new { error = "El comprobante no posee líneas facturables con importe mayor a cero." });
                 }
 
-                // MED-105: Líneas deben cuadrar con la base gravada + exenta declarada
                 var linesNetSum = dto.Lines.Sum(l => l.Amount);
-                var declaredBase = dto.Totals != null 
-                    ? ((dto.Totals.MontoGravadoTotal ?? 0m) + (dto.Totals.MontoExento ?? 0m) > 0m 
-                        ? (dto.Totals.MontoGravadoTotal ?? 0m) + (dto.Totals.MontoExento ?? 0m) 
+                var declaredBase = dto.Totals != null
+                    ? ((dto.Totals.MontoGravadoTotal ?? 0m) + (dto.Totals.MontoExento ?? 0m) > 0m
+                        ? (dto.Totals.MontoGravadoTotal ?? 0m) + (dto.Totals.MontoExento ?? 0m)
                         : dto.Totals.MontoSubtotal)
                     : 0m;
 
@@ -572,8 +531,6 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
-            // Checked here, with the other pre-allocation guards: a rate DGII has no bucket for can
-            // never produce a truthful document, so it must not cost an eNCF to find that out.
             if (dto.Totals?.TaxBuckets is { Count: > 0 } declaredBuckets)
             {
                 var unmappable = declaredBuckets
@@ -615,7 +572,6 @@ namespace EcfDgii.Client.Api.Controllers
                    ?? dto.TenantId
                    ?? "default-tenant");
 
-            // Enforce worker allowed_rncs claim if configured (HIGH-107)
             if (clientType == "worker" && !string.IsNullOrWhiteSpace(allowedRncsClaim) && allowedRncsClaim != "*")
             {
                 var allowedList = allowedRncsClaim.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -643,7 +599,6 @@ namespace EcfDgii.Client.Api.Controllers
                 return BadRequest(new { error = creditNoteCapError });
             }
 
-            // Check if document for this TxnId has already been processed in this ambiente
             var existingDoc = await _db.EcfDocuments
                 .FirstOrDefaultAsync(d => d.TenantId == tenantId && d.SourceTxnId == dto.SourceReference.TxnId && (d.Ambiente == null || d.Ambiente == ambiente.ToString()));
 
@@ -652,7 +607,6 @@ namespace EcfDgii.Client.Api.Controllers
                 return await HandleExistingDocumentAsync(existingDoc, dto, editSequence, ambiente, isDefaultFallback);
             }
 
-            // HIGH-016: Pre-validar longitudes de cadenas para no quemar la secuencia e-NCF si SaveChanges falla por MaxLength
             if (tenantId.Length > 100)
             {
                 return BadRequest(new { error = $"TenantId excede la longitud máxima permitida (100). Recibido: {tenantId.Length}" });
@@ -678,7 +632,6 @@ namespace EcfDgii.Client.Api.Controllers
                 return BadRequest(new { error = $"TipoComprobante excede la longitud máxima permitida (10). Recibido: {dto.TipoComprobante?.Length}" });
             }
 
-            // 1. Allocate eNCF Sequence
             string eNcf;
             try
             {
@@ -705,8 +658,6 @@ namespace EcfDgii.Client.Api.Controllers
             }
             catch (DbUpdateException ex) when (IsTenantTxnUniqueViolation(ex))
             {
-                // Another request for the same (TenantId, SourceTxnId, Ambiente) won the race.
-                // Detach our losing attempt and defer to the winner.
                 _db.Entry(doc).State = EntityState.Detached;
 
                 var winner = await _db.EcfDocuments
@@ -786,18 +737,11 @@ namespace EcfDgii.Client.Api.Controllers
             return null;
         }
 
-        /// <summary>
-        /// Decides what to do with a document that already exists for this TxnId, based on how far
-        /// the prior attempt got. Shared by the normal lookup path and by the concurrent-insert
-        /// recovery path above, so both go through identical never-transmitted/uncertain/terminal logic.
-        /// </summary>
         private async Task<IActionResult> HandleExistingDocumentAsync(EcfDocument existingDoc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null, bool? isDefaultFallbackParam = null)
         {
             var isDefaultFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(existingDoc.TenantId, dto, dto.Environment, false);
             if (NeverTransmittedStates.Contains(existingDoc.State))
             {
-                // Nothing was ever handed to DGII for this eNCF. Safe to reapply the incoming
-                // content — whether or not it changed — and retry under the same eNCF.
                 ApplyCanonicalContent(existingDoc, dto, editSequence, isDefaultFallback);
                 await _db.SaveChangesAsync();
                 return await SignAndSendAsync(existingDoc, dto, ambiente, isDefaultFallback);
@@ -805,7 +749,6 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (existingDoc.State == "Uncertain")
             {
-                // We don't know if the prior attempt reached DGII. Ask before doing anything else.
                 return await ReconcileUncertainAsync(existingDoc, dto, editSequence, ambiente, isDefaultFallback);
             }
 
@@ -845,9 +788,6 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                 }
 
-                // El documento previo fue rechazado por la DGII. Conforme a la normativa de la DGII (Ley 32-23),
-                // el eNCF rechazado quedó consumido/inutilizado en los servidores de la DGII (Error 1209 si se reusa).
-                // Para reemitir la factura, se debe asignar un NUEVO correlativo de secuencia libre del rango autorizado.
                 var isFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(tenantId, dto, rawEnv, Request.Headers.ContainsKey("X-Tenant-Id"));
                 var sequenceScope = isFallback ? "default-tenant" : $"{tenantId}:{effectiveAmbiente}";
                 string newEncf;
@@ -875,12 +815,8 @@ namespace EcfDgii.Client.Api.Controllers
                 return await SignAndSendAsync(existingDoc, dto, effectiveAmbiente, isFallback);
             }
 
-            // Terminal / known-transmitted states (AwaitingTransmission, Signed, RejectedByDgii, ...).
             if (!string.Equals(existingDoc.EditSequence, editSequence, StringComparison.Ordinal))
             {
-                // The source invoice changed after an e-CF was already issued for it. Silently
-                // returning the stale document would report wrong amounts as "processed"; this
-                // must go through an explicit correction flow (Nota de Débito/Crédito) instead.
                 return Conflict(new
                 {
                     error = "SourceReference.EditSequence differs from the version already processed for this TxnId. " +
@@ -909,14 +845,6 @@ namespace EcfDgii.Client.Api.Controllers
             });
         }
 
-        /// <summary>
-        /// Applies the canonical DTO's content (header, totals, rebuilt XML) onto a document whose
-        /// eNCF is already fixed. Used both for a brand-new document and for retrying a document
-        /// that never actually reached DGII, where the incoming content may have been edited since.
-        ///
-        /// In multi-tenant environments, RncEmisor and RazonSocialEmisor come from dto.Header.
-        /// In legacy single-tenant/fallback test mode, configured EcfEmisorOptions are respected.
-        /// </summary>
         private void ApplyCanonicalContent(EcfDocument doc, CanonicalDocumentDto dto, string editSequence, bool isDefaultFallback = true)
         {
             doc.EditSequence = editSequence;
@@ -943,11 +871,6 @@ namespace EcfDgii.Client.Api.Controllers
             doc.State = "SequenceAllocated";
         }
 
-        /// <summary>
-        /// A prior attempt threw while transmitting to DGII, so it's unknown whether DGII actually
-        /// received it. Ask DGII directly instead of guessing: resending blindly risks a duplicate
-        /// e-CF under the same eNCF, and silently giving up risks losing one DGII never got.
-        /// </summary>
         private async Task<IActionResult> ReconcileUncertainAsync(EcfDocument doc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null, bool? isDefaultFallbackParam = null)
         {
             var uncertainSince = doc.UpdatedAt.HasValue
@@ -956,8 +879,6 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (_clock.UtcNow - uncertainSince < MinimumUncertainAgeBeforeReconciliation)
             {
-                // Too soon to trust a "No encontrado" from DGII. Report the uncertain state as-is
-                // and let the caller retry later — do not even ask DGII yet.
                 return Accepted(new
                 {
                     documentId = doc.Id,
@@ -980,7 +901,6 @@ namespace EcfDgii.Client.Api.Controllers
             }
             catch (Exception)
             {
-                // Still can't tell. Report the uncertain state as-is rather than guessing either way.
                 return Accepted(new
                 {
                     documentId = doc.Id,
@@ -993,7 +913,6 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (status != null && !IsNotFoundByDgii(status))
             {
-                // DGII already has it: reconcile local state and do not transmit a duplicate.
                 doc.State = "Signed";
                 await _db.SaveChangesAsync();
                 return Accepted(new
@@ -1006,7 +925,6 @@ namespace EcfDgii.Client.Api.Controllers
                 });
             }
 
-            // DGII confirms it never received the prior attempt: safe to treat as never-transmitted.
             ApplyCanonicalContent(doc, dto, editSequence, isDefaultFallback);
             await _db.SaveChangesAsync();
             return await SignAndSendAsync(doc, dto, ambiente, isDefaultFallback);
@@ -1015,11 +933,6 @@ namespace EcfDgii.Client.Api.Controllers
         private static bool IsNotFoundByDgii(ConsultaEstadoResponse status) =>
             string.Equals(status.Estado?.Trim(), "No encontrado", StringComparison.OrdinalIgnoreCase);
 
-        /// <summary>
-        /// Signs and transmits a document whose eNCF is already allocated and persisted
-        /// (either just-allocated, or an existing document being retried). Safe to call
-        /// repeatedly for the same document: it never touches sequence allocation.
-        /// </summary>
         private async Task<IActionResult> SignAndSendAsync(EcfDocument doc, CanonicalDocumentDto? dto = null, AmbienteEnum? ambiente = null, bool? isDefaultFallbackParam = null)
         {
             var effectiveAmbiente = ambiente ?? _defaultAmbiente;
@@ -1027,7 +940,6 @@ namespace EcfDgii.Client.Api.Controllers
             var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, dto?.Certificate, isDefaultFallback);
             var effectiveClient = ResolveEcfClient(doc.RncEmisor, effectiveSigner, effectiveAmbiente, isDefaultFallback);
 
-            // 3. Digital signing & Real Security Code Calculation
             string signedXml;
             try
             {
@@ -1036,10 +948,6 @@ namespace EcfDgii.Client.Api.Controllers
 
                 doc.SignedXmlContent = signedXml;
                 doc.SecurityCode = secCode;
-                // NOT "Signed": a locally-applied signature proves nothing until DGII accepts it —
-                // that is what "Signed" now means (see below). This is the transient in between, and
-                // it deliberately stays OUT of NeverTransmittedStates: if the process dies here we
-                // cannot tell whether the DGII call had already gone out.
                 doc.State = "AwaitingTransmission";
             }
             catch (Exception ex)
@@ -1050,14 +958,6 @@ namespace EcfDgii.Client.Api.Controllers
                 return BadRequest(new { error = $"Error al firmar digitalmente el XML de e-CF: {ex.Message}" });
             }
 
-            // Local XSD gate — opt-in (ValidateSchemasLocal + XsdDirectoryPath configured, same
-            // switches EcfClient.SendEcfAsync's own pre-existing check reads, but exercised HERE too
-            // so an invalid document never even reaches the DGII round-trip). Deliberately validates
-            // the SIGNED xml, not the pre-signature one: the real DGII XSDs end every e-CF's sequence
-            // with a required `xs:any` slot for the ds:Signature XMLDSig injects — a pre-signature
-            // document is structurally incomplete by design and would always fail this check for a
-            // reason that has nothing to do with the actual content. Signing is a cheap, local
-            // operation; only the DGII round-trip is worth avoiding for a document that can't pass.
             if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
             {
                 var xsdFileName = EcfXsdFileNameResolver.Resolve(signedXml);
@@ -1081,11 +981,6 @@ namespace EcfDgii.Client.Api.Controllers
                 }
             }
 
-            // No DGII-issued credential: EcfXmlSigner self-generated one so local work can proceed,
-            // but the result can never be a valid e-CF. Say that plainly instead of transmitting and
-            // letting the failure come back as "Uncertain" — which means "we don't know whether DGII
-            // received it" and would be a lie here: we know exactly why this cannot succeed.
-            // The signed XML is kept so it can still be inspected.
             if (effectiveSigner.UsesFallbackCertificate)
             {
                 doc.State = "Unsigned";
@@ -1120,10 +1015,6 @@ namespace EcfDgii.Client.Api.Controllers
                     var signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
 
                     doc.SignedRfceContent = signedRfce;
-                    // Note: doc.SecurityCode was already assigned from the signed e-CF (signedXml)
-                    // and embedded as <CodigoSeguridadeCF> in the RFCE.
-                    // DO NOT overwrite doc.SecurityCode with the RFCE summary envelope signature hash,
-                    // as DGII's consultatimbrefc endpoint validates against the e-CF's CodigoSeguridadeCF.
 
                     if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
                     {
@@ -1152,7 +1043,7 @@ namespace EcfDgii.Client.Api.Controllers
                     var rfceResp = await effectiveClient.SendRfceAsync(signedRfce, rfceFileName);
                     if (rfceResp != null && (rfceResp.Codigo == 1 || string.Equals(rfceResp.Estado?.Trim(), "Aceptado", StringComparison.OrdinalIgnoreCase)))
                     {
-                        doc.TrackId = null; // RecepcionFC issues no TrackId
+                        doc.TrackId = null;
                         doc.State = "AcceptedByDgii";
                         doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                         doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {rfceResp.Estado ?? "Aceptado"}";
@@ -1170,7 +1061,6 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                     else
                     {
-                        // HIGH-041: Respuesta nula o no concluyente de transporte NO es un veredicto de rechazo DGII; debe ser Uncertain
                         doc.State = "Uncertain";
                         doc.TrackId = null;
                         doc.DgiiResponseXml = rfceResp?.Estado ?? "Respuesta nula o no concluyente de transporte RFCE";
@@ -1195,9 +1085,8 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                     else
                     {
-                        // MED-103 / HIGH-041: Respuesta nula o sin TrackId sin rechazo explícito de DGII es incierta (Uncertain)
                         doc.State = "Uncertain";
-                        doc.DgiiResponseXml = response != null 
+                        doc.DgiiResponseXml = response != null
                             ? (response.Mensaje ?? response.Error ?? "Respuesta sin TrackId desde transporte DGII")
                             : "Respuesta nula desde transporte DGII";
                         _logger.LogWarning("e-CF {ENcf}: respuesta nula o sin TrackId desde DGII. Marcado como 'Uncertain'.", doc.ENcf);
@@ -1246,10 +1135,6 @@ namespace EcfDgii.Client.Api.Controllers
                 .ThenByDescending(d => d.CreatedAt);
         }
 
-        /// <summary>
-        /// Pure read-only lookup of e-CF document by TxnId, TrackId, or eNCF (MED-017).
-        /// Idempotent GET: never mutates database rows or contacts DGII.
-        /// </summary>
         [HttpGet("by-source/{txnId}")]
         public async Task<IActionResult> GetBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
@@ -1275,7 +1160,6 @@ namespace EcfDgii.Client.Api.Controllers
                 targetAmbienteStr = targetAmbiente.ToString();
             }
 
-            // MED-126: Separate sequential indexed probes instead of three-column OR, isolated by Ambiente when specified
             var doc = await ApplyLookupEnvironmentScope(
                     _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
                     targetAmbienteStr,
@@ -1375,9 +1259,6 @@ namespace EcfDgii.Client.Api.Controllers
             });
         }
 
-        /// <summary>
-        /// Explicit command endpoint to reconcile or retransmit an Uncertain/Signed document against DGII (MED-017).
-        /// </summary>
         [HttpPost("by-source/{txnId}/reconcile")]
         public async Task<IActionResult> ReconcileBySourceTxnId(string txnId, [FromQuery] string? environment = null)
         {
@@ -1432,7 +1313,6 @@ namespace EcfDgii.Client.Api.Controllers
                 return NotFound(new { error = $"Document with source TxnId '{txnId}' not found." });
             }
 
-            // Si el comprobante sigue en Signed con TrackId, verificar dinámicamente con DGII
             if (doc.State == "Signed" && !string.IsNullOrWhiteSpace(doc.TrackId))
             {
                 try
@@ -1502,7 +1382,7 @@ namespace EcfDgii.Client.Api.Controllers
                                     string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase) ||
                                     status.Codigo == "1")
                                 {
-                                    doc.TrackId = null; // RecepcionFC issues no TrackId
+                                    doc.TrackId = null;
                                     doc.State = "AcceptedByDgii";
                                     doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
                                     doc.DgiiResponseXml = $"Aceptado por DGII (RecepcionFC): {status.Estado ?? "Aceptado"}";
@@ -1538,9 +1418,7 @@ namespace EcfDgii.Client.Api.Controllers
                                         signedRfce = effectiveSigner.SignXml(rfceXml, doc.RncEmisor);
                                         doc.SignedRfceContent = signedRfce;
                                     }
-                                    // Preserve doc.SecurityCode as the e-CF invoice security code (CodigoSeguridadeCF)
 
-                                    // Local XSD check for RFCE
                                     if (_ecfClientOptions.ValidateSchemasLocal && !string.IsNullOrEmpty(_ecfClientOptions.XsdDirectoryPath))
                                     {
                                         var xsdFileName = EcfXsdFileNameResolver.Resolve(signedRfce);
@@ -1584,11 +1462,10 @@ namespace EcfDgii.Client.Api.Controllers
                                     }
                                     else
                                     {
-                                        // MED-103: Respuesta nula o no concluyente de transporte RFCE es incierta (Uncertain)
                                         doc.State = "Uncertain";
                                         doc.TrackId = null;
-                                        doc.DgiiResponseXml = rfceResp != null 
-                                            ? (rfceResp.Estado ?? "Respuesta sin estado concluyente desde RFCE") 
+                                        doc.DgiiResponseXml = rfceResp != null
+                                            ? (rfceResp.Estado ?? "Respuesta sin estado concluyente desde RFCE")
                                             : "Respuesta nula desde RFCE";
                                         await _db.SaveChangesAsync();
                                     }
@@ -1746,7 +1623,6 @@ namespace EcfDgii.Client.Api.Controllers
                 targetAmbienteStr = targetAmbiente.ToString();
             }
 
-            // MED-126: Probes in order: (TenantId, SourceTxnId), then TrackId, then ENcf — isolated by Ambiente when specified
             var doc = await ApplyLookupEnvironmentScope(
                     _db.EcfDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.SourceTxnId == txnId),
                     targetAmbienteStr,
@@ -1929,13 +1805,13 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine("  <Encabezado>");
             sb.AppendLine("    <Version>1.0</Version>");
             sb.AppendLine("    <IdDoc>");
-            
+
             var tipoEcf = "31";
             if (!string.IsNullOrWhiteSpace(dto.TipoComprobante) && dto.TipoComprobante.Length >= 3)
             {
-                tipoEcf = dto.TipoComprobante.Substring(1); // "E31" -> "31"
+                tipoEcf = dto.TipoComprobante.Substring(1);
             }
-            
+
             sb.AppendLine($"      <TipoeCF>{EscapeXml(tipoEcf)}</TipoeCF>");
             sb.AppendLine($"      <eNCF>{eNcf}</eNCF>");
 
@@ -1964,23 +1840,8 @@ namespace EcfDgii.Client.Api.Controllers
                  (dto.Totals.MontoGravadoTotal == null || dto.Totals.MontoGravadoTotal == 0m) &&
                  dto.Totals.MontoItbis == 0m);
 
-            // Verified against the real DGII XSDs (checked into this repo under "Documentación
-            // Técnica (XSD)") — the field-level obligatoriedad tables in the prose spec do NOT
-            // capture this: FechaVencimientoSecuencia and IndicadorNotaCredito are MUTUALLY
-            // EXCLUSIVE in IdDoc's xs:sequence, not both-optional-fields. Tipo 34's IdDoc has no
-            // FechaVencimientoSecuencia element at all; every other type this codebase emits (31/41)
-            // has no IndicadorNotaCredito element at all.
-            // Verified element-by-element against the real XSDs, because the three cases are NOT a
-            // 34-vs-everything-else binary the way this originally assumed:
-            //   34 → IndicadorNotaCredito, no FechaVencimientoSecuencia
-            //   32 → NEITHER element exists in its IdDoc
-            //   31/33/41/43/44/45/46/47 → FechaVencimientoSecuencia
-            // Emitting FechaVencimientoSecuencia for tipo 32 failed every consumo invoice.
             if (tipoEcf == "34")
             {
-                // IndicadorNotaCreditoType (Norma DGII / e-CF 34 XSD):
-                // 0 = Si fecha de emisión es <= a 30 días calendario del e-CF afectado (preserva derecho a rebaja de ITBIS).
-                // 1 = Si fecha de emisión es > a 30 días calendario del e-CF afectado.
                 int indicadorNotaCredito = 0;
                 if (dto.References?.IndicadorNotaCredito.HasValue == true)
                 {
@@ -2014,7 +1875,7 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else if (tipoEcf != "32")
             {
-                var rawVencimiento = dto.FechaVencimientoSecuencia 
+                var rawVencimiento = dto.FechaVencimientoSecuencia
                     ?? dto.Header?.FechaVencimientoSecuencia;
 
                 string fechaVencimiento;
@@ -2024,8 +1885,6 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 else
                 {
-                    // Si el ambiente es pruebas (PreCertificación/Certificación), la vigencia en DGII es fija a 31-12-2028.
-                    // En producción, es dinámicamente según normativa DGII (31 de diciembre del año posterior).
                     var isTestOrCert = string.Equals(dto.Environment, "PreCertificacion", StringComparison.OrdinalIgnoreCase) ||
                                        string.Equals(dto.Environment, "Certificacion", StringComparison.OrdinalIgnoreCase) ||
                                        string.Equals(dto.Environment, "Test", StringComparison.OrdinalIgnoreCase) ||
@@ -2039,25 +1898,18 @@ namespace EcfDgii.Client.Api.Controllers
 
             if (tipoEcf is "31" or "32" or "33" or "34" or "41" or "45" && !isPurelyExemptOrNonTaxable)
             {
-                // IndicadorMontoGravado: 0 = montos en líneas sección B no tienen ITBIS incluido, 1 = se encuentran con ITBIS incluido.
-                // Requerido por la DGII cuando el documento contiene montos gravados (Error 176 si falta), y omitido si es 100% exento.
                 sb.AppendLine("      <IndicadorMontoGravado>0</IndicadorMontoGravado>");
             }
 
-            // TipoIngresos doesn't exist as an element at all in tipo 41, 43, 47 IdDoc schemas (confirmed by
-            // running the real XSDs), and is omitted on 33/34 when modifying an expense e-CF (E41/E43/E47).
             if (tipoEcf is not "41" and not "43" and not "47" && !modifiesExpenseEcf)
             {
-                // In 46 (Exportaciones), TipoIngresos 02 = Ingresos por exportaciones (or 01).
                 var tipoIngresoVal = tipoEcf == "46" ? "02" : "01";
                 sb.AppendLine($"      <TipoIngresos>{tipoIngresoVal}</TipoIngresos>");
             }
             sb.AppendLine("      <TipoPago>1</TipoPago>");
             sb.AppendLine("    </IdDoc>");
-            
+
             sb.AppendLine("    <Emisor>");
-            // Deliberately emisorRnc/emisorRazonSocial (this instance's configured identity), never
-            // dto.Header?.RncEmisor/RazonSocialEmisor — see ApplyCanonicalContent's doc comment.
             sb.AppendLine($"      <RNCEmisor>{EscapeXml(emisorRnc)}</RNCEmisor>");
             var safeEmisorName = emisorRazonSocial.Length > 150 ? emisorRazonSocial[..150] : emisorRazonSocial;
             var razonSocialEmisor = EscapeXml(safeEmisorName);
@@ -2068,10 +1920,6 @@ namespace EcfDgii.Client.Api.Controllers
             sb.AppendLine($"      <FechaEmision>{EscapeXml(fechaEmision)}</FechaEmision>");
             sb.AppendLine("    </Emisor>");
 
-            // <Comprador> is omitted entirely for tipo 43 (Gastos Menores) because the schema
-            // forbids it, and for 33/34 modifying E43/B13 where Comprador is minOccurs="0".
-            // For tipo 47 (Pagos al Exterior), only IdentificadorExtranjero and
-            // RazonSocialComprador are allowed. For all other types, Comprador is minOccurs="1".
             if (tipoEcf != "43" && !modifiesGastosMenores)
             {
                 sb.AppendLine("    <Comprador>");
@@ -2114,7 +1962,6 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                     else
                     {
-                        // Fallback obligatorio DGII para E46 cuando el cliente extranjero no posee RNC Dominicano
                         sb.AppendLine("      <IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>");
                     }
                 }
@@ -2144,7 +1991,6 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                     else if (tipoEcf is "33" or "34" && (dto.References?.CorrectsENcf?.Trim().StartsWith("E46", StringComparison.OrdinalIgnoreCase) == true || NcfNormalizer.Normalize(dto.References?.CorrectsENcf).StartsWith("B16", StringComparison.OrdinalIgnoreCase)))
                     {
-                        // Fallback obligatorio DGII para Notas de Crédito/Débito que modifican facturas de exportación (E46)
                         sb.AppendLine("      <IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>");
                     }
                 }
@@ -2182,15 +2028,15 @@ namespace EcfDgii.Client.Api.Controllers
 
             var indicadorFacturacion = tipoEcf switch
             {
-                "43" or "44" or "47" => "4", // Exento (DGII Nota 50)
-                "46" => "3",                 // ITBIS tasa cero (DGII Nota 51)
+                "43" or "44" or "47" => "4",
+                "46" => "3",
                 _ => isPurelyExemptOrNonTaxable
                     ? "4"
                     : (hasOnly16Bucket ? "2" : "1")
             };
 
             var indicadorBienoServicio = tipoEcf == "47"
-                ? "2" // Servicio (DGII Nota 54)
+                ? "2"
                 : (tipoEcf == "41" && dto.Retention?.MontoIsrRetenido > 0 ? "2" : "1");
 
             List<ProcessedLineItem> processedItems;
@@ -2413,8 +2259,6 @@ namespace EcfDgii.Client.Api.Controllers
             }
             else
             {
-                // Foreign currency (Otra Moneda): DGII requires <Totales> in DOP (Moneda Nacional)
-                // and <OtraMoneda> immediately after </Totales> in the foreign currency.
                 otraMonedaSb = new StringBuilder();
                 otraMonedaSb.AppendLine("    <OtraMoneda>");
                 otraMonedaSb.AppendLine($"      <TipoMoneda>{EscapeXml(foreignCurrencyCode)}</TipoMoneda>");
@@ -2714,8 +2558,6 @@ namespace EcfDgii.Client.Api.Controllers
             }
             sb.AppendLine("  </DetallesItems>");
 
-            // "InformacionReferencia" — top-level sibling AFTER DetallesItems.
-            // Obligatorio para 33 y 34; fuera de 33/34 solo válido para contingencia (CodigoModificacion = 4).
             if ((tipoEcf is "33" or "34" || dto.References?.CodigoModificacion == 4) && dto.References is { } refs && !string.IsNullOrWhiteSpace(refs.CorrectsENcf))
             {
                 var ncfMod = NcfNormalizer.Normalize(refs.CorrectsENcf);
@@ -2726,7 +2568,6 @@ namespace EcfDgii.Client.Api.Controllers
                 {
                     sb.AppendLine($"    <RNCOtroContribuyente>{EscapeXml(refs.RncOtroContribuyente.Trim())}</RNCOtroContribuyente>");
                 }
-                // The real XSD marks FechaNCFModificado minOccurs="1" (structurally required).
                 var fechaNcfModificado = NormalizeFechaDgii(refs.FechaNcfModificado);
                 sb.AppendLine($"    <FechaNCFModificado>{EscapeXml(fechaNcfModificado)}</FechaNCFModificado>");
                 if (refs.CodigoModificacion is { } codigo)
@@ -2751,36 +2592,11 @@ namespace EcfDgii.Client.Api.Controllers
             return sb.ToString();
         }
 
-        /// <summary>
-        /// DGII's CantidadItem is Decimal18D1or2ValidationTypeMayorCero — strictly greater than zero,
-        /// no exceptions. ERPs routinely produce lines with no quantity at all (a discount, freight, a
-        /// service charge entered as a lump amount), and passing that zero through invalidates the
-        /// ENTIRE document, not just the line.
-        ///
-        /// Such a line is declared as one unit priced at its own amount. Using the line's original
-        /// unit price instead would leave quantity × price ≠ amount, which is internally incoherent
-        /// even though the schema wouldn't catch it (PrecioUnitarioItem allows zero).
-        /// </summary>
         private static (decimal Cantidad, decimal PrecioUnitario) NormalizeLineQuantity(CanonicalLineDto line) =>
             line.Quantity > 0m
                 ? (line.Quantity, line.UnitPrice)
                 : (1m, line.Amount);
 
-        /// <summary>
-        /// Renders a date in the ONLY format DGII's schemas accept: dd-MM-yyyy (FechaValidationType,
-        /// pattern "(3[01]|[12][0-9]|0?[1-9])-(1[012]|0?[1-9])-((19|20)\d{2})" in the real XSDs).
-        ///
-        /// The canonical DTO carries dates in ISO 8601 (yyyy-MM-dd) — that is what ERPConnector's
-        /// ApiSubmitStage sends, and it is the correct thing for a jurisdiction-neutral connector to
-        /// send: dd-MM-yyyy is a DGII convention, so translating into it belongs on THIS side of the
-        /// HTTP contract. Before this existed the ISO value was written into the XML verbatim, failed
-        /// the local XSD gate, and came back as a 400 the connector recorded as a terminal rejection.
-        ///
-        /// Deliberately NOT a lenient DateTime.TryParse: under InvariantCulture "06-08-2026" parses
-        /// month-first as 8 June, so a value already in DGII's format would come back out as a
-        /// different calendar day. Only the exact ISO shape is converted; anything already valid (or
-        /// unrecognized) passes through untouched, leaving the XSD gate as the backstop it already is.
-        /// </summary>
         private static readonly string[] AllowedIncomingDateFormats = new[]
         {
             "yyyy-MM-dd",
@@ -2819,12 +2635,6 @@ namespace EcfDgii.Client.Api.Controllers
             throw new ArgumentException($"La fecha '{value}' tiene un formato inválido para DGII.");
         }
 
-        /// <summary>
-        /// Emits a per-Item &lt;Retencion&gt; block (tipo 41 only — see BuildXmlFromCanonical). Real
-        /// XSD sequence inside Item: IndicadorAgenteRetencionoPercepcion (required),
-        /// MontoITBISRetenido (optional), MontoISRRetenido (optional) — verified against the checked-in
-        /// DGII schema, not inferred from the prose spec.
-        /// </summary>
         private static void AppendRetencion(StringBuilder sb, CanonicalRetentionDto? retention, string tipoEcf)
         {
             if (retention is null && tipoEcf != "41") return;
@@ -2891,13 +2701,11 @@ namespace EcfDgii.Client.Api.Controllers
                 var (rawQty, rawPrice) = NormalizeLineQuantity(line);
                 var rawName = !string.IsNullOrWhiteSpace(line.ItemName) ? line.ItemName : "Item";
 
-                // Si la línea es negativa (descuento en QuickBooks)
                 if (line.Amount < 0 || rawPrice < 0)
                 {
                     var absDiscount = Math.Abs(line.Amount);
                     if (result.Count > 0)
                     {
-                        // Absorber como descuento en el ítem anterior
                         var prev = result[^1];
                         if (absDiscount > prev.MontoItem)
                         {
@@ -2909,13 +2717,10 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                     else
                     {
-                        // MED-107: Una línea de descuento no puede preceder al ítem que descuenta
                         throw new InvalidOperationException("Una línea de descuento no puede preceder al ítem que descuenta.");
                     }
                 }
 
-                // Regla DGII: Líneas con valor 0 o precio 0 (e.g. líneas informativas como "Total Bultos", "P-142501", "TOTAL METROS", subtotales de ERP)
-                // no se agregan al XML que se envía a la DGII.
                 if (line.Amount == 0m || rawPrice == 0m)
                 {
                     continue;
@@ -2934,8 +2739,6 @@ namespace EcfDgii.Client.Api.Controllers
                     }
                     else if (Math.Abs((safeQty * safePrice) - safeAmount) <= 0.05m)
                     {
-                        // Pre-folded net line (ERPConnector / Ecf.api folded a negative discount line into Amount & UnitPrice).
-                        // Reconstruct gross UnitPrice so DGII's CantidadItem * PrecioUnitarioItem - DescuentoMonto == MontoItem holds.
                         var roundedQty = Math.Round(safeQty, 2, MidpointRounding.AwayFromZero);
                         if (roundedQty > 0m)
                         {

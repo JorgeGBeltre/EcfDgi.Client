@@ -5,10 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace EcfDgii.Client.Infrastructure.Persistence.Migrations
 {
-    /// <inheritdoc />
     public partial class AddAmbienteColumnAndUniqueIndexes : Migration
     {
-        /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<string>(
@@ -18,7 +16,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Migrations
                 maxLength: 50,
                 nullable: true);
 
-            // Drop old non-ambiente indexes if they exist
             migrationBuilder.DropIndex(
                 name: "uq_ecf_documents_rnc_emisor_encf",
                 table: "ecf_documents");
@@ -27,7 +24,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Migrations
                 name: "uq_ecf_documents_tenant_source_txn",
                 table: "ecf_documents");
 
-            // Create new composite unique indexes with ambiente
             migrationBuilder.CreateIndex(
                 name: "uq_ecf_documents_rnc_emisor_encf",
                 table: "ecf_documents",
@@ -41,7 +37,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Migrations
                 unique: true);
         }
 
-        /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropIndex(

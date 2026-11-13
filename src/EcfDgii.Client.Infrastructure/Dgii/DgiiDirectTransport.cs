@@ -37,16 +37,6 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             _config = config ?? throw new ArgumentNullException(nameof(config));
         }
 
-        /// <summary>
-        /// Sends a Bearer-authenticated request built by <paramref name="buildRequest"/> (called once
-        /// per attempt — a fresh HttpRequestMessage/content each time, since neither can be reused
-        /// after being sent). On a 401, invalidates the cached token and retries EXACTLY ONCE with a
-        /// freshly renewed one — this is the only reactive auth-refresh path in the transport; the rest
-        /// of the DGII calls otherwise rely solely on EcfTokenManager's proactive 5-minute-margin
-        /// refresh. A second 401 (fresh token also rejected — a real outage, not a stale-token blip) is
-        /// surfaced as a failure rather than retried again, so a bad response never turns into an
-        /// unbounded request storm against DGII.
-        /// </summary>
         private async Task<HttpResponseMessage> SendWithReactiveAuthAsync(
             Func<string, HttpRequestMessage> buildRequest, CancellationToken ct, bool isIdempotentQuery = false)
         {
@@ -78,11 +68,10 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                     break;
                 }
 
-                // MED-144: Retry on transient 5xx/gateway timeouts for idempotent queries only (never for document submissions)
-                if (isIdempotentQuery && 
-                    (response.StatusCode == HttpStatusCode.BadGateway || 
-                     response.StatusCode == HttpStatusCode.ServiceUnavailable || 
-                     response.StatusCode == HttpStatusCode.GatewayTimeout) && 
+                if (isIdempotentQuery &&
+                    (response.StatusCode == HttpStatusCode.BadGateway ||
+                     response.StatusCode == HttpStatusCode.ServiceUnavailable ||
+                     response.StatusCode == HttpStatusCode.GatewayTimeout) &&
                     retryCount < maxRetries)
                 {
                     retryCount++;

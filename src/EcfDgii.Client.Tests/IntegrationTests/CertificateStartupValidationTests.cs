@@ -12,15 +12,6 @@ using EcfDgii.Client.Domain.Interfaces;
 
 namespace EcfDgii.Client.IntegrationTests
 {
-    /// <summary>
-    /// Without this, EcfXmlSigner silently falls back to a dummy self-signed certificate when
-    /// CertificatePath is missing/unloadable (see EcfXmlSigner's constructor) — the app starts
-    /// clean, looks healthy, and signs every e-CF with a certificate DGII will reject. The failure
-    /// only surfaces as a DGII rejection in production, not as a deploy-time error. This is the
-    /// same class of gap EcfEmisorOptions.ValidateOnStart() closed for the RNC, applied to the
-    /// certificate. Deliberately skipped in Development, mirroring EcfXmlSigner's own dummy-cert
-    /// fallback, which exists precisely so local dev doesn't need a real DGII certificate.
-    /// </summary>
     public class CertificateStartupValidationTests : IDisposable
     {
         private readonly string _validCertPath = Path.Combine(Path.GetTempPath(), $"valid-{Guid.NewGuid():N}.pfx");
@@ -42,7 +33,7 @@ namespace EcfDgii.Client.IntegrationTests
         private static void WriteSelfSignedPfx(string path, DateTimeOffset notBefore, DateTimeOffset notAfter)
         {
             using var rsa = RSA.Create(2048);
-            var req = new CertificateRequest("CN=101889063, O=Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var req = new CertificateRequest("CN=101000001, O=Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             using var cert = req.CreateSelfSigned(notBefore, notAfter);
             File.WriteAllBytes(path, cert.Export(X509ContentType.Pfx, CertPassword));
         }
@@ -55,13 +46,10 @@ namespace EcfDgii.Client.IntegrationTests
                 builder.UseEnvironment(environment);
                 builder.UseSetting("ConnectionStrings:DefaultConnection", "InMemory");
                 builder.UseSetting("ConnectionStrings:Redis", "");
-                builder.UseSetting("EcfEmisor:Rnc", "101889063");
-                builder.UseSetting("EcfClientOptions:RncEmisor", "101889063");
+                builder.UseSetting("EcfEmisor:Rnc", "101000001");
+                builder.UseSetting("EcfClientOptions:RncEmisor", "101000001");
                 builder.UseSetting("EcfClientOptions:CertificatePath", certPath);
                 builder.UseSetting("EcfClientOptions:CertificatePassword", certPassword);
-                // Not what this test class is about, but non-Development now also fails fast on
-                // these — a real value keeps the "successful start" cases isolated to the
-                // certificate check they're actually testing.
                 builder.UseSetting("WorkerSecretKey", "a-real-rotated-worker-secret-1234567890");
                 builder.UseSetting("JwtSettings:Secret", "a-real-jwt-secret-that-is-long-enough-1234567890");
 
@@ -126,17 +114,15 @@ namespace EcfDgii.Client.IntegrationTests
         {
             using var factory = MakeFactory("Staging", _validCertPath, CertPassword);
 
-            using var client = factory.CreateClient(); // must not throw
+            using var client = factory.CreateClient();
         }
 
         [Fact]
         public void MissingCertificate_DoesNotPreventStartup_InDevelopment()
         {
-            // Regression guard: local dev without a real DGII certificate must still work —
-            // EcfXmlSigner's dummy-certificate fallback exists specifically for this case.
             using var factory = MakeFactory("Development", certPath: null, certPassword: null);
 
-            using var client = factory.CreateClient(); // must not throw
+            using var client = factory.CreateClient();
         }
     }
 }

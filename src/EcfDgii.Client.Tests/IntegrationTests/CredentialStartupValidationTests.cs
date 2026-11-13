@@ -12,16 +12,6 @@ using EcfDgii.Client.Domain.Interfaces;
 
 namespace EcfDgii.Client.IntegrationTests
 {
-    /// <summary>
-    /// Two findings this covers:
-    ///  1) The pre-existing WorkerKeys fail-fast checked a config section ("WorkerKeys": array of
-    ///     {KeyId, Secret}) that nothing ever populates — ConfigurationWorkerKeyResolver actually
-    ///     reads a flat "WorkerSecretKey" key (or WORKER_SECRET_KEY env var). The startup check and
-    ///     the runtime resolver were validating two different, unrelated config keys; the startup
-    ///     check was a silent no-op in every environment.
-    ///  2) JwtSettings:Secret had no startup check at all — a missing value falls back to a
-    ///     hardcoded, publicly-visible default string in Program.cs itself.
-    /// </summary>
     public class CredentialStartupValidationTests : IDisposable
     {
         private readonly string _validCertPath = Path.Combine(Path.GetTempPath(), $"cred-cert-{Guid.NewGuid():N}.pfx");
@@ -30,7 +20,7 @@ namespace EcfDgii.Client.IntegrationTests
         public CredentialStartupValidationTests()
         {
             using var rsa = RSA.Create(2048);
-            var req = new CertificateRequest("CN=101889063, O=Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var req = new CertificateRequest("CN=101000001, O=Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             using var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             File.WriteAllBytes(_validCertPath, cert.Export(X509ContentType.Pfx, CertPassword));
         }
@@ -48,8 +38,8 @@ namespace EcfDgii.Client.IntegrationTests
                 builder.UseEnvironment(environment);
                 builder.UseSetting("ConnectionStrings:DefaultConnection", "InMemory");
                 builder.UseSetting("ConnectionStrings:Redis", "");
-                builder.UseSetting("EcfEmisor:Rnc", "101889063");
-                builder.UseSetting("EcfClientOptions:RncEmisor", "101889063");
+                builder.UseSetting("EcfEmisor:Rnc", "101000001");
+                builder.UseSetting("EcfClientOptions:RncEmisor", "101000001");
                 builder.UseSetting("EcfClientOptions:CertificatePath", _validCertPath);
                 builder.UseSetting("EcfClientOptions:CertificatePassword", CertPassword);
                 builder.UseSetting("WorkerSecretKey", workerSecretKey);
@@ -123,16 +113,15 @@ namespace EcfDgii.Client.IntegrationTests
                 workerSecretKey: "a-real-rotated-worker-secret-1234567890",
                 jwtSecret: "a-real-jwt-secret-that-is-long-enough-1234567890");
 
-            using var client = factory.CreateClient(); // must not throw
+            using var client = factory.CreateClient();
         }
 
         [Fact]
         public void DefaultCredentials_DoNotPreventStartup_InDevelopment()
         {
-            // Regression guard: local dev must still work with the checked-in placeholder defaults.
             using var factory = MakeFactory("Development", workerSecretKey: null, jwtSecret: null);
 
-            using var client = factory.CreateClient(); // must not throw
+            using var client = factory.CreateClient();
         }
     }
 }

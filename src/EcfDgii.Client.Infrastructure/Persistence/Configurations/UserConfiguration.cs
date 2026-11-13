@@ -36,7 +36,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasMaxLength(50)
                 .IsRequired();
 
-            // Auditing Columns
             builder.Property(u => u.CreatedAt)
                 .HasColumnName("created_at")
                 .IsRequired();
@@ -63,7 +62,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .HasColumnName("is_deleted")
                 .IsRequired();
 
-            // Unique Constraints and Indexes
             builder.HasIndex(u => u.Username)
                 .IsUnique()
                 .HasDatabaseName("uq_users_username");
@@ -72,14 +70,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Configurations
                 .IsUnique()
                 .HasDatabaseName("uq_users_email");
 
-            // Seed initial Admin User.
-            // The password this hash used to correspond to ("AdminPassword123!") was printed in
-            // plaintext in this file's own history and in the README — anyone with either is
-            // effectively public. This migration rotates the hash (see
-            // 2026*_RotateSeededAdminPassword.cs); the new plaintext password is not committed
-            // anywhere — it was communicated out of band when this rotation was made. Whoever holds
-            // it should log in and change it immediately, ideally through a real first-login
-            // forced-password-change flow rather than another committed seed.
             builder.HasData(new User
             {
                 Id = Guid.Parse("9f3c7e09-e85d-452f-9877-c93d90fcb32d"),

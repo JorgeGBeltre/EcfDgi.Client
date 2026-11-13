@@ -12,7 +12,6 @@ namespace EcfDgii.Client.Domain.Entities
         Cert = 1,
         Prod = 2,
 
-        // Common aliases & Spanish equivalents for DGII integration & environment configs
         Produccion = Prod,
         Certificacion = Cert,
         PreCertificacion = Test,

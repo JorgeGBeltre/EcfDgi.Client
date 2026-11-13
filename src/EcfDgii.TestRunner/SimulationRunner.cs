@@ -20,10 +20,13 @@ namespace EcfDgii.TestRunner
     {
         private readonly EcfXmlSigner _signer;
         private readonly DgiiDirectTransport _transport;
-        private readonly string _rncEmisor = "133664692";
-        private readonly string _unsignedXmlsDir = @"C:\Users\Jorge\Desktop\Ecf\scratch\generated_xmls";
-        private readonly string _xsdDir = @"C:\Users\Jorge\Desktop\Ecf\EcfDgi.Client\Documentación Técnica (XSD)";
-        private readonly string _outputBaseDir = @"C:\Users\Jorge\Desktop\Ceramic chic\Simulacion_Operaciones_Reales";
+        private readonly string _rncEmisor = Environment.GetEnvironmentVariable("TEST_RNC_EMISOR") ?? "130000002";
+        private readonly string _unsignedXmlsDir = Environment.GetEnvironmentVariable("TEST_UNSIGNED_XMLS_DIR")
+            ?? Path.Combine(".", "scratch", "generated_xmls");
+        private readonly string _xsdDir = Environment.GetEnvironmentVariable("TEST_XSD_DIR")
+            ?? Path.Combine(".", "Documentación Técnica (XSD)");
+        private readonly string _outputBaseDir = Environment.GetEnvironmentVariable("TEST_SIMULATION_OUTPUT_DIR")
+            ?? Path.Combine(".", "sample_output", "Simulacion_Operaciones");
 
         public SimulationRunner(EcfXmlSigner signer, DgiiDirectTransport transport)
         {
@@ -61,7 +64,7 @@ namespace EcfDgii.TestRunner
         public async Task RunAsync()
         {
             Console.WriteLine("=========================================================================================================");
-            Console.WriteLine("INICIANDO FASE 2: SIMULACION CON DATOS DE OPERACIONES REALES (CERAMIC CHIC SRL - 133664692)");
+            Console.WriteLine($"INICIANDO FASE 2: SIMULACION DE OPERACIONES DE PRUEBA (COMERCIAL EJEMPLO SRL - {_rncEmisor})");
             Console.WriteLine("=========================================================================================================");
 
             var xmlsDir = Path.Combine(_outputBaseDir, "XMLs");
@@ -79,11 +82,9 @@ namespace EcfDgii.TestRunner
             Directory.CreateDirectory(b2cDir);
             Directory.CreateDirectory(pdfsDir);
 
-            // 1. Define the 25 Simulation Cases
             var cases = DefineCases();
 
-            // 2. Generate and Sign each e-CF XML
-            Console.WriteLine("\n[1/6] Generando y firmando 25 comprobantes con catálogo comercial de CERAMIC CHIC SRL...");
+            Console.WriteLine("\n[1/6] Generando y firmando 25 comprobantes con catálogo comercial de prueba...");
             var validator = new EcfSchemaValidator();
             int secondOffset = 0;
 
@@ -99,20 +100,15 @@ namespace EcfDgii.TestRunner
 
                 var rawXml = File.ReadAllText(sourcePath, Encoding.UTF8);
 
-                // Update Sequence
                 rawXml = Regex.Replace(rawXml, @"<eNCF>.*?</eNCF>", $"<eNCF>{c.NewEncf}</eNCF>");
+                rawXml = Regex.Replace(rawXml, @"<RazonSocialEmisor>.*?</RazonSocialEmisor>", "<RazonSocialEmisor>COMERCIAL EJEMPLO SRL</RazonSocialEmisor>");
+                rawXml = Regex.Replace(rawXml, @"<NombreComercial>.*?</NombreComercial>", "<NombreComercial>COMERCIAL EJEMPLO</NombreComercial>");
 
-                // Update Emisor
-                rawXml = Regex.Replace(rawXml, @"<RazonSocialEmisor>.*?</RazonSocialEmisor>", "<RazonSocialEmisor>CERAMIC CHIC SRL</RazonSocialEmisor>");
-                rawXml = Regex.Replace(rawXml, @"<NombreComercial>.*?</NombreComercial>", "<NombreComercial>CERAMIC CHIC</NombreComercial>");
-
-                // Update Timestamps
                 c.FechaEmision = DateTime.Now.ToString("dd-MM-yyyy");
                 c.FechaFirma = DateTime.Now.AddSeconds(secondOffset).ToString("dd-MM-yyyy HH:mm:ss");
                 rawXml = Regex.Replace(rawXml, @"<FechaEmision>.*?</FechaEmision>", $"<FechaEmision>{c.FechaEmision}</FechaEmision>");
                 rawXml = Regex.Replace(rawXml, @"<FechaHoraFirma>.*?</FechaHoraFirma>", $"<FechaHoraFirma>{c.FechaFirma}</FechaHoraFirma>");
 
-                // Update References if Credit/Debit Note
                 if (!string.IsNullOrEmpty(c.ReferenciaEncf))
                 {
                     rawXml = Regex.Replace(rawXml, @"<NCFModificado>.*?</NCFModificado>", $"<NCFModificado>{c.ReferenciaEncf}</NCFModificado>");
@@ -120,14 +116,11 @@ namespace EcfDgii.TestRunner
                     rawXml = Regex.Replace(rawXml, @"<IndicadorNotaCredito>.*?</IndicadorNotaCredito>", "<IndicadorNotaCredito>0</IndicadorNotaCredito>");
                 }
 
-                // Sign XML
                 c.SignedXml = _signer.SignXml(rawXml, _rncEmisor);
                 c.SecurityCode = _signer.ExtractSignatureValue(c.SignedXml).Substring(0, 6);
 
-                // Parse Totals and Items for PDF generation
                 ParseTotalsAndItems(c);
 
-                // Validate Schema
                 var xsdFile = EcfXsdFileNameResolver.Resolve(c.SignedXml);
                 if (!string.IsNullOrEmpty(xsdFile))
                 {
@@ -142,7 +135,6 @@ namespace EcfDgii.TestRunner
                     }
                 }
 
-                // Save signed XML
                 var fileName = $"{_rncEmisor}{c.NewEncf}.xml";
                 File.WriteAllText(Path.Combine(xmlsDir, fileName), c.SignedXml, Encoding.UTF8);
 
@@ -157,7 +149,6 @@ namespace EcfDgii.TestRunner
                 Console.WriteLine($"  [OK] {c.NewEncf} ({c.Description}) -> Monto: RD$ {c.MontoTotal:N2} | CodSeg: {c.SecurityCode}");
             }
 
-            // Create ZIP of the 4 E32 < 250k for OFV Upload
             var b2cXmlsDir = Path.Combine(b2cDir, "XMLs");
             var zipPath = Path.Combine(b2cDir, $"{_rncEmisor}_Facturas_Consumo_Menor_250k.zip");
             if (File.Exists(zipPath)) File.Delete(zipPath);
@@ -167,7 +158,6 @@ namespace EcfDgii.TestRunner
                 Console.WriteLine($"\n[INFO] Archivo ZIP para subir en OFV creado en: {zipPath}");
             }
 
-            // 3. PHASE 1: Send 4 RFCEs via RecepcionFC
             Console.WriteLine("\n[2/6] Transmitiendo los 4 Resúmenes B2C (RFCE) vía RecepcionFC...");
             var rfceCases = cases.FindAll(c => c.IsRfce);
             int rfceAccepted = 0;
@@ -209,7 +199,6 @@ namespace EcfDgii.TestRunner
                 return;
             }
 
-            // 4. PHASE 2: Transmit 18 Base Invoices via Recepcion
             Console.WriteLine("\n[3/6] Transmitiendo las 18 Facturas Base vía Recepcion...");
             var baseCases = cases.FindAll(c => c.IsBaseInvoice);
             foreach (var c in baseCases)
@@ -231,7 +220,6 @@ namespace EcfDgii.TestRunner
                 await Task.Delay(300);
             }
 
-            // 5. PHASE 3: Poll until all 18 Base Invoices are Aceptado
             Console.WriteLine("\n[4/6] Verificando validación de las 18 Facturas Base ante DGII...");
             bool allBaseAccepted = false;
             for (int attempt = 1; attempt <= 12; attempt++)
@@ -274,7 +262,6 @@ namespace EcfDgii.TestRunner
                 await Task.Delay(8000);
             }
 
-            // 6. PHASE 4: Transmit 3 Credit/Debit Notes
             Console.WriteLine("\n[5/6] Transmitiendo las 3 Notas de Crédito / Débito...");
             var noteCases = cases.FindAll(c => c.IsNote);
             foreach (var c in noteCases)
@@ -329,7 +316,6 @@ namespace EcfDgii.TestRunner
                 if (pendingNotes == 0) break;
             }
 
-            // Final check for any remaining comprobantes
             foreach (var c in cases)
             {
                 if (!string.IsNullOrEmpty(c.TrackId) && c.EstadoDgii != "Aceptado")
@@ -347,7 +333,6 @@ namespace EcfDgii.TestRunner
                 }
             }
 
-            // 7. PHASE 5: Generate 25 Official Representation Impresa PDFs
             Console.WriteLine("\n[6/6] Generando 25 Representaciones Impresas oficiales en PDF con Código QR DGII...");
             foreach (var c in cases)
             {
@@ -363,9 +348,8 @@ namespace EcfDgii.TestRunner
                 }
             }
 
-            // Results Table
             Console.WriteLine("\n=========================================================================================================");
-            Console.WriteLine("RESULTADOS DE SIMULACION CON DATOS REALES - CERAMIC CHIC SRL (133664692)");
+            Console.WriteLine($"RESULTADOS DE SIMULACION DE PRUEBA - COMERCIAL EJEMPLO SRL ({_rncEmisor})");
             Console.WriteLine("=========================================================================================================");
             Console.WriteLine("{0,-15} | {1,-6} | {2,-38} | {3,-12} | {4}", "eNCF", "Tipo", "TrackId / Ref", "Estado DGII", "Mensajes");
             Console.WriteLine("---------------------------------------------------------------------------------------------------------");
@@ -399,22 +383,22 @@ namespace EcfDgii.TestRunner
 
             var missingCases = new List<SimulationCase>
             {
-                new SimulationCase 
-                { 
-                    OriginalFile = "E310000000005", 
-                    NewEncf = "E310000000105", 
-                    TipoEcf = "31", 
-                    Description = "Crédito Fiscal - Porcelanato Italiano Pulido", 
-                    IsBaseInvoice = true 
+                new SimulationCase
+                {
+                    OriginalFile = "E310000000005",
+                    NewEncf = "E310000000105",
+                    TipoEcf = "31",
+                    Description = "Crédito Fiscal - Artículo Comercial Estándar",
+                    IsBaseInvoice = true
                 },
-                new SimulationCase 
-                { 
-                    OriginalFile = "E340000000015", 
-                    NewEncf = "E340000000103", 
-                    TipoEcf = "34", 
-                    Description = "Nota Crédito - Descuento Comercial Concedido", 
-                    ReferenciaEncf = "E410000000102", 
-                    IsNote = true 
+                new SimulationCase
+                {
+                    OriginalFile = "E340000000015",
+                    NewEncf = "E340000000103",
+                    TipoEcf = "34",
+                    Description = "Nota Crédito - Descuento Comercial Concedido",
+                    ReferenciaEncf = "E410000000102",
+                    IsNote = true
                 }
             };
 
@@ -426,8 +410,8 @@ namespace EcfDgii.TestRunner
                 var rawXml = File.ReadAllText(sourcePath, Encoding.UTF8);
 
                 rawXml = Regex.Replace(rawXml, @"<eNCF>.*?</eNCF>", $"<eNCF>{c.NewEncf}</eNCF>");
-                rawXml = Regex.Replace(rawXml, @"<RazonSocialEmisor>.*?</RazonSocialEmisor>", "<RazonSocialEmisor>CERAMIC CHIC SRL</RazonSocialEmisor>");
-                rawXml = Regex.Replace(rawXml, @"<NombreComercial>.*?</NombreComercial>", "<NombreComercial>CERAMIC CHIC</NombreComercial>");
+                rawXml = Regex.Replace(rawXml, @"<RazonSocialEmisor>.*?</RazonSocialEmisor>", "<RazonSocialEmisor>COMERCIAL EJEMPLO SRL</RazonSocialEmisor>");
+                rawXml = Regex.Replace(rawXml, @"<NombreComercial>.*?</NombreComercial>", "<NombreComercial>COMERCIAL EJEMPLO</NombreComercial>");
 
                 c.FechaEmision = DateTime.Now.ToString("dd-MM-yyyy");
                 c.FechaFirma = DateTime.Now.AddSeconds(secondOffset).ToString("dd-MM-yyyy HH:mm:ss");
@@ -449,14 +433,12 @@ namespace EcfDgii.TestRunner
                 File.WriteAllText(Path.Combine(xmlsDir, fileName), c.SignedXml, Encoding.UTF8);
             }
 
-            // 1. Send E310000000105
             var e31 = missingCases[0];
             Console.Write($"\nTransmitiendo {e31.NewEncf} ({e31.Description})... ");
             var resp31 = await _transport.SendEcfAsync(e31.SignedXml, $"{_rncEmisor}{e31.NewEncf}.xml");
             e31.TrackId = resp31.TrackId;
             Console.WriteLine($"-> TrackId: {e31.TrackId}");
 
-            // Poll E31
             Console.WriteLine("Verificando aprobación de E31 ante DGII...");
             for (int i = 1; i <= 8; i++)
             {
@@ -476,14 +458,12 @@ namespace EcfDgii.TestRunner
                 }
             }
 
-            // 2. Send E340000000103
             var e34 = missingCases[1];
             Console.Write($"\nTransmitiendo Nota {e34.NewEncf} (modifica {e34.ReferenciaEncf})... ");
             var resp34 = await _transport.SendEcfAsync(e34.SignedXml, $"{_rncEmisor}{e34.NewEncf}.xml");
             e34.TrackId = resp34.TrackId;
             Console.WriteLine($"-> TrackId: {e34.TrackId}");
 
-            // Poll E34
             Console.WriteLine("Verificando aprobación de E34 ante DGII...");
             for (int i = 1; i <= 8; i++)
             {
@@ -503,7 +483,6 @@ namespace EcfDgii.TestRunner
                 }
             }
 
-            // 3. Generate PDFs
             Console.WriteLine("\nGenerando PDFs oficiales...");
             foreach (var c in missingCases)
             {
@@ -525,58 +504,47 @@ namespace EcfDgii.TestRunner
         {
             return new List<SimulationCase>
             {
-                // 4x E31 (Factura de Crédito Fiscal) - All standard 18% ITBIS, NO selective taxes
-                new SimulationCase { OriginalFile = "E310000000005", NewEncf = "E310000000301", TipoEcf = "31", Description = "Crédito Fiscal - Porcelanato Calacatta 60x60", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E310000000005", NewEncf = "E310000000302", TipoEcf = "31", Description = "Crédito Fiscal - Cerámica Muro Blanco", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E310000000007", NewEncf = "E310000000303", TipoEcf = "31", Description = "Crédito Fiscal - Porcelanato Maderado", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E310000000010", NewEncf = "E310000000304", TipoEcf = "31", Description = "Crédito Fiscal - Piso Cerámico Antideslizante", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E310000000005", NewEncf = "E310000000301", TipoEcf = "31", Description = "Crédito Fiscal - Producto Comercial A", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E310000000005", NewEncf = "E310000000302", TipoEcf = "31", Description = "Crédito Fiscal - Producto Comercial B", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E310000000007", NewEncf = "E310000000303", TipoEcf = "31", Description = "Crédito Fiscal - Producto Comercial C", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E310000000010", NewEncf = "E310000000304", TipoEcf = "31", Description = "Crédito Fiscal - Producto Comercial D", IsBaseInvoice = true },
 
-                // 2x E32 >= 250k (Factura de Consumo >= 250k)
-                new SimulationCase { OriginalFile = "E320000000005", NewEncf = "E320000000301", TipoEcf = "32", Description = "Consumo >= 250k (Gran Formato)", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E320000000006", NewEncf = "E320000000302", TipoEcf = "32", Description = "Consumo >= 250k (Revestimiento)", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E320000000005", NewEncf = "E320000000301", TipoEcf = "32", Description = "Consumo >= 250k (Lote Mayorista A)", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E320000000006", NewEncf = "E320000000302", TipoEcf = "32", Description = "Consumo >= 250k (Lote Mayorista B)", IsBaseInvoice = true },
 
-                // 4x E32 < 250k (Factura de Consumo < 250k)
-                new SimulationCase { OriginalFile = "E320000000012", NewEncf = "E320000000303", TipoEcf = "32", Description = "Consumo < 250k (Cerámica Baño)", IsRfce = true },
-                new SimulationCase { OriginalFile = "E320000000013", NewEncf = "E320000000304", TipoEcf = "32", Description = "Consumo < 250k (Porcelanato Pulido)", IsRfce = true },
-                new SimulationCase { OriginalFile = "E320000000014", NewEncf = "E320000000305", TipoEcf = "32", Description = "Consumo < 250k (Listelos Decorativos)", IsRfce = true },
-                new SimulationCase { OriginalFile = "E320000000015", NewEncf = "E320000000306", TipoEcf = "32", Description = "Consumo < 250k (Gris Rústico)", IsRfce = true },
+                new SimulationCase { OriginalFile = "E320000000012", NewEncf = "E320000000303", TipoEcf = "32", Description = "Consumo < 250k (Detalle Minorista A)", IsRfce = true },
+                new SimulationCase { OriginalFile = "E320000000013", NewEncf = "E320000000304", TipoEcf = "32", Description = "Consumo < 250k (Detalle Minorista B)", IsRfce = true },
+                new SimulationCase { OriginalFile = "E320000000014", NewEncf = "E320000000305", TipoEcf = "32", Description = "Consumo < 250k (Detalle Minorista C)", IsRfce = true },
+                new SimulationCase { OriginalFile = "E320000000015", NewEncf = "E320000000306", TipoEcf = "32", Description = "Consumo < 250k (Detalle Minorista D)", IsRfce = true },
 
-                // 1x E33 (Nota de Débito - Modifica E320000000302)
                 new SimulationCase { OriginalFile = "E330000000001", NewEncf = "E330000000301", TipoEcf = "33", Description = "Nota Débito - Intereses por Mora", ReferenciaEncf = "E320000000302", IsNote = true },
 
-                // 2x E34 (Nota de Crédito - Modifican E410000000301 y E410000000302)
-                new SimulationCase { OriginalFile = "E340000000015", NewEncf = "E340000000301", TipoEcf = "34", Description = "Nota Crédito - Devolución Material", ReferenciaEncf = "E410000000301", IsNote = true },
+                new SimulationCase { OriginalFile = "E340000000015", NewEncf = "E340000000301", TipoEcf = "34", Description = "Nota Crédito - Devolución Mercancía", ReferenciaEncf = "E410000000301", IsNote = true },
                 new SimulationCase { OriginalFile = "E340000000015", NewEncf = "E340000000302", TipoEcf = "34", Description = "Nota Crédito - Descuento Comercial", ReferenciaEncf = "E410000000302", IsNote = true },
 
-                // 2x E41 (Compras)
-                new SimulationCase { OriginalFile = "E410000000001", NewEncf = "E410000000301", TipoEcf = "41", Description = "Compras Informales - Tarimas Madera", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E410000000001", NewEncf = "E410000000301", TipoEcf = "41", Description = "Compras Informales - Insumos Operativos A", IsBaseInvoice = true },
                 new SimulationCase { OriginalFile = "E410000000010", NewEncf = "E410000000302", TipoEcf = "41", Description = "Compras Informales - Material Embalaje", IsBaseInvoice = true },
 
-                // 2x E43 (Gastos Menores)
-                new SimulationCase { OriginalFile = "E430000000010", NewEncf = "E430000000301", TipoEcf = "43", Description = "Gastos Menores - Taller Montacargas", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E430000000012", NewEncf = "E430000000302", TipoEcf = "43", Description = "Gastos Menores - Combustible Planta", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E430000000010", NewEncf = "E430000000301", TipoEcf = "43", Description = "Gastos Menores - Mantenimiento Menor", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E430000000012", NewEncf = "E430000000302", TipoEcf = "43", Description = "Gastos Menores - Suministros Oficina", IsBaseInvoice = true },
 
-                // 2x E44 (Regímenes Especiales)
                 new SimulationCase { OriginalFile = "E440000000007", NewEncf = "E440000000301", TipoEcf = "44", Description = "Régimen Especial - Zona Franca A", IsBaseInvoice = true },
                 new SimulationCase { OriginalFile = "E440000000008", NewEncf = "E440000000302", TipoEcf = "44", Description = "Régimen Especial - Zona Franca B", IsBaseInvoice = true },
 
-                // 2x E45 (Gubernamentales)
-                new SimulationCase { OriginalFile = "E450000000001", NewEncf = "E450000000301", TipoEcf = "45", Description = "Gubernamental - DGII Sede Central", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E450000000010", NewEncf = "E450000000302", TipoEcf = "45", Description = "Gubernamental - Ministerio Hacienda", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E450000000001", NewEncf = "E450000000301", TipoEcf = "45", Description = "Gubernamental - Entidad Pública A", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E450000000010", NewEncf = "E450000000302", TipoEcf = "45", Description = "Gubernamental - Entidad Pública B", IsBaseInvoice = true },
 
-                // 2x E46 (Exportación)
-                new SimulationCase { OriginalFile = "E460000000008", NewEncf = "E460000000301", TipoEcf = "46", Description = "Exportación - Distribuidor Caribe", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E460000000011", NewEncf = "E460000000302", TipoEcf = "46", Description = "Exportación - Porcelanatos San Juan", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E460000000008", NewEncf = "E460000000301", TipoEcf = "46", Description = "Exportación - Distribuidor Exterior A", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E460000000011", NewEncf = "E460000000302", TipoEcf = "46", Description = "Exportación - Distribuidor Exterior B", IsBaseInvoice = true },
 
-                // 2x E47 (Pagos al Exterior)
-                new SimulationCase { OriginalFile = "E470000000009", NewEncf = "E470000000301", TipoEcf = "47", Description = "Pago Exterior - Moldes Cerámicos Italia", IsBaseInvoice = true },
-                new SimulationCase { OriginalFile = "E470000000010", NewEncf = "E470000000302", TipoEcf = "47", Description = "Pago Exterior - Software Diseño Pisos", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E470000000009", NewEncf = "E470000000301", TipoEcf = "47", Description = "Pago Exterior - Servicios Técnicos", IsBaseInvoice = true },
+                new SimulationCase { OriginalFile = "E470000000010", NewEncf = "E470000000302", TipoEcf = "47", Description = "Pago Exterior - Licencia de Software", IsBaseInvoice = true },
             };
         }
 
         private string BuildAndSignRfce(SimulationCase c)
         {
-            var rawRfce = $@"<?xml version=""1.0"" encoding=""utf-8""?><RFCE><Encabezado><Version>1.0</Version><IdDoc><TipoeCF>32</TipoeCF><eNCF>{c.NewEncf}</eNCF><TipoIngresos>01</TipoIngresos><TipoPago>1</TipoPago></IdDoc><Emisor><RNCEmisor>{_rncEmisor}</RNCEmisor><RazonSocialEmisor>CERAMIC CHIC SRL</RazonSocialEmisor><FechaEmision>{c.FechaEmision}</FechaEmision></Emisor><Comprador><RNCComprador>{c.RncComprador}</RNCComprador><RazonSocialComprador>{c.RazonSocialComprador}</RazonSocialComprador></Comprador><Totales><MontoGravadoTotal>{(c.MontoTotal - c.TotalItbis):0.00}</MontoGravadoTotal><MontoGravadoI1>{(c.MontoTotal - c.TotalItbis):0.00}</MontoGravadoI1><TotalITBIS>{c.TotalItbis:0.00}</TotalITBIS><TotalITBIS1>{c.TotalItbis:0.00}</TotalITBIS1><MontoTotal>{c.MontoTotal:0.00}</MontoTotal></Totales><CodigoSeguridadeCF>{c.SecurityCode}</CodigoSeguridadeCF></Encabezado></RFCE>";
+            var rawRfce = $@"<?xml version=""1.0"" encoding=""utf-8""?><RFCE><Encabezado><Version>1.0</Version><IdDoc><TipoeCF>32</TipoeCF><eNCF>{c.NewEncf}</eNCF><TipoIngresos>01</TipoIngresos><TipoPago>1</TipoPago></IdDoc><Emisor><RNCEmisor>{_rncEmisor}</RNCEmisor><RazonSocialEmisor>COMERCIAL EJEMPLO SRL</RazonSocialEmisor><FechaEmision>{c.FechaEmision}</FechaEmision></Emisor><Comprador><RNCComprador>{c.RncComprador}</RNCComprador><RazonSocialComprador>{c.RazonSocialComprador}</RazonSocialComprador></Comprador><Totales><MontoGravadoTotal>{(c.MontoTotal - c.TotalItbis):0.00}</MontoGravadoTotal><MontoGravadoI1>{(c.MontoTotal - c.TotalItbis):0.00}</MontoGravadoI1><TotalITBIS>{c.TotalItbis:0.00}</TotalITBIS><TotalITBIS1>{c.TotalItbis:0.00}</TotalITBIS1><MontoTotal>{c.MontoTotal:0.00}</MontoTotal></Totales><CodigoSeguridadeCF>{c.SecurityCode}</CodigoSeguridadeCF></Encabezado></RFCE>";
             return _signer.SignXml(rawRfce, _rncEmisor);
         }
 
@@ -611,7 +579,7 @@ namespace EcfDgii.TestRunner
             {
                 foreach (XmlNode n in itemNodes)
                 {
-                    var nom = n.SelectSingleNode("NombreItem")?.InnerText ?? "Articulo Cerámico";
+                    var nom = n.SelectSingleNode("NombreItem")?.InnerText ?? "Artículo Comercial";
                     decimal.TryParse(n.SelectSingleNode("CantidadItem")?.InnerText, NumberStyles.Any, CultureInfo.InvariantCulture, out var cant);
                     decimal.TryParse(n.SelectSingleNode("PrecioUnitarioItem")?.InnerText, NumberStyles.Any, CultureInfo.InvariantCulture, out var pu);
                     decimal.TryParse(n.SelectSingleNode("MontoItem")?.InnerText, NumberStyles.Any, CultureInfo.InvariantCulture, out var mi);
@@ -623,7 +591,7 @@ namespace EcfDgii.TestRunner
         public void RegenerateAllPdfs()
         {
             Console.WriteLine("=========================================================================================================");
-            Console.WriteLine("REGENERANDO LAS 25 REPRESENTACIONES IMPRESAS (PDF) OFICIALES - CERAMIC CHIC SRL");
+            Console.WriteLine("REGENERANDO LAS 25 REPRESENTACIONES IMPRESAS (PDF) DE PRUEBA - COMERCIAL EJEMPLO SRL");
             Console.WriteLine("=========================================================================================================");
 
             var xmlsDir = Path.Combine(_outputBaseDir, "XMLs");
@@ -683,7 +651,6 @@ namespace EcfDgii.TestRunner
 
         private void GenerateInvoicePdf(SimulationCase c, string destinationPath)
         {
-            // Build official DGII QR Code URL
             var isRfce = c.IsRfce || (c.TipoEcf == "32" && c.MontoTotal < 250000m);
             string qrUrl;
             if (isRfce)
@@ -708,20 +675,11 @@ namespace EcfDgii.TestRunner
             using var qrCode = new PngByteQRCode(qrData);
             var qrBytes = qrCode.GetGraphic(15);
 
-            // Load company logo from server asset
             byte[]? logoBytes = null;
-            var logoCandidates = new[]
+            var logoPath = Environment.GetEnvironmentVariable("SAMPLE_LOGO_PATH") ?? Path.Combine(".", "sample_output", "sample_logo.png");
+            if (File.Exists(logoPath))
             {
-                @"C:\Users\Jorge\Desktop\Ecf\scratch\ceramic_chic_logo.png",
-                @"C:\Users\Jorge\Desktop\Ecf\scratch\ceramic_logo.png",
-                @"C:\Users\Jorge\Desktop\Ecf\Ceramic\ceramic_chic_logo.png"
-            };
-            foreach (var lp in logoCandidates)
-            {
-                if (File.Exists(lp))
-                {
-                    try { logoBytes = File.ReadAllBytes(lp); break; } catch { }
-                }
+                try { logoBytes = File.ReadAllBytes(logoPath); } catch { }
             }
 
             Document.Create(container =>
@@ -733,12 +691,10 @@ namespace EcfDgii.TestRunner
                     page.PageColor(Colors.White);
                     page.DefaultTextStyle(x => x.FontSize(8).FontFamily("Arial").FontColor("#111827"));
 
-                    // 1. ENCABEZADO EN DOS COLUMNAS (Formato idéntico al servidor)
                     page.Header().Column(col =>
                     {
                         col.Item().Row(row =>
                         {
-                            // Columna Izquierda: Logo y datos fiscales de CERAMIC CHIC SRL
                             row.RelativeItem(5.8f).Column(c1 =>
                             {
                                 if (logoBytes != null && logoBytes.Length > 0)
@@ -754,19 +710,18 @@ namespace EcfDgii.TestRunner
                                 }
                                 else
                                 {
-                                    c1.Item().Text("CERAMIC CHIC SRL").Bold().FontSize(12).FontColor("#0B437D");
+                                    c1.Item().Text("COMERCIAL EJEMPLO SRL").Bold().FontSize(12).FontColor("#0B437D");
                                 }
 
-                                c1.Item().Text("CERAMIC CHIC SRL").Bold().FontSize(8.5f);
-                                c1.Item().Text("RNC: 133-66469-2").FontSize(8f);
-                                c1.Item().Text("Tel.: (809) 472-7676").FontSize(8f);
-                                c1.Item().Text("Correo: facturacion@ceramicchic.com.do").FontSize(8f);
-                                c1.Item().Text("Autopista Duarte Km. 13 ½, Parque Industrial Dualas").FontSize(8f);
-                                c1.Item().Text("Nave 5 Pantoja, Santo Domingo").FontSize(8f);
+                                c1.Item().Text("COMERCIAL EJEMPLO SRL").Bold().FontSize(8.5f);
+                                c1.Item().Text("RNC: 130-00000-2").FontSize(8f);
+                                c1.Item().Text("Tel.: (809) 555-0200").FontSize(8f);
+                                c1.Item().Text("Correo: facturacion@ejemplo.com.do").FontSize(8f);
+                                c1.Item().Text("Av. Empresarial No. 200, Zona Industrial").FontSize(8f);
+                                c1.Item().Text("Santo Domingo, Rep. Dom.").FontSize(8f);
                                 c1.Item().Text("Sucursal: Sede principal").FontSize(8f).FontColor(Colors.Grey.Medium);
                             });
 
-                            // Columna Derecha: Recuadro Fiscal e-CF
                             row.RelativeItem(4.2f).Border(0.8f, Unit.Point).BorderColor("#C5CAD1").Column(card =>
                             {
                                 card.Item().Background("#E5E7EB").PaddingVertical(4).PaddingHorizontal(6)
@@ -828,10 +783,8 @@ namespace EcfDgii.TestRunner
 
                     page.Content().PaddingTop(7).Column(col =>
                     {
-                        // 2. Banda de dos recuadros: Facturar a y Condiciones comerciales
                         col.Item().Row(row =>
                         {
-                            // Recuadro 1: Facturar a
                             row.RelativeItem().Border(0.5f, Unit.Point).BorderColor("#C5CAD1").Padding(6).Column(box =>
                             {
                                 box.Item().Text("Facturar a").FontSize(8f).FontColor(Colors.Grey.Darken1);
@@ -860,7 +813,6 @@ namespace EcfDgii.TestRunner
 
                             row.Spacing(8f);
 
-                            // Recuadro 2: Condiciones comerciales
                             row.RelativeItem().Border(0.5f, Unit.Point).BorderColor("#C5CAD1").Padding(6).Column(box =>
                             {
                                 box.Item().Row(r =>
@@ -878,21 +830,20 @@ namespace EcfDgii.TestRunner
                                 box.Item().PaddingTop(3).Row(r =>
                                 {
                                     r.AutoItem().Text("Vendedor").FontSize(8f).FontColor(Colors.Grey.Darken1);
-                                    r.RelativeItem().AlignRight().Text("Víctor Medina").Bold().FontSize(8f);
+                                    r.RelativeItem().AlignRight().Text("Vendedor Demo").Bold().FontSize(8f);
                                 });
                             });
                         });
 
-                        // 3. Tabla de detalle (Exactamente 5 columnas con estilo del servidor)
                         col.Item().PaddingTop(7).Table(tbl =>
                         {
                             tbl.ColumnsDefinition(cols =>
                             {
-                                cols.RelativeColumn(4.6f); // Descripción
-                                cols.RelativeColumn(1.3f); // Und.
-                                cols.RelativeColumn(1.1f); // Cant.
-                                cols.RelativeColumn(1.3f); // Precio
-                                cols.RelativeColumn(1.7f); // Valor
+                                cols.RelativeColumn(4.6f);
+                                cols.RelativeColumn(1.3f);
+                                cols.RelativeColumn(1.1f);
+                                cols.RelativeColumn(1.3f);
+                                cols.RelativeColumn(1.7f);
                             });
 
                             tbl.Header(h =>
@@ -932,10 +883,8 @@ namespace EcfDgii.TestRunner
                             }
                         });
 
-                        // 4. Totales y Bloque Fiscal DGII (QR con Código de Seguridad y Fecha Firma DEBAJO según modelo DGII)
                         col.Item().PaddingTop(10).Row(row =>
                         {
-                            // Lado Izquierdo: QR Code DGII y debajo Código de Seguridad + Fecha Firma
                             row.RelativeItem(5.2f).Column(qrCol =>
                             {
                                 qrCol.Item().Row(qrRow =>
@@ -951,7 +900,6 @@ namespace EcfDgii.TestRunner
                                     .FontSize(6.5f).Italic().FontColor(Colors.Grey.Darken2);
                             });
 
-                            // Lado Derecho: Recuadro de Totales y Monto en Letras
                             row.RelativeItem(4.8f).Column(tCol =>
                             {
                                 tCol.Item().Table(t =>
@@ -963,17 +911,14 @@ namespace EcfDgii.TestRunner
                                         cols.RelativeColumn(2.5f);
                                     });
 
-                                    // Subtotal
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).Text("SUBTOTAL").Bold().FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).AlignCenter().Text("RD$").FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Padding(4).AlignRight().Text((c.MontoTotal - c.TotalItbis).ToString("N2")).FontSize(8f);
 
-                                    // ITBIS
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).Text("ITBIS (18%)").Bold().FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Background(Colors.Grey.Lighten3).Padding(4).AlignCenter().Text("RD$").FontSize(8f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor(Colors.Grey.Medium).Padding(4).AlignRight().Text(c.TotalItbis.ToString("N2")).FontSize(8f);
 
-                                    // TOTAL A PAGAR (Destacado azul #05376E)
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor("#05376E").Background("#05376E").Padding(5).Text("TOTAL A PAGAR").Bold().FontColor(Colors.White).FontSize(9f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor("#05376E").Background("#05376E").Padding(5).AlignCenter().Text("RD$").Bold().FontColor(Colors.White).FontSize(9f);
                                     t.Cell().Border(0.5f, Unit.Point).BorderColor("#05376E").Background("#05376E").Padding(5).AlignRight().Text(c.MontoTotal.ToString("N2")).Bold().FontColor(Colors.White).FontSize(9.5f);

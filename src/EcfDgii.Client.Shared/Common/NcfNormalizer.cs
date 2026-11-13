@@ -4,9 +4,6 @@ namespace EcfDgii.Client.Shared.Common
     using System.Collections.Generic;
     using System.Linq;
 
-    /// <summary>
-    /// Normalizador centralizado de secuencias NCF (Norma General 06-2018 y Norma General 07-2006 de la DGII).
-    /// </summary>
     public static class NcfNormalizer
     {
         public const string LegacyPrefix = "B";
@@ -17,9 +14,6 @@ namespace EcfDgii.Client.Shared.Common
         public const string TipoNotaDebito = "03";
         public const string TipoNotaCredito = "04";
 
-        /// <summary>
-        /// Normaliza un identificador de comprobante al formato DGII oficial de 11 caracteres (legacy) o 13 caracteres (e-CF).
-        /// </summary>
         public static string Normalize(string? input, string defaultType = TipoConsumo)
         {
             if (string.IsNullOrWhiteSpace(input)) return string.Empty;

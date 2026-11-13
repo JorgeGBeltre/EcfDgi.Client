@@ -31,7 +31,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
             if (string.IsNullOrWhiteSpace(keyId))
                 return Task.FromResult<WorkerKeyInfo?>(null);
 
-            // Per-request worker key validation: Reject insecure or missing secret in non-development environments (LOW-055)
             var configuredKeyId = _config["WORKER_KEY_ID"] ?? _config["WorkerKeyId"] ?? "default-worker-id";
             var configuredSecret = _config["WORKER_SECRET_KEY"] ?? _config["WorkerSecretKey"];
 

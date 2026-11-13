@@ -5,10 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace EcfDgii.Client.Infrastructure.Persistence.Migrations
 {
-    /// <inheritdoc />
     public partial class AddEcfStatusPollingColumns : Migration
     {
-        /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<DateTime>(
@@ -36,7 +34,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence.Migrations
                 columns: new[] { "state", "last_status_check_at" });
         }
 
-        /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropIndex(

@@ -71,7 +71,6 @@ namespace EcfDgii.Client.Application.Documents.Validators
                 RuleFor(x => x.Totals!.MontoTotal)
                     .GreaterThanOrEqualTo(0).WithMessage("Totals.MontoTotal cannot be negative.");
 
-                // MED-105: Coherencia de montos declarados: MontoTotal == MontoSubtotal + MontoItbis
                 RuleFor(x => x.Totals!)
                     .Must(t =>
                     {
@@ -82,7 +81,6 @@ namespace EcfDgii.Client.Application.Documents.Validators
                     .WithMessage(x => $"Discrepancia en totales: MontoTotal ({x.Totals!.MontoTotal}) debe coincidir con Subtotal + ITBIS.");
             });
 
-            // MED-105 & MED-107: Líneas y descuentos coherentes
             When(x => x.Lines != null && x.Lines.Count > 0, () =>
             {
                 RuleFor(x => x.Lines)

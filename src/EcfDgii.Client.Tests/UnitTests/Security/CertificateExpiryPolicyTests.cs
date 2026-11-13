@@ -59,9 +59,6 @@ namespace EcfDgii.Client.UnitTests.Security
         [Fact]
         public void Classify_AlreadyExpired_StillReturnsCritical_NotSomeOtherValue()
         {
-            // Startup already throws before classification is reached for a truly expired cert
-            // (see Program.cs's NotAfter check), but the classifier itself should be robust —
-            // never silently downgrade a negative remaining-time to Warning/Ok.
             var notAfter = Now.AddDays(-1);
 
             Assert.Equal(CertificateExpiryPolicy.ExpiryUrgency.Critical, CertificateExpiryPolicy.Classify(Now, notAfter));

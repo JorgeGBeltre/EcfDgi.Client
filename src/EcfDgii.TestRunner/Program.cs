@@ -14,24 +14,30 @@ namespace EcfDgii.TestRunner
 {
     public class Program
     {
-        private static readonly string PfxPath = @"C:\Users\Jorge\Desktop\Ecf\scratch\ceramic_chic.pfx";
+        private static readonly string PfxPath = Environment.GetEnvironmentVariable("TEST_PFX_PATH")
+            ?? Path.Combine(".", "scratch", "demo_cert.pfx");
         private static readonly string PfxPassword = Environment.GetEnvironmentVariable("TEST_PFX_PASSWORD") ?? string.Empty;
-        private static readonly string RncEmisor = "133664692";
-        private static readonly string UnsignedXmlsDir = @"C:\Users\Jorge\Desktop\Ecf\scratch\generated_xmls";
-        private static readonly string SignedXmlsDir = @"C:\Users\Jorge\Desktop\Ecf\scratch\signed_xmls";
-        private static readonly string TrackIdsFile = @"C:\Users\Jorge\Desktop\Ecf\scratch\track_ids.json";
+        private static readonly string RncEmisor = Environment.GetEnvironmentVariable("TEST_RNC_EMISOR") ?? "130000002";
+        private static readonly string UnsignedXmlsDir = Environment.GetEnvironmentVariable("TEST_UNSIGNED_XMLS_DIR")
+            ?? Path.Combine(".", "scratch", "generated_xmls");
+        private static readonly string SignedXmlsDir = Environment.GetEnvironmentVariable("TEST_SIGNED_XMLS_DIR")
+            ?? Path.Combine(".", "scratch", "signed_xmls");
+        private static readonly string TrackIdsFile = Environment.GetEnvironmentVariable("TEST_TRACK_IDS_FILE")
+            ?? Path.Combine(".", "scratch", "track_ids.json");
+        private static readonly string OutputBaseDir = Environment.GetEnvironmentVariable("TEST_OUTPUT_DIR")
+            ?? Path.Combine(".", "sample_output");
 
         public static async Task Main(string[] args)
         {
-            if (args.Length > 0 && (args[0] == "--willy-pdfs" || args[0] == "--willychic-pdfs"))
+            if (args.Length > 0 && args[0] == "--sample-pdfs")
             {
-                var willyRunner = new WillyChicPdfRunner();
-                willyRunner.GenerateAll();
+                var sampleRunner = new SamplePdfRunner();
+                sampleRunner.GenerateAll();
                 return;
             }
 
             Console.WriteLine("================================================================");
-            Console.WriteLine("DGII CERTECF TEST SET RUNNER - CERAMIC CHIC SRL (133664692)");
+            Console.WriteLine($"DGII CERTECF TEST SET RUNNER - COMERCIAL EJEMPLO SRL ({RncEmisor})");
             Console.WriteLine("================================================================");
 
             if (!File.Exists(PfxPath))
@@ -42,7 +48,6 @@ namespace EcfDgii.TestRunner
 
             Directory.CreateDirectory(SignedXmlsDir);
 
-            // 1. Initialize Signer & DGII Transport
             using var cert = X509CertificateLoader.LoadPkcs12FromFile(PfxPath, PfxPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
             Console.WriteLine($"[INFO] Certificate loaded: {cert.Subject}");
             Console.WriteLine($"[INFO] Valid from {cert.NotBefore} to {cert.NotAfter}");
@@ -53,7 +58,6 @@ namespace EcfDgii.TestRunner
             var tokenManager = new EcfTokenManager(httpClient, signer, envConfig, RncEmisor);
             var transport = new DgiiDirectTransport(httpClient, tokenManager, envConfig);
 
-            // 2. Authenticate
             Console.WriteLine("\n[1/5] Authenticating with DGII CerteCF...");
             try
             {
@@ -66,7 +70,6 @@ namespace EcfDgii.TestRunner
                 return;
             }
 
-            // Master TrackIds Dictionary
             var masterTrackIds = new Dictionary<string, string>();
             if (File.Exists(TrackIdsFile))
             {
@@ -145,16 +148,22 @@ namespace EcfDgii.TestRunner
                 var signed = signer.SignXml(rawXml, RncEmisor);
                 var code = signer.ExtractSignatureValue(signed).Substring(0, 6);
                 Console.WriteLine($"Signed E320000000015 code: {code}");
-                var dest1 = @"C:\Users\Jorge\Desktop\Ceramic chic\Facturas_Consumo_Menor_250k\133664692E320000000015.xml";
-                var dest2 = @"C:\Users\Jorge\Desktop\Ceramic chic\Facturas_Consumo_Menor_250k\Facturas_eCF32_Completas\133664692E320000000015.xml";
+
+                var b2cDir = Path.Combine(OutputBaseDir, "Facturas_Consumo_Menor_250k");
+                var b2cCompletas = Path.Combine(b2cDir, "Facturas_eCF32_Completas");
+                var b2cRfce = Path.Combine(b2cDir, "Resumenes_RFCE");
+                Directory.CreateDirectory(b2cCompletas);
+                Directory.CreateDirectory(b2cRfce);
+
+                var dest1 = Path.Combine(b2cDir, $"{RncEmisor}E320000000015.xml");
+                var dest2 = Path.Combine(b2cCompletas, $"{RncEmisor}E320000000015.xml");
                 File.WriteAllText(dest1, signed, Encoding.UTF8);
                 File.WriteAllText(dest2, signed, Encoding.UTF8);
 
-                // Build and sign RFCE with Bub0ac
-                var rfceRawXml = $@"<?xml version=""1.0"" encoding=""utf-8""?><RFCE><Encabezado><Version>1.0</Version><IdDoc><TipoeCF>32</TipoeCF><eNCF>E320000000015</eNCF><TipoIngresos>01</TipoIngresos><TipoPago>1</TipoPago></IdDoc><Emisor><RNCEmisor>{RncEmisor}</RNCEmisor><RazonSocialEmisor>DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL</RazonSocialEmisor><FechaEmision>01-04-2020</FechaEmision></Emisor><Comprador><RNCComprador>131880681</RNCComprador><RazonSocialComprador>DOCUMENTOS ELECTRONICOS DE 03</RazonSocialComprador></Comprador><Totales><MontoGravadoTotal>55000.00</MontoGravadoTotal><MontoGravadoI1>55000.00</MontoGravadoI1><TotalITBIS>9900.00</TotalITBIS><TotalITBIS1>9900.00</TotalITBIS1><MontoTotal>64900.00</MontoTotal></Totales><CodigoSeguridadeCF>{code}</CodigoSeguridadeCF></Encabezado></RFCE>";
+                var rfceRawXml = $@"<?xml version=""1.0"" encoding=""utf-8""?><RFCE><Encabezado><Version>1.0</Version><IdDoc><TipoeCF>32</TipoeCF><eNCF>E320000000015</eNCF><TipoIngresos>01</TipoIngresos><TipoPago>1</TipoPago></IdDoc><Emisor><RNCEmisor>{RncEmisor}</RNCEmisor><RazonSocialEmisor>DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL</RazonSocialEmisor><FechaEmision>01-04-2020</FechaEmision></Emisor><Comprador><RNCComprador>130000000</RNCComprador><RazonSocialComprador>DOCUMENTOS ELECTRONICOS DE 03</RazonSocialComprador></Comprador><Totales><MontoGravadoTotal>55000.00</MontoGravadoTotal><MontoGravadoI1>55000.00</MontoGravadoI1><TotalITBIS>9900.00</TotalITBIS><TotalITBIS1>9900.00</TotalITBIS1><MontoTotal>64900.00</MontoTotal></Totales><CodigoSeguridadeCF>{code}</CodigoSeguridadeCF></Encabezado></RFCE>";
                 var signedRfce = signer.SignXml(rfceRawXml, RncEmisor);
                 File.WriteAllText(Path.Combine(SignedXmlsDir, "RFCE_E320000000015.xml"), signedRfce, Encoding.UTF8);
-                File.WriteAllText(Path.Combine(@"C:\Users\Jorge\Desktop\Ceramic chic\Facturas_Consumo_Menor_250k\Resumenes_RFCE", $"{RncEmisor}E320000000015.xml"), signedRfce, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(b2cRfce, $"{RncEmisor}E320000000015.xml"), signedRfce, Encoding.UTF8);
 
                 Console.Write($"Sending RFCE E320000000015 ({code})... ");
                 try
@@ -167,13 +176,10 @@ namespace EcfDgii.TestRunner
                     Console.WriteLine($"-> FAILED: {ex.Message}");
                 }
 
-                // Refresh zip
-                var desktopDir = @"C:\Users\Jorge\Desktop\Ceramic chic\Facturas_Consumo_Menor_250k";
-                var desktopCompletas = Path.Combine(desktopDir, "Facturas_eCF32_Completas");
-                var zipPath = Path.Combine(desktopDir, "133664692_Facturas_Consumo_Menor_250k.zip");
+                var zipPath = Path.Combine(b2cDir, $"{RncEmisor}_Facturas_Consumo_Menor_250k.zip");
                 if (File.Exists(zipPath)) File.Delete(zipPath);
-                System.IO.Compression.ZipFile.CreateFromDirectory(desktopCompletas, zipPath);
-                Console.WriteLine("Desktop files and zip updated successfully.");
+                System.IO.Compression.ZipFile.CreateFromDirectory(b2cCompletas, zipPath);
+                Console.WriteLine("Output files and zip updated successfully.");
                 return;
             }
 
@@ -182,10 +188,10 @@ namespace EcfDgii.TestRunner
                 Console.WriteLine("\nQuerying DGII Consulta RFCE for all 4 cases...");
                 var testCodes = new Dictionary<string, string[]>
                 {
-                    ["E320000000012"] = new[] { "unLDpF", "dNerU5", "BD4003" },
-                    ["E320000000013"] = new[] { "LKW4UZ", "p33yV3", "C690B6" },
-                    ["E320000000014"] = new[] { "XbwKIw", "SUXd8v", "CF9FE1" },
-                    ["E320000000015"] = new[] { "g6JWqn", "Z8Pb9c", "D717AF" }
+                    ["E320000000012"] = new[] { "AbC123", "DeF456", "000001" },
+                    ["E320000000013"] = new[] { "GhI789", "JkL012", "000002" },
+                    ["E320000000014"] = new[] { "MnO345", "PqR678", "000003" },
+                    ["E320000000015"] = new[] { "StU901", "VwX234", "000004" }
                 };
 
                 foreach (var kvp in testCodes)
@@ -219,7 +225,6 @@ namespace EcfDgii.TestRunner
             {
                 if (!send21Only)
                 {
-                    // STEP 1: Dynamically sign the 4 e-CF 32s with unique timestamps and send their matching RFCEs
                     Console.WriteLine("\n[2/5] Preparing and Transmitting 4 RFCE B2C Resumenes (with fresh unique security codes)...");
                     await PrepareAndSendRfcesAsync(signer, transport);
                 }
@@ -228,7 +233,6 @@ namespace EcfDgii.TestRunner
                     Console.WriteLine("\n[RFCE ALREADY ACCEPTED] Skipping RFCE transmission to preserve 4/4 accepted resúmenes in OFV!");
                 }
 
-                // STEP 2: Send the 18 Base Invoices via Recepcion
                 Console.WriteLine("\n[3/5] Transmitting 18 Base e-CF Invoices via Recepcion...");
                 var baseInvoices = new[]
                 {
@@ -250,7 +254,6 @@ namespace EcfDgii.TestRunner
 
                 File.WriteAllText(TrackIdsFile, System.Text.Json.JsonSerializer.Serialize(masterTrackIds, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
 
-                // STEP 3: Poll and wait until ALL 18 base invoices are ACEPTADOS!
                 Console.WriteLine("\n[4/5] Waiting for DGII to validate all 18 base invoices before emitting Credit/Debit notes...");
                 bool allBaseAccepted = false;
                 for (int attempt = 1; attempt <= 12; attempt++)
@@ -294,7 +297,6 @@ namespace EcfDgii.TestRunner
                     await Task.Delay(8000);
                 }
 
-                // STEP 4: Send the 3 Credit / Debit Notes
                 Console.WriteLine("\n[5/5] Transmitting 3 Credit/Debit Notes (referencing now-accepted invoices)...");
                 var noteDocs = new[] { "E330000000001", "E340000000015", "E340000000016" };
                 foreach (var encf in noteDocs)
@@ -309,9 +311,8 @@ namespace EcfDgii.TestRunner
                 await Task.Delay(15000);
             }
 
-            // Report Table
             Console.WriteLine("\n=========================================================================================================");
-            Console.WriteLine("OFFICIAL DGII HOMOLOGATION RESULTS - POSTULACION 81770 (CERAMIC CHIC SRL)");
+            Console.WriteLine($"OFFICIAL DGII HOMOLOGATION TEST RESULTS - COMERCIAL EJEMPLO SRL ({RncEmisor})");
             Console.WriteLine("=========================================================================================================");
             Console.WriteLine("{0,-15} | {1,-6} | {2,-38} | {3,-12} | {4}", "eNCF", "Canal", "TrackId / Ref", "Estado", "Mensajes DGII");
             Console.WriteLine("---------------------------------------------------------------------------------------------------------");
@@ -388,11 +389,11 @@ namespace EcfDgii.TestRunner
                 ["E320000000015"] = ("55000.00", "9900.00", "64900.00")
             };
 
-            var desktopDir = @"C:\Users\Jorge\Desktop\Ceramic chic\Facturas_Consumo_Menor_250k";
-            var desktopCompletas = Path.Combine(desktopDir, "Facturas_eCF32_Completas");
-            var desktopRfce = Path.Combine(desktopDir, "Resumenes_RFCE");
-            Directory.CreateDirectory(desktopCompletas);
-            Directory.CreateDirectory(desktopRfce);
+            var outputDir = Path.Combine(OutputBaseDir, "Facturas_Consumo_Menor_250k");
+            var outputCompletas = Path.Combine(outputDir, "Facturas_eCF32_Completas");
+            var outputRfce = Path.Combine(outputDir, "Resumenes_RFCE");
+            Directory.CreateDirectory(outputCompletas);
+            Directory.CreateDirectory(outputRfce);
 
             int secondOffset = 0;
             foreach (var kvp in rfceData)
@@ -401,33 +402,26 @@ namespace EcfDgii.TestRunner
                 var data = kvp.Value;
                 secondOffset += 7;
 
-                // 1. Read base unsigned invoice
                 var unsignedEcfPath = Path.Combine(UnsignedXmlsDir, $"{encf}.xml");
                 var ecfXml = File.ReadAllText(unsignedEcfPath, Encoding.UTF8);
 
-                // Update FechaHoraFirma with fresh timestamp so SignatureValue/hash is guaranteed 100% unique
                 var freshTime = DateTime.Now.AddSeconds(secondOffset).ToString("dd-MM-yyyy HH:mm:ss");
                 ecfXml = System.Text.RegularExpressions.Regex.Replace(ecfXml, @"<FechaHoraFirma>.*?</FechaHoraFirma>", $"<FechaHoraFirma>{freshTime}</FechaHoraFirma>");
 
-                // 2. Sign the full e-CF 32
                 var signedEcf = signer.SignXml(ecfXml, RncEmisor);
                 var sigVal = signer.ExtractSignatureValue(signedEcf);
                 var secCode = sigVal.Substring(0, 6);
 
-                // Save signed e-CF 32 in scratch and desktop output directories
                 File.WriteAllText(Path.Combine(SignedXmlsDir, $"{encf}.xml"), signedEcf, Encoding.UTF8);
-                File.WriteAllText(Path.Combine(desktopDir, $"{RncEmisor}{encf}.xml"), signedEcf, Encoding.UTF8);
-                File.WriteAllText(Path.Combine(desktopCompletas, $"{RncEmisor}{encf}.xml"), signedEcf, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(outputDir, $"{RncEmisor}{encf}.xml"), signedEcf, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(outputCompletas, $"{RncEmisor}{encf}.xml"), signedEcf, Encoding.UTF8);
 
-                // 3. Build RFCE XML with this exact security code
-                var rfceRawXml = $@"<?xml version=""1.0"" encoding=""utf-8""?><RFCE><Encabezado><Version>1.0</Version><IdDoc><TipoeCF>32</TipoeCF><eNCF>{encf}</eNCF><TipoIngresos>01</TipoIngresos><TipoPago>1</TipoPago></IdDoc><Emisor><RNCEmisor>{RncEmisor}</RNCEmisor><RazonSocialEmisor>DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL</RazonSocialEmisor><FechaEmision>01-04-2020</FechaEmision></Emisor><Comprador><RNCComprador>131880681</RNCComprador><RazonSocialComprador>DOCUMENTOS ELECTRONICOS DE 03</RazonSocialComprador></Comprador><Totales><MontoGravadoTotal>{data.MontoGravado}</MontoGravadoTotal><MontoGravadoI1>{data.MontoGravado}</MontoGravadoI1><TotalITBIS>{data.Itbis}</TotalITBIS><TotalITBIS1>{data.Itbis}</TotalITBIS1><MontoTotal>{data.MontoTotal}</MontoTotal></Totales><CodigoSeguridadeCF>{secCode}</CodigoSeguridadeCF></Encabezado></RFCE>";
+                var rfceRawXml = $@"<?xml version=""1.0"" encoding=""utf-8""?><RFCE><Encabezado><Version>1.0</Version><IdDoc><TipoeCF>32</TipoeCF><eNCF>{encf}</eNCF><TipoIngresos>01</TipoIngresos><TipoPago>1</TipoPago></IdDoc><Emisor><RNCEmisor>{RncEmisor}</RNCEmisor><RazonSocialEmisor>DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL</RazonSocialEmisor><FechaEmision>01-04-2020</FechaEmision></Emisor><Comprador><RNCComprador>130000000</RNCComprador><RazonSocialComprador>DOCUMENTOS ELECTRONICOS DE 03</RazonSocialComprador></Comprador><Totales><MontoGravadoTotal>{data.MontoGravado}</MontoGravadoTotal><MontoGravadoI1>{data.MontoGravado}</MontoGravadoI1><TotalITBIS>{data.Itbis}</TotalITBIS><TotalITBIS1>{data.Itbis}</TotalITBIS1><MontoTotal>{data.MontoTotal}</MontoTotal></Totales><CodigoSeguridadeCF>{secCode}</CodigoSeguridadeCF></Encabezado></RFCE>";
 
-                // 4. Sign RFCE
                 var signedRfce = signer.SignXml(rfceRawXml, RncEmisor);
                 File.WriteAllText(Path.Combine(SignedXmlsDir, $"RFCE_{encf}.xml"), signedRfce, Encoding.UTF8);
-                File.WriteAllText(Path.Combine(desktopRfce, $"{RncEmisor}{encf}.xml"), signedRfce, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(outputRfce, $"{RncEmisor}{encf}.xml"), signedRfce, Encoding.UTF8);
 
-                // 5. Send RFCE to DGII RecepcionFC
                 var fileName = $"{RncEmisor}{encf}.xml";
                 Console.Write($"  Sending RFCE {encf} (CodigoSeguridad: {secCode} / Time: {freshTime})... ");
                 try
@@ -443,12 +437,11 @@ namespace EcfDgii.TestRunner
                 await Task.Delay(500);
             }
 
-            // Update ZIP file on desktop
             try
             {
-                var zipPath = Path.Combine(desktopDir, "133664692_Facturas_Consumo_Menor_250k.zip");
+                var zipPath = Path.Combine(outputDir, $"{RncEmisor}_Facturas_Consumo_Menor_250k.zip");
                 if (File.Exists(zipPath)) File.Delete(zipPath);
-                System.IO.Compression.ZipFile.CreateFromDirectory(desktopCompletas, zipPath);
+                System.IO.Compression.ZipFile.CreateFromDirectory(outputCompletas, zipPath);
             }
             catch { }
         }
@@ -487,10 +480,11 @@ namespace EcfDgii.TestRunner
         private static async Task ProcessAprobacionComercialAsync(EcfXmlSigner signer, DgiiDirectTransport transport)
         {
             Console.WriteLine("\n=========================================================================================================");
-            Console.WriteLine("DGII APROBACION COMERCIAL (ACECF) - CERAMIC CHIC SRL (133664692)");
+            Console.WriteLine($"DGII APROBACION COMERCIAL (ACECF) - COMERCIAL EJEMPLO SRL ({RncEmisor})");
             Console.WriteLine("=========================================================================================================");
 
-            var jsonPath = @"C:\Users\Jorge\Desktop\Ecf\scratch\acecf_items.json";
+            var jsonPath = Environment.GetEnvironmentVariable("TEST_ACECF_JSON")
+                ?? Path.Combine(".", "scratch", "acecf_items.json");
             if (!File.Exists(jsonPath))
             {
                 Console.WriteLine($"[ERROR] {jsonPath} not found!");
@@ -505,12 +499,12 @@ namespace EcfDgii.TestRunner
                 return;
             }
 
-            var desktopDir = @"C:\Users\Jorge\Desktop\Ceramic chic\Aprobacion_Comercial";
-            var desktopXmls = Path.Combine(desktopDir, "XMLs");
-            Directory.CreateDirectory(desktopDir);
-            Directory.CreateDirectory(desktopXmls);
+            var acecfDir = Path.Combine(OutputBaseDir, "Aprobacion_Comercial");
+            var acecfXmls = Path.Combine(acecfDir, "XMLs");
+            Directory.CreateDirectory(acecfDir);
+            Directory.CreateDirectory(acecfXmls);
 
-            var xsdPath = @"C:\Users\Jorge\Desktop\Ecf\EcfDgi.Client\Documentación Técnica (XSD)\ACECF v.1.0.xsd";
+            var xsdPath = Path.Combine(".", "Documentación Técnica (XSD)", "ACECF v.1.0.xsd");
             var validator = new EcfSchemaValidator();
 
             int acceptedCount = 0;
@@ -522,10 +516,8 @@ namespace EcfDgii.TestRunner
                 var montoStr = item.MontoTotal.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
                 var rawXml = $@"<?xml version=""1.0"" encoding=""utf-8""?><ACECF><DetalleAprobacionComercial><Version>{item.Version}</Version><RNCEmisor>{item.RNCEmisor}</RNCEmisor><eNCF>{item.eNCF}</eNCF><FechaEmision>{item.FechaEmision}</FechaEmision><MontoTotal>{montoStr}</MontoTotal><RNCComprador>{item.RNCComprador}</RNCComprador><Estado>{item.Estado}</Estado><FechaHoraAprobacionComercial>{item.FechaHoraAprobacionComercial}</FechaHoraAprobacionComercial></DetalleAprobacionComercial></ACECF>";
 
-                // Sign with buyer's certificate (RNCComprador = 133664692)
                 var signedXml = signer.SignXml(rawXml, item.RNCComprador);
 
-                // Validate schema against official DGII ACECF v.1.0.xsd
                 if (File.Exists(xsdPath))
                 {
                     var val = validator.Validate(signedXml, xsdPath);
@@ -536,8 +528,8 @@ namespace EcfDgii.TestRunner
                 }
 
                 var fileName = $"{item.RNCComprador}{item.eNCF}.xml";
-                File.WriteAllText(Path.Combine(desktopDir, fileName), signedXml, Encoding.UTF8);
-                File.WriteAllText(Path.Combine(desktopXmls, fileName), signedXml, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(acecfDir, fileName), signedXml, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(acecfXmls, fileName), signedXml, Encoding.UTF8);
 
                 string estadoDgii = "Error";
                 string codigoDgii = "";
@@ -570,18 +562,17 @@ namespace EcfDgii.TestRunner
                 await Task.Delay(400);
             }
 
-            // Create ZIP of all 11 ACECFs
             try
             {
-                var zipPath = Path.Combine(desktopDir, "133664692_Aprobacion_Comercial.zip");
+                var zipPath = Path.Combine(acecfDir, $"{RncEmisor}_Aprobacion_Comercial.zip");
                 if (File.Exists(zipPath)) File.Delete(zipPath);
-                System.IO.Compression.ZipFile.CreateFromDirectory(desktopXmls, zipPath);
+                System.IO.Compression.ZipFile.CreateFromDirectory(acecfXmls, zipPath);
             }
             catch { }
 
             Console.WriteLine("=========================================================================================================");
             Console.WriteLine($"ACECF SUMMARY: {acceptedCount} de {items.Count} Aprobaciones Comerciales procesadas con DGII.");
-            Console.WriteLine($"Archivos XML y ZIP listos en: {desktopDir}");
+            Console.WriteLine($"Archivos XML y ZIP listos en: {acecfDir}");
             Console.WriteLine("=========================================================================================================");
         }
     }

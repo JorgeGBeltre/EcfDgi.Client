@@ -38,9 +38,9 @@ namespace EcfDgii.Client.Infrastructure.Dgii
         }
 
         public EcfTokenManager(
-            HttpClient httpClient, 
-            IEcfXmlSigner signer, 
-            EcfEnvironmentConfig config, 
+            HttpClient httpClient,
+            IEcfXmlSigner signer,
+            EcfEnvironmentConfig config,
             string rncEmisor,
             ICacheService? cacheService = null)
         {
@@ -51,14 +51,6 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             _cacheService = cacheService;
         }
 
-        /// <summary>
-        /// Discards the cached token (memory and, if configured, Redis) so the next GetTokenAsync
-        /// call is forced to renew — independent of whatever the proactive 5-minute-margin expiry
-        /// check would otherwise decide. Exists for reactive 401 handling: when DGII itself rejects a
-        /// token mid-window (early revocation, clock skew, DGII-side session invalidation), the
-        /// proactive check alone can't detect that — the caller that actually saw the 401 has to say
-        /// "this token is bad" explicitly.
-        /// </summary>
         public async Task InvalidateAsync(CancellationToken ct = default)
         {
             await _renewLock.WaitAsync(ct);
@@ -82,7 +74,6 @@ namespace EcfDgii.Client.Infrastructure.Dgii
         {
             string cacheKey = $"ecf:tokens:{_rncEmisor}:{(int)_config.Ambiente}";
 
-            // 1. Check Redis Cache if available
             if (_cacheService != null)
             {
                 var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
@@ -92,13 +83,11 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 }
             }
 
-            // 2. Check Local Memory Cache
             if (!string.IsNullOrEmpty(_cachedToken) && (_tokenExpiry - DateTimeOffset.UtcNow).TotalMinutes > 5)
             {
                 return _cachedToken;
             }
 
-            // 3. Renew Token under Distributed Lock / Local Lock
             string lockKey = $"ecf:tokens:lock:{_rncEmisor}:{(int)_config.Ambiente}";
             string lockValue = Guid.NewGuid().ToString();
             bool acquiredDistributedLock = false;
@@ -110,7 +99,6 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                     acquiredDistributedLock = await _cacheService.AcquireLockAsync(lockKey, lockValue, TimeSpan.FromSeconds(30), ct);
                     if (acquiredDistributedLock)
                     {
-                        // Double check cache after acquiring lock
                         var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
                         if (cachedTokenObj != null && !string.IsNullOrEmpty(cachedTokenObj.Token) && (cachedTokenObj.Expiration - DateTimeOffset.UtcNow).TotalMinutes > 5)
                         {
@@ -119,7 +107,6 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                     }
                     else
                     {
-                        // MED-071: Another node holds the renewal lock. Wait and poll cache to use the winner's token.
                         var waitDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
                         while (DateTimeOffset.UtcNow < waitDeadline && !ct.IsCancellationRequested)
                         {
@@ -138,7 +125,6 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 await _renewLock.WaitAsync(ct);
                 try
                 {
-                    // Re-check distributed cache inside semaphore in case another node or local task renewed it
                     if (_cacheService != null)
                     {
                         var cachedTokenObj = await _cacheService.GetAsync<CachedEcfToken>(cacheKey, ct);
@@ -155,13 +141,11 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                         return _cachedToken;
                     }
 
-                    // If distributed lock was not acquired earlier, attempt to acquire it now under local semaphore
                     if (!acquiredDistributedLock && _cacheService != null)
                     {
                         acquiredDistributedLock = await _cacheService.AcquireLockAsync(lockKey, lockValue, TimeSpan.FromSeconds(30), ct);
                         if (!acquiredDistributedLock)
                         {
-                            // Another node is renewing right now; poll winner's token up to 3 seconds before fallback
                             for (int i = 0; i < 15 && !ct.IsCancellationRequested; i++)
                             {
                                 await Task.Delay(200, ct);
@@ -265,7 +249,6 @@ namespace EcfDgii.Client.Infrastructure.Dgii
                 _tokenExpiry = DateTimeOffset.UtcNow.AddHours(1);
             }
 
-            // Save to Redis if available
             if (_cacheService != null && !string.IsNullOrEmpty(_cachedToken))
             {
                 var timeToLive = _tokenExpiry - DateTimeOffset.UtcNow;

@@ -60,7 +60,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence
 
                 if (sequence == null)
                 {
-                    // Fallback check between PreCertificacion and TestEcf, or Certificacion and CertEcf
                     string? altTenantId = null;
                     if (tenantId.EndsWith(":PreCertificacion", StringComparison.OrdinalIgnoreCase))
                         altTenantId = tenantId[..^":PreCertificacion".Length] + ":TestEcf";
@@ -86,8 +85,6 @@ namespace EcfDgii.Client.Infrastructure.Persistence
 
                 if (sequence == null)
                 {
-                    // HIGH-043, HIGH-044, HIGH-045: Rehusar inventar rangos 1..9,999,999,999 arbitrarios no autorizados por DGII.
-                    // Solo permitir en fixtures unitarios en memoria para "default-tenant".
                     var isInMemory = !db.Database.IsRelational();
                     if (tenantId == "default-tenant" && isInMemory)
                     {

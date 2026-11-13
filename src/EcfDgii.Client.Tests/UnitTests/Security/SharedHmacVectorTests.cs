@@ -46,11 +46,9 @@ namespace UnitTests.Security
 
             foreach (var vec in root.vectors)
             {
-                // 1. Verify Body Hash calculation
                 var actualBodyHash = CanonicalRequestHelper.ComputeSha256Hex(vec.body);
                 Assert.Equal(vec.expectedBodyHashHex, actualBodyHash);
 
-                // 2. Verify Canonical String construction
                 var actualCanonical = CanonicalRequestHelper.BuildCanonicalString(
                     vec.method,
                     vec.rawTarget,
@@ -60,13 +58,10 @@ namespace UnitTests.Security
 
                 Assert.Equal(vec.expectedCanonicalString, actualCanonical);
 
-                // 3. Verify HMAC SHA256 Signature calculation
                 var actualSig = CanonicalRequestHelper.ComputeHmacSha256(root.secret, actualCanonical);
                 Assert.Equal(vec.expectedSignature, actualSig);
             }
 
-            // Verify Anti-Deriva JSON File Checksum SHA-256 (MED-249)
-            // Normalizar CRLF a LF a nivel binario para inmunidad a la configuración git de fin de línea entre Windows y Linux
             using var sha256 = SHA256.Create();
             var rawBytes = File.ReadAllBytes(jsonPath);
             var normalizedBytes = NormalizeLineEndingsToLf(rawBytes);
@@ -82,7 +77,7 @@ namespace UnitTests.Security
             {
                 if (bytes[i] == (byte)'\r' && i + 1 < bytes.Length && bytes[i + 1] == (byte)'\n')
                 {
-                    continue; // omit CR
+                    continue;
                 }
                 ms.WriteByte(bytes[i]);
             }

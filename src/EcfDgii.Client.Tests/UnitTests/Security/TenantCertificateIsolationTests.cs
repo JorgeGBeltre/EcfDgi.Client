@@ -12,10 +12,9 @@ namespace EcfDgii.Client.UnitTests.Security
         [Fact]
         public void ValidateCertificateSn_ViafirmaTaxProceduresNaturalPerson_ReturnsTrueForCompanyRnc()
         {
-            // Simular certificado de persona física delegada para procedimientos tributarios (Viafirma / DGII)
             using var rsa = RSA.Create(2048);
             var req = new CertificateRequest(
-                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=JESSICA LARA BRAX, SERIALNUMBER=IDCDO-40220595868, OU=VATDO-133664692, C=DO",
+                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=MARIA PEREZ, SERIALNUMBER=IDCDO-00100000011, OU=VATDO-130000002, C=DO",
                 rsa,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
@@ -23,8 +22,7 @@ namespace EcfDgii.Client.UnitTests.Security
             var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var signer = new EcfXmlSigner(cert);
 
-            // Debe validar positivamente para el RNC de la empresa emisora
-            var isValid = signer.ValidateCertificateSn("133664692");
+            var isValid = signer.ValidateCertificateSn("130000002");
             Assert.True(isValid);
         }
 
@@ -33,7 +31,7 @@ namespace EcfDgii.Client.UnitTests.Security
         {
             using var rsa = RSA.Create(2048);
             var req = new CertificateRequest(
-                "CN=133664692, O=CERAMIC CHIC SRL, C=DO",
+                "CN=130000002, O=COMERCIAL EJEMPLO SRL, C=DO",
                 rsa,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
@@ -41,14 +39,13 @@ namespace EcfDgii.Client.UnitTests.Security
             var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var signer = new EcfXmlSigner(cert);
 
-            Assert.True(signer.ValidateCertificateSn("133664692"));
-            Assert.True(signer.ValidateCertificateSn("133-66469-2"));
+            Assert.True(signer.ValidateCertificateSn("130000002"));
+            Assert.True(signer.ValidateCertificateSn("130-00000-2"));
         }
 
         [Fact]
         public void ValidateCertificateSn_UnrelatedNonTaxCertificate_ReturnsFalse()
         {
-            // Validar que RNC vacío siempre retorne false
             using var rsa = RSA.Create(2048);
             var req = new CertificateRequest(
                 "CN=Unrelated Organization, O=Foreign Corp, C=US",
@@ -59,7 +56,6 @@ namespace EcfDgii.Client.UnitTests.Security
             var signer = new EcfXmlSigner(cert);
             Assert.False(signer.ValidateCertificateSn(""));
 
-            // Validar que un certificado emitido por CA extranjera que no coincida con el RNC retorne false
             using var caRsa = RSA.Create(2048);
             var caReq = new CertificateRequest("CN=Foreign Root CA, O=Foreign CA, C=US", caRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             caReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: true, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
@@ -72,7 +68,7 @@ namespace EcfDgii.Client.UnitTests.Security
             using var leafCertWithKey = leafCert.CopyWithPrivateKey(leafRsa);
 
             var leafSigner = new EcfXmlSigner(leafCertWithKey);
-            Assert.False(leafSigner.ValidateCertificateSn("133664692"));
+            Assert.False(leafSigner.ValidateCertificateSn("130000002"));
         }
 
         [Fact]
@@ -80,7 +76,7 @@ namespace EcfDgii.Client.UnitTests.Security
         {
             using var rsa = RSA.Create(2048);
             var req = new CertificateRequest(
-                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=JESSICA LARA BRAX, SERIALNUMBER=IDCDO-40220595868, OU=VATDO-133664692, C=DO",
+                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=MARIA PEREZ, SERIALNUMBER=IDCDO-00100000011, OU=VATDO-130000002, C=DO",
                 rsa,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
@@ -88,8 +84,8 @@ namespace EcfDgii.Client.UnitTests.Security
             var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var signer = new EcfXmlSigner(cert);
 
-            var sampleXml = "<ECF><Encabezado><Emisor><RNCEmisor>133664692</RNCEmisor></Emisor></Encabezado></ECF>";
-            var signedXml = signer.SignXml(sampleXml, "133664692");
+            var sampleXml = "<ECF><Encabezado><Emisor><RNCEmisor>130000002</RNCEmisor></Emisor></Encabezado></ECF>";
+            var signedXml = signer.SignXml(sampleXml, "130000002");
 
             Assert.NotNull(signedXml);
             Assert.Contains("SignatureValue", signedXml);
@@ -100,7 +96,7 @@ namespace EcfDgii.Client.UnitTests.Security
         {
             using var rsa = RSA.Create(2048);
             var req = new CertificateRequest(
-                "CN=133664692, O=CERAMIC CHIC SRL, C=DO",
+                "CN=130000002, O=COMERCIAL EJEMPLO SRL, C=DO",
                 rsa,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
@@ -108,8 +104,7 @@ namespace EcfDgii.Client.UnitTests.Security
             var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var signer = new EcfXmlSigner(cert);
 
-            // Debe rechazar un RNC diferente al del certificado
-            Assert.False(signer.ValidateCertificateSn("101889063"));
+            Assert.False(signer.ValidateCertificateSn("101000001"));
             Assert.False(signer.ValidateCertificateSn("999999999"));
         }
 
@@ -118,7 +113,7 @@ namespace EcfDgii.Client.UnitTests.Security
         {
             using var rsa = RSA.Create(2048);
             var req = new CertificateRequest(
-                "CN=133664692, O=CERAMIC CHIC SRL, C=DO",
+                "CN=130000002, O=COMERCIAL EJEMPLO SRL, C=DO",
                 rsa,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
@@ -126,23 +121,21 @@ namespace EcfDgii.Client.UnitTests.Security
             var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var signer = new EcfXmlSigner(cert);
 
-            var sampleXml = "<ECF><Encabezado><Emisor><RNCEmisor>101889063</RNCEmisor></Emisor></Encabezado></ECF>";
-            Assert.Throws<EcfSigningException>(() => signer.SignXml(sampleXml, "101889063"));
+            var sampleXml = "<ECF><Encabezado><Emisor><RNCEmisor>101000001</RNCEmisor></Emisor></Encabezado></ECF>";
+            Assert.Throws<EcfSigningException>(() => signer.SignXml(sampleXml, "101000001"));
         }
 
         [Fact]
         public void ValidateCertificateSn_CaIssuedLeaf_StrictlyEnforcesSubjectRnc()
         {
-            // Crear CA raíz
             using var caRsa = RSA.Create(2048);
             var caReq = new CertificateRequest("CN=Autoridad Certificadora Dominicana, O=Viafirma, C=DO", caRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             caReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: true, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
             var caCert = caReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
 
-            // Crear certificado subordinado emitido por la CA para la empresa A (133664692)
             using var leafRsa = RSA.Create(2048);
             var leafReq = new CertificateRequest(
-                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=JESSICA LARA BRAX, SERIALNUMBER=IDCDO-40220595868, OU=VATDO-133664692, C=DO",
+                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=MARIA PEREZ, SERIALNUMBER=IDCDO-00100000011, OU=VATDO-130000002, C=DO",
                 leafRsa,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
@@ -152,20 +145,17 @@ namespace EcfDgii.Client.UnitTests.Security
 
             var leafSigner = new EcfXmlSigner(leafWithKey);
 
-            // Debe aceptar su propio RNC delegado
-            Assert.True(leafSigner.ValidateCertificateSn("133664692"));
-            // Debe rechazar el RNC de cualquier otro contribuyente
-            Assert.False(leafSigner.ValidateCertificateSn("101889063"));
-            Assert.False(leafSigner.ValidateCertificateSn("40220595869"));
+            Assert.True(leafSigner.ValidateCertificateSn("130000002"));
+            Assert.False(leafSigner.ValidateCertificateSn("101000001"));
+            Assert.False(leafSigner.ValidateCertificateSn("00100000022"));
         }
 
         [Fact]
         public void ValidateCertificateSn_NaturalPersonTaxProceduresWithoutCorporateRnc_ReturnsTrueForCompanyRnc()
         {
-            // Certificado real de persona física delegada para procedimientos tributarios (Viafirma / DGII) sin RNC corporativo en el Subject
             using var rsa = RSA.Create(2048);
             var req = new CertificateRequest(
-                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=JESSICA LARA BRAX EP. VOLEL, SERIALNUMBER=IDCDO-40220595868, G=JESSICA LARA, SN=BRAX EP. VOLEL, C=DO",
+                "dnQualifier=QUALIFIED CERTIFICATE FOR NATURAL PERSON - TAX PROCEDURES, CN=MARIA PEREZ DEMO, SERIALNUMBER=IDCDO-00100000011, G=MARIA, SN=PEREZ DEMO, C=DO",
                 rsa,
                 HashAlgorithmName.SHA256,
                 RSASignaturePadding.Pkcs1);
@@ -173,10 +163,9 @@ namespace EcfDgii.Client.UnitTests.Security
             var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
             var signer = new EcfXmlSigner(cert);
 
-            // Debe validar positivamente para el RNC de la empresa a la que representa
-            Assert.True(signer.ValidateCertificateSn("101889063"));
-            Assert.True(signer.ValidateCertificateSn("133664692"));
-            Assert.True(signer.ValidateCertificateSn("40220595868"));
+            Assert.True(signer.ValidateCertificateSn("101000001"));
+            Assert.True(signer.ValidateCertificateSn("130000002"));
+            Assert.True(signer.ValidateCertificateSn("00100000011"));
             Assert.False(signer.ValidateCertificateSn(""));
         }
     }

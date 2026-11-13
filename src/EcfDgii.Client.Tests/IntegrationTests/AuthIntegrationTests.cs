@@ -21,13 +21,10 @@ namespace EcfDgii.Client.IntegrationTests
         [Fact]
         public async Task Register_ValidCredentials_ReturnsAuthResponse()
         {
-            // Arrange
             var command = new RegisterUserCommand("newuser", "newuser@test.com", "Password123!");
 
-            // Act
             var response = await _client.PostAsJsonAsync("api/auth/register", command);
 
-            // Assert
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var result = await response.Content.ReadFromJsonAsync<AuthResponseDto>();
             Assert.NotNull(result);
@@ -38,7 +35,6 @@ namespace EcfDgii.Client.IntegrationTests
         [Fact]
         public async Task Login_ValidUser_ReturnsToken()
         {
-            // Arrange (MED-248: Do not entrench static seeded passwords in tests)
             var username = $"user_{Guid.NewGuid():N}"[..12];
             var email = $"{username}@test.com";
             var password = $"P@ss_{Guid.NewGuid():N}123!";
@@ -48,10 +44,8 @@ namespace EcfDgii.Client.IntegrationTests
 
             var command = new LoginUserCommand(username, password);
 
-            // Act
             var response = await _client.PostAsJsonAsync("api/auth/login", command);
 
-            // Assert
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var result = await response.Content.ReadFromJsonAsync<AuthResponseDto>();
             Assert.NotNull(result);

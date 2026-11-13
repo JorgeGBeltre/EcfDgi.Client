@@ -30,7 +30,6 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
 
             var cacheKey = $"nonce:{keyId}:{nonce}";
 
-            // 1. If Redis is available, perform atomic SET with NX (When.NotExists) and TTL across instances
             if (_redis != null && _redis.IsConnected)
             {
                 try
@@ -39,22 +38,20 @@ namespace EcfDgii.Client.Api.Infrastructure.Security
                     bool added = db.StringSet(cacheKey, "1", ttl, When.NotExists);
                     if (!added)
                     {
-                        return false; // Nonce already seen -> replay attack
+                        return false;
                     }
                     return true;
                 }
                 catch
                 {
-                    // Fall back to local synchronized cache on transient Redis failure
                 }
             }
 
-            // 2. Thread-safe atomic in-process check-and-set
             lock (_syncLock)
             {
                 if (_memoryCache.TryGetValue(cacheKey, out _))
                 {
-                    return false; // Nonce already seen -> replay attack
+                    return false;
                 }
 
                 _memoryCache.Set(cacheKey, true, new MemoryCacheEntryOptions

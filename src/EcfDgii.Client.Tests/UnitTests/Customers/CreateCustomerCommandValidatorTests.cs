@@ -15,7 +15,7 @@ namespace EcfDgii.Client.UnitTests.Customers
         [Fact]
         public void Validate_ValidCommand_ShouldHaveNoErrors()
         {
-            var command = new CreateCustomerCommand("Name", "test@test.com", "101672919");
+            var command = new CreateCustomerCommand("Name", "test@test.com", "101000009");
             var result = _validator.Validate(command);
             Assert.True(result.IsValid);
         }
@@ -25,7 +25,7 @@ namespace EcfDgii.Client.UnitTests.Customers
         [InlineData("invalid-email")]
         public void Validate_InvalidEmail_ShouldHaveValidationError(string email)
         {
-            var command = new CreateCustomerCommand("Name", email, "101672919");
+            var command = new CreateCustomerCommand("Name", email, "101000009");
             var result = _validator.Validate(command);
             Assert.False(result.IsValid);
             Assert.Contains(result.Errors, e => e.PropertyName == "Email");
@@ -33,10 +33,10 @@ namespace EcfDgii.Client.UnitTests.Customers
 
         [Theory]
         [InlineData("")]
-        [InlineData("12345678")] // 8 digits (invalid)
-        [InlineData("1234567890")] // 10 digits (invalid)
-        [InlineData("123456789012")] // 12 digits (invalid)
-        [InlineData("abcdeflgh")] // characters (invalid)
+        [InlineData("12345678")]
+        [InlineData("1234567890")]
+        [InlineData("123456789012")]
+        [InlineData("abcdeflgh")]
         public void Validate_InvalidRnc_ShouldHaveValidationError(string rnc)
         {
             var command = new CreateCustomerCommand("Name", "test@test.com", rnc);
