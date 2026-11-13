@@ -10,11 +10,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-test-and-deploy:
-    name: Compilar, Probar y Desplegar EcfDgi.Client
+  # 1. EJECUTAR PRUEBAS
+  test:
     runs-on: ubuntu-latest
 
     steps:
@@ -37,6 +37,48 @@ jobs:
 
       - name: Ejecutar pruebas unitarias con cobertura
         run: dotnet test EcfDgii.Client.slnx -c Release --no-build --verbosity normal --collect:"XPlat Code Coverage"
+
+  # 2. AUTO-MERGE A MAIN
+  merge-to-main:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Fusionar develop en main y hacer push
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git pull origin main
+          git merge origin/develop --no-edit -m "Auto-merge develop to main"
+          git push origin main
+
+  # 3. PUBLICAR EN HOSTINGER
+  deploy-to-hostinger:
+    needs: merge-to-main
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clonar repositorio de main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Configurar entorno .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
 
       - name: Publicar API EcfDgi.Client
         run: |

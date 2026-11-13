@@ -1154,5 +1154,79 @@ namespace EcfDgii.Client.UnitTests.Documents
             signerMock.Verify(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
             ecfClientMock.Verify(c => c.SendRfceAsync(exactProdRfce, "101889063E320000003190.xml", It.IsAny<CancellationToken>()), Times.Once);
         }
+
+        [Fact]
+        public async Task CreditNote_WhenTotalExceedsModifiedEcfDocument_ReturnsBadRequestRule615WithoutAllocatingSequence()
+        {
+            var db = NewDb();
+            db.EcfDocuments.Add(new EcfDocument
+            {
+                TenantId = "sede-principal",
+                Ambiente = "Produccion",
+                RncEmisor = "133664692",
+                ENcf = "E310000000219",
+                SourceTxnId = "ORIG-100000532",
+                EditSequence = "100000532",
+                State = "AcceptedByDgii",
+                TrackId = "TRACK-ORIG-219",
+                SecurityCode = "ABC123",
+                TotalAmount = 70623.00m,
+                ItbisAmount = 10773.00m,
+                CreatedAt = DateTime.UtcNow.AddDays(-20),
+                XmlContent = "<ECF/>",
+                SignedXmlContent = FakeSignedXml
+            });
+            await db.SaveChangesAsync();
+
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var ecfClientMock = new Mock<IEcfClient>();
+            var signerMock = new Mock<IEcfXmlSigner>();
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var dto = MakeDto("CC1C-1794488262", "400000086");
+            dto.TenantId = "sede-principal";
+            dto.Environment = "Produccion";
+            dto.TipoComprobante = "E34";
+            dto.Header.RncEmisor = "133664692";
+            dto.Header.RazonSocialEmisor = "CERAMIC CHIC SRL";
+            dto.Header.RncComprador = "101721853";
+            dto.Header.RazonSocialComprador = "IMPERTECHO SRL";
+            dto.Totals = new CanonicalTotalsDto
+            {
+                MontoSubtotal = 5985000.00m,
+                MontoGravadoTotal = 5985000.00m,
+                MontoItbis = 1077300.00m,
+                MontoTotal = 7062300.00m
+            };
+            dto.Lines = new List<CanonicalLineDto>
+            {
+                new()
+                {
+                    LineNumber = 1,
+                    ItemName = "Porcelanato Salt Soluble 50 x 50 IVORY (CSA5200B) DAN",
+                    Quantity = 126m,
+                    UnitPrice = 47500.00m,
+                    Amount = 5985000.00m,
+                    IndicadorFacturacion = "1"
+                }
+            };
+            dto.References = new CanonicalReferencesDto
+            {
+                CorrectsENcf = "E310000000219",
+                CodigoModificacion = 3,
+                FechaNcfModificado = "2026-10-16",
+                RazonModificacion = "100000532"
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            var badReq = Assert.IsType<BadRequestObjectResult>(result);
+            var json = System.Text.Json.JsonSerializer.Serialize(badReq.Value);
+            Assert.Contains("[615]", json);
+
+            sequenceManagerMock.Verify(
+                s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+                Times.Never);
+        }
     }
 }
