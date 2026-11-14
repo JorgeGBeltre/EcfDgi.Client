@@ -77,12 +77,17 @@ try
     var pollingSection = builder.Configuration.GetSection("EcfStatusPolling");
     var pollingIntervalSeconds = pollingSection.GetValue<int?>("PollingIntervalSeconds")
         ?? (pollingSection.GetValue<int?>("PollingIntervalMinutes") * 60)
-        ?? 60;
+        ?? 15;
+    var minDocumentAgeSeconds = pollingSection.GetValue<int?>("MinDocumentAgeSeconds")
+        ?? (pollingSection.GetValue<int?>("MinDocumentAgeMinutes") * 60)
+        ?? 10;
+    var minUncertainAgeMinutes = pollingSection.GetValue("MinUncertainAgeMinutes", pollingSection.GetValue("MinDocumentAgeMinutes", 2));
     var pollingOptions = new EcfStatusPollingOptions(
         PollingInterval: TimeSpan.FromSeconds(Math.Max(5, pollingIntervalSeconds)),
-        MinDocumentAge: TimeSpan.FromMinutes(pollingSection.GetValue("MinDocumentAgeMinutes", 2)),
+        MinDocumentAge: TimeSpan.FromSeconds(Math.Max(1, minDocumentAgeSeconds)),
         MaxPollingWindow: TimeSpan.FromHours(pollingSection.GetValue("MaxPollingWindowHours", 72)),
-        BatchSize: pollingSection.GetValue("BatchSize", 50));
+        BatchSize: pollingSection.GetValue("BatchSize", 50),
+        MinUncertainAge: TimeSpan.FromMinutes(Math.Max(1, minUncertainAgeMinutes)));
     builder.Services.AddSingleton(pollingOptions);
     builder.Services.AddHostedService<EcfStatusPollingBackgroundService>();
 

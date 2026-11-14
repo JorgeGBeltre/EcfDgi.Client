@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using EcfDgii.Client.Application.Common.Interfaces;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Shared.Common;
@@ -45,8 +46,9 @@ namespace EcfDgii.Client.Api.Services
             var clock = scope.ServiceProvider.GetRequiredService<IClock>();
             var reconcilerLogger = scope.ServiceProvider.GetRequiredService<ILogger<EcfStatusReconciler>>();
             var signerResolver = scope.ServiceProvider.GetService<ITenantSignerResolver>();
+            var cacheService = scope.ServiceProvider.GetService<ICacheService>();
 
-            var reconciler = new EcfStatusReconciler(db, ecfClient, clock, options, reconcilerLogger, signerResolver);
+            var reconciler = new EcfStatusReconciler(db, ecfClient, clock, options, reconcilerLogger, signerResolver, cacheService);
 
             try
             {

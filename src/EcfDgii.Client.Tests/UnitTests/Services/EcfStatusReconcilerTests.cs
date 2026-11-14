@@ -353,5 +353,51 @@ namespace EcfDgii.Client.UnitTests.Services
             Assert.Equal("XyZ987", updated.SecurityCode);
             ecfClientMock.Verify(c => c.SendEcfAsync(exactSignedXml, "101000001E340000000075.xml", It.IsAny<CancellationToken>()), Times.Once);
         }
+
+        [Fact]
+        public async Task ReconcileAsync_ShortSignedMinAgeWithLongerUncertainAge_ReconcilesSignedQuicklyWhileProtectingUncertain()
+        {
+            using var db = NewDb();
+            var signedDoc = MakeSentDocument(sentAt: FixedNow.AddSeconds(-15), state: "Signed");
+            signedDoc.TrackId = "TRK-FAST-01";
+            var uncertainDoc = new EcfDocument
+            {
+                RncEmisor = "101000001",
+                ENcf = "E310000000002",
+                RncComprador = "130000000",
+                SecurityCode = "XYZ123",
+                TenantId = "default-tenant",
+                SourceTxnId = "TXN-2",
+                EditSequence = "1",
+                State = "Uncertain",
+                CreatedAt = FixedNow.AddSeconds(-15),
+                XmlContent = "<ECF/>",
+                SignedXmlContent = "<ECF><Signed/></ECF>"
+            };
+            db.EcfDocuments.AddRange(signedDoc, uncertainDoc);
+            await db.SaveChangesAsync();
+
+            var fastOptions = new EcfStatusPollingOptions(
+                PollingInterval: TimeSpan.FromSeconds(15),
+                MinDocumentAge: TimeSpan.FromSeconds(10),
+                MaxPollingWindow: TimeSpan.FromHours(72),
+                BatchSize: 50,
+                MinUncertainAge: TimeSpan.FromMinutes(2));
+
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.ConsultarResultadoAsync("TRK-FAST-01", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaResultadoResponse { Estado = "Aceptado" });
+
+            var reconciler = new EcfStatusReconciler(
+                db, ecfClientMock.Object, MakeClockMock(FixedNow).Object, fastOptions,
+                NullLogger<EcfStatusReconciler>.Instance);
+            var processed = await reconciler.ReconcileAsync(CancellationToken.None);
+
+            Assert.Equal(1, processed);
+            Assert.Equal("AcceptedByDgii", db.EcfDocuments.Single(d => d.ENcf == "E310000000001").State);
+            Assert.Equal("Uncertain", db.EcfDocuments.Single(d => d.ENcf == "E310000000002").State);
+            ecfClientMock.Verify(c => c.ConsultarEstadoAsync(
+                "101000001", "E310000000002", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
     }
 }
