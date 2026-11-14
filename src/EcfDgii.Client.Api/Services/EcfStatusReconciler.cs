@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using EcfDgii.Client.Application.Common.Interfaces;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Infrastructure.Persistence;
 using EcfDgii.Client.Shared.Common;
@@ -19,13 +20,15 @@ namespace EcfDgii.Client.Api.Services
         TimeSpan PollingInterval,
         TimeSpan MinDocumentAge,
         TimeSpan MaxPollingWindow,
-        int BatchSize = 50)
+        int BatchSize = 50,
+        TimeSpan? MinUncertainAge = null)
     {
         public static EcfStatusPollingOptions Default => new(
-            PollingInterval: TimeSpan.FromMinutes(15),
-            MinDocumentAge: TimeSpan.FromMinutes(2),
+            PollingInterval: TimeSpan.FromSeconds(15),
+            MinDocumentAge: TimeSpan.FromSeconds(10),
             MaxPollingWindow: TimeSpan.FromHours(72),
-            BatchSize: 50);
+            BatchSize: 50,
+            MinUncertainAge: TimeSpan.FromMinutes(2));
     }
 
     public sealed class EcfStatusReconciler(
@@ -34,7 +37,8 @@ namespace EcfDgii.Client.Api.Services
         IClock clock,
         EcfStatusPollingOptions options,
         ILogger<EcfStatusReconciler> logger,
-        ITenantSignerResolver? signerResolver = null)
+        ITenantSignerResolver? signerResolver = null,
+        ICacheService? cacheService = null)
     {
         private static readonly HashSet<string> AcceptedEstados = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -49,15 +53,19 @@ namespace EcfDgii.Client.Api.Services
         public async Task<int> ReconcileAsync(CancellationToken ct)
         {
             var now = clock.UtcNow.UtcDateTime;
-            var minAgeCutoff = now - options.MinDocumentAge;
+            var minSignedCutoff = now - options.MinDocumentAge;
+            var minUncertainCutoff = now - (options.MinUncertainAge ?? options.MinDocumentAge);
             var pollDueCutoff = now - options.PollingInterval;
             var batchSize = options.BatchSize > 0 ? options.BatchSize : 50;
 
             var due = await db.EcfDocuments
                 .AsNoTracking()
-                .Where(d => (d.State == "Signed" || d.State == "SentToDgii" || d.State == "Uncertain")
-                         && ((d.SentToDgiiAt != null && d.SentToDgiiAt <= minAgeCutoff) || (d.SentToDgiiAt == null && d.CreatedAt <= minAgeCutoff))
-                         && (d.LastStatusCheckAt == null || d.LastStatusCheckAt <= pollDueCutoff))
+                .Where(d =>
+                    (((d.State == "Signed" || d.State == "SentToDgii")
+                        && ((d.SentToDgiiAt != null && d.SentToDgiiAt <= minSignedCutoff) || (d.SentToDgiiAt == null && d.CreatedAt <= minSignedCutoff)))
+                     || (d.State == "Uncertain"
+                        && ((d.SentToDgiiAt != null && d.SentToDgiiAt <= minUncertainCutoff) || (d.SentToDgiiAt == null && d.CreatedAt <= minUncertainCutoff))))
+                    && (d.LastStatusCheckAt == null || d.LastStatusCheckAt <= pollDueCutoff))
                 .OrderBy(d => d.SentToDgiiAt ?? d.CreatedAt)
                 .Take(Math.Min(batchSize, 200))
                 .Select(d => new ReconcileDocDto(
@@ -137,7 +145,7 @@ namespace EcfDgii.Client.Api.Services
                                         Mode = IntegrationMode.DgiiDirect,
                                         ValidateSchemasLocal = false
                                     };
-                                    clientToUse = new EcfClient(clientOpts, signer: dynamicSigner);
+                                    clientToUse = new EcfClient(clientOpts, signer: dynamicSigner, cacheService: cacheService);
                                     dynamicClients[clientKey] = clientToUse;
                                 }
                                 catch (Exception resolveEx)

@@ -129,8 +129,8 @@ namespace EcfDgii.Client.Infrastructure
             {
                 var options = sp.GetRequiredService<IOptions<EcfClientOptions>>().Value;
                 var signer = sp.GetRequiredService<IEcfXmlSigner>();
-                var baseClient = new EcfClient(options, signer: signer);
                 var cacheService = sp.GetRequiredService<ICacheService>();
+                var baseClient = new EcfClient(options, signer: signer, cacheService: cacheService);
                 return new CachedEcfClient(baseClient, cacheService);
             });
 

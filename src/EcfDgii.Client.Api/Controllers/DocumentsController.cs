@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
+using EcfDgii.Client.Application.Common.Interfaces;
 using EcfDgii.Client.Application.Documents.Dto;
 using EcfDgii.Client.Domain.Entities;
 using EcfDgii.Client.Domain.Interfaces;
@@ -88,6 +89,7 @@ namespace EcfDgii.Client.Api.Controllers
         private readonly AmbienteEnum _defaultAmbiente;
         private readonly ITenantSignerResolver? _signerResolver;
         private readonly FluentValidation.IValidator<CanonicalDocumentDto>? _dtoValidator;
+        private readonly ICacheService? _cacheService;
 
         public DocumentsController(
             ApplicationDbContext db,
@@ -100,7 +102,8 @@ namespace EcfDgii.Client.Api.Controllers
             IEcfSchemaValidator schemaValidator,
             IOptions<EcfClientOptions> ecfClientOptions,
             ITenantSignerResolver? signerResolver = null,
-            FluentValidation.IValidator<CanonicalDocumentDto>? dtoValidator = null)
+            FluentValidation.IValidator<CanonicalDocumentDto>? dtoValidator = null,
+            ICacheService? cacheService = null)
         {
             _db = db;
             _sequenceManager = sequenceManager;
@@ -115,6 +118,7 @@ namespace EcfDgii.Client.Api.Controllers
             _ecfClientOptions = ecfClientOptions.Value;
             _signerResolver = signerResolver;
             _dtoValidator = dtoValidator;
+            _cacheService = cacheService;
             _defaultAmbiente = _ecfClientOptions.Environment switch
             {
                 EcfEnvironment.Test => AmbienteEnum.PreCertificacion,
@@ -188,12 +192,19 @@ namespace EcfDgii.Client.Api.Controllers
                     {
                         throw new EcfSigningException("El tamaño del certificado digital provisto excede el límite máximo permitido de 2 MB.");
                     }
+                    var pwd = certDto.Password ?? string.Empty;
+                    var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{tenantId}:{rncEmisor}:{pwd}:{certDto.CertificateBase64}")));
+                    var now = _clock.UtcNow;
+                    if (_pkcs12SignerCache.TryGetValue(fingerprint, out var cachedEntry) && cachedEntry.ExpiresAt > now)
+                    {
+                        return cachedEntry.Signer;
+                    }
+
                     var bytes = Convert.FromBase64String(certDto.CertificateBase64);
                     if (bytes.Length > 2 * 1024 * 1024)
                     {
                         throw new EcfSigningException("El tamaño del certificado digital provisto excede el límite máximo permitido de 2 MB.");
                     }
-                    var pwd = certDto.Password ?? string.Empty;
                     var cert = X509CertificateLoader.LoadPkcs12(bytes, pwd, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.EphemeralKeySet);
                     var loadedSigner = new EcfXmlSigner(cert);
                     if (!string.IsNullOrWhiteSpace(rncEmisor) && !loadedSigner.ValidateCertificateSn(rncEmisor))
@@ -201,6 +212,21 @@ namespace EcfDgii.Client.Api.Controllers
                         _logger.LogError("Certificado base64 provisto para Tenant {TenantId} no corresponde al RNC emisor {RncEmisor}.", tenantId, rncEmisor);
                         loadedSigner.Dispose();
                         throw new EcfSigningException($"El certificado provisto para el tenant '{tenantId}' no corresponde al RNC emisor '{rncEmisor}'.");
+                    }
+
+                    if (_pkcs12SignerCache.Count >= 128)
+                    {
+                        foreach (var kvp in _pkcs12SignerCache)
+                        {
+                            if (kvp.Value.ExpiresAt <= now)
+                            {
+                                _pkcs12SignerCache.TryRemove(kvp.Key, out _);
+                            }
+                        }
+                    }
+                    if (_pkcs12SignerCache.Count < 128)
+                    {
+                        _pkcs12SignerCache[fingerprint] = (loadedSigner, now.AddMinutes(15));
                     }
                     return loadedSigner;
                 }
@@ -283,7 +309,7 @@ namespace EcfDgii.Client.Api.Controllers
             return _signer;
         }
 
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, IEcfClient> _clientCache = new();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (IEcfXmlSigner Signer, DateTimeOffset ExpiresAt)> _pkcs12SignerCache = new();
 
         private IEcfClient ResolveEcfClient(string rncEmisor, IEcfXmlSigner signer, AmbienteEnum ambiente, bool isDefaultFallback = true)
         {
@@ -292,26 +318,22 @@ namespace EcfDgii.Client.Api.Controllers
                 return _ecfClient;
             }
 
-            var cacheKey = $"{rncEmisor}:{(int)ambiente}:{signer.GetHashCode()}";
-            return _clientCache.GetOrAdd(cacheKey, _ =>
+            var tenantOptions = new EcfClientOptions
             {
-                var tenantOptions = new EcfClientOptions
+                RncEmisor = rncEmisor,
+                Environment = ambiente switch
                 {
-                    RncEmisor = rncEmisor,
-                    Environment = ambiente switch
-                    {
-                        AmbienteEnum.PreCertificacion => EcfEnvironment.Test,
-                        AmbienteEnum.Certificacion => EcfEnvironment.Cert,
-                        AmbienteEnum.Produccion => EcfEnvironment.Prod,
-                        _ => EcfEnvironment.Cert
-                    },
-                    Mode = IntegrationMode.DgiiDirect,
-                    ValidateSchemasLocal = _ecfClientOptions.ValidateSchemasLocal,
-                    XsdDirectoryPath = _ecfClientOptions.XsdDirectoryPath
-                };
+                    AmbienteEnum.PreCertificacion => EcfEnvironment.Test,
+                    AmbienteEnum.Certificacion => EcfEnvironment.Cert,
+                    AmbienteEnum.Produccion => EcfEnvironment.Prod,
+                    _ => EcfEnvironment.Cert
+                },
+                Mode = IntegrationMode.DgiiDirect,
+                ValidateSchemasLocal = _ecfClientOptions.ValidateSchemasLocal,
+                XsdDirectoryPath = _ecfClientOptions.XsdDirectoryPath
+            };
 
-                return new EcfClient(tenantOptions, signer: signer, schemaValidator: _schemaValidator);
-            });
+            return new EcfClient(tenantOptions, signer: signer, schemaValidator: _schemaValidator, cacheService: _cacheService);
         }
 
         private static readonly HashSet<string> ValidTipoComprobantes = new(StringComparer.OrdinalIgnoreCase)
@@ -1076,6 +1098,7 @@ namespace EcfDgii.Client.Api.Controllers
                         doc.TrackId = response.TrackId;
                         doc.State = "Signed";
                         doc.SentToDgiiAt = _clock.UtcNow.UtcDateTime;
+                        await TryImmediateTrackIdResolutionAsync(doc, effectiveClient);
                     }
                     else if (response != null && (!string.IsNullOrWhiteSpace(response.Error) || (response.Mensaje != null && response.Mensaje.Contains("rechazado", StringComparison.OrdinalIgnoreCase))))
                     {
@@ -1116,6 +1139,70 @@ namespace EcfDgii.Client.Api.Controllers
                 environment = doc.Ambiente,
                 sourceTxnId = doc.SourceTxnId
             });
+        }
+
+        private async Task TryImmediateTrackIdResolutionAsync(EcfDocument doc, IEcfClient client)
+        {
+            if (string.IsNullOrWhiteSpace(doc.TrackId))
+            {
+                return;
+            }
+
+            try
+            {
+                var resultado = await client.ConsultarResultadoAsync(doc.TrackId);
+                if (resultado != null && string.Equals(resultado.Estado?.Trim(), "En Proceso", StringComparison.OrdinalIgnoreCase))
+                {
+                    await Task.Delay(350);
+                    resultado = await client.ConsultarResultadoAsync(doc.TrackId);
+                }
+
+                if (ApplyConsultaResultadoToDocument(doc, resultado))
+                {
+                    doc.LastStatusCheckAt = _clock.UtcNow.UtcDateTime;
+                    doc.StatusCheckAttempts = Math.Max(1, doc.StatusCheckAttempts + 1);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Consulta inmediata post-emisión no concluyente para {ENcf} (TrackId {TrackId}); continuará vía reconciliación.", doc.ENcf, doc.TrackId);
+            }
+        }
+
+        private bool ApplyConsultaResultadoToDocument(EcfDocument doc, ConsultaResultadoResponse? resultado)
+        {
+            if (resultado == null || string.IsNullOrWhiteSpace(resultado.Estado))
+            {
+                return false;
+            }
+
+            var estado = resultado.Estado.Trim();
+            var formattedDetails = resultado.Mensajes != null && resultado.Mensajes.Count > 0
+                ? string.Join("; ", resultado.Mensajes.Select(m => $"[{m.Codigo}] {m.Valor}"))
+                : null;
+
+            if (string.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(estado, "Aceptado condicional", StringComparison.OrdinalIgnoreCase))
+            {
+                doc.State = "AcceptedByDgii";
+                doc.DgiiResponseXml = !string.IsNullOrWhiteSpace(formattedDetails)
+                    ? $"[{estado}] {formattedDetails}"
+                    : $"Aceptado por DGII: {estado}";
+                _logger.LogInformation("e-CF {ENcf} confirmado inmediatamente por DGII como '{Estado}' (TrackId: {TrackId}).", doc.ENcf, estado, doc.TrackId);
+                return true;
+            }
+
+            if (string.Equals(estado, "Rechazado", StringComparison.OrdinalIgnoreCase))
+            {
+                doc.State = "RejectedByDgii";
+                doc.DgiiResponseXml = !string.IsNullOrWhiteSpace(formattedDetails)
+                    ? $"[{estado}] {formattedDetails}"
+                    : "Rechazado por DGII";
+                _logger.LogWarning("e-CF {ENcf} rechazado por DGII tras consulta de TrackId {TrackId}: {Errors}", doc.ENcf, doc.TrackId, doc.DgiiResponseXml);
+                return true;
+            }
+
+            return false;
         }
 
         private IQueryable<EcfDocument> ApplyLookupEnvironmentScope(IQueryable<EcfDocument> query, string? targetAmbienteStr, AmbienteEnum targetAmbiente)
@@ -1167,6 +1254,8 @@ namespace EcfDgii.Client.Api.Controllers
                 .Select(d => new
                 {
                     d.Id,
+                    d.TenantId,
+                    d.RncEmisor,
                     d.Ncf,
                     d.ENcf,
                     d.State,
@@ -1179,7 +1268,9 @@ namespace EcfDgii.Client.Api.Controllers
                     d.SignedXmlContent,
                     d.DgiiResponseXml,
                     d.Ambiente,
-                    d.SourceTxnId
+                    d.SourceTxnId,
+                    d.LastStatusCheckAt,
+                    d.StatusCheckAttempts
                 })
                 .FirstOrDefaultAsync();
 
@@ -1192,6 +1283,8 @@ namespace EcfDgii.Client.Api.Controllers
                     .Select(d => new
                     {
                         d.Id,
+                        d.TenantId,
+                        d.RncEmisor,
                         d.Ncf,
                         d.ENcf,
                         d.State,
@@ -1204,7 +1297,9 @@ namespace EcfDgii.Client.Api.Controllers
                         d.SignedXmlContent,
                         d.DgiiResponseXml,
                         d.Ambiente,
-                        d.SourceTxnId
+                        d.SourceTxnId,
+                        d.LastStatusCheckAt,
+                        d.StatusCheckAttempts
                     })
                     .FirstOrDefaultAsync();
             }
@@ -1218,6 +1313,8 @@ namespace EcfDgii.Client.Api.Controllers
                     .Select(d => new
                     {
                         d.Id,
+                        d.TenantId,
+                        d.RncEmisor,
                         d.Ncf,
                         d.ENcf,
                         d.State,
@@ -1230,7 +1327,9 @@ namespace EcfDgii.Client.Api.Controllers
                         d.SignedXmlContent,
                         d.DgiiResponseXml,
                         d.Ambiente,
-                        d.SourceTxnId
+                        d.SourceTxnId,
+                        d.LastStatusCheckAt,
+                        d.StatusCheckAttempts
                     })
                     .FirstOrDefaultAsync();
             }
@@ -1240,20 +1339,53 @@ namespace EcfDgii.Client.Api.Controllers
                 return NotFound(new { error = $"Document with source TxnId '{txnId}' not found." });
             }
 
+            var liveState = doc.State;
+            var liveDgiiResponse = doc.DgiiResponseXml;
+            var nowUtc = _clock.UtcNow.UtcDateTime;
+
+            if ((liveState == "Signed" || liveState == "SentToDgii")
+                && !string.IsNullOrWhiteSpace(doc.TrackId)
+                && (doc.LastStatusCheckAt == null || (nowUtc - doc.LastStatusCheckAt.Value).TotalSeconds >= 4))
+            {
+                try
+                {
+                    var isDefaultFallback = doc.TenantId == "default-tenant";
+                    var effectiveSigner = await ResolveSignerAsync(doc.TenantId, doc.RncEmisor, null, isDefaultFallback);
+                    var ambiente = ResolveAmbienteEnum(doc.Ambiente);
+                    var client = ResolveEcfClient(doc.RncEmisor, effectiveSigner, ambiente, isDefaultFallback);
+                    var resultado = await client.ConsultarResultadoAsync(doc.TrackId);
+
+                    var trackedDoc = await _db.EcfDocuments.FirstOrDefaultAsync(d => d.Id == doc.Id);
+                    if (trackedDoc != null)
+                    {
+                        trackedDoc.LastStatusCheckAt = nowUtc;
+                        trackedDoc.StatusCheckAttempts = trackedDoc.StatusCheckAttempts + 1;
+                        ApplyConsultaResultadoToDocument(trackedDoc, resultado);
+                        await _db.SaveChangesAsync();
+                        liveState = trackedDoc.State;
+                        liveDgiiResponse = trackedDoc.DgiiResponseXml;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Consulta dinámica en GetBySourceTxnId para {ENcf} (TrackId {TrackId}) no completada.", doc.ENcf, doc.TrackId);
+                }
+            }
+
             return Ok(new
             {
                 documentId = doc.Id,
                 ncf = doc.Ncf,
                 eNcf = doc.ENcf,
-                state = doc.State,
+                state = liveState,
                 trackId = doc.TrackId,
                 securityCode = ResolveEffectiveSecurityCode(doc.SecurityCode, doc.SignedRfceContent, doc.SignedXmlContent),
                 receiptDate = doc.ReceiptDate,
                 totalAmount = doc.TotalAmount,
                 itbisAmount = doc.ItbisAmount,
                 signedXml = !string.IsNullOrWhiteSpace(doc.SignedRfceContent) ? doc.SignedRfceContent : doc.SignedXmlContent,
-                dgiiResponse = doc.DgiiResponseXml,
-                dgiiResponseXml = doc.DgiiResponseXml,
+                dgiiResponse = liveDgiiResponse,
+                dgiiResponseXml = liveDgiiResponse,
                 environment = doc.Ambiente,
                 sourceTxnId = doc.SourceTxnId
             });

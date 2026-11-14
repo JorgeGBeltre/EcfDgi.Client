@@ -328,14 +328,62 @@ namespace EcfDgii.Client.Infrastructure.Dgii
             return await SendUnauthenticatedGetAsync<TimbreFcResponse>(url, ct);
         }
 
+        private async Task<T> SendStatusServiceGetAsync<T>(string url, CancellationToken ct) where T : new()
+        {
+            if (_tokenManager == null)
+            {
+                return await SendUnauthenticatedGetAsync<T>(url, ct);
+            }
+
+            var token = await _tokenManager.GetTokenAsync(ct);
+            using var apikeyReq = new HttpRequestMessage(HttpMethod.Get, url);
+            apikeyReq.Headers.TryAddWithoutValidation("Authorization", $"Apikey {token}");
+            apikeyReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            var response = await _httpClient.SendAsync(apikeyReq, ct);
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                response.Dispose();
+                using var bearerReq = new HttpRequestMessage(HttpMethod.Get, url);
+                bearerReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                bearerReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                response = await _httpClient.SendAsync(bearerReq, ct);
+
+                if (response.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    response.Dispose();
+                    await _tokenManager.InvalidateAsync(ct);
+                    var freshToken = await _tokenManager.GetTokenAsync(ct);
+                    using var retryReq = new HttpRequestMessage(HttpMethod.Get, url);
+                    retryReq.Headers.TryAddWithoutValidation("Authorization", $"Apikey {freshToken}");
+                    retryReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                    response = await _httpClient.SendAsync(retryReq, ct);
+                }
+            }
+
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync(ct);
+                    var truncated = errorBody.Length > 200 ? errorBody[..200] : errorBody;
+                    throw new HttpRequestException($"DGII Error ({(int)response.StatusCode} {response.ReasonPhrase}): {truncated}");
+                }
+
+                var responseBody = await response.Content.ReadAsStringAsync(ct);
+                var result = JsonSerializer.Deserialize<T>(responseBody, JsonOptions);
+                return result ?? new T();
+            }
+        }
+
         public async Task<List<EstatusServicio>> ConsultarEstatusServiciosAsync(CancellationToken ct = default)
         {
-            return await SendUnauthenticatedGetAsync<List<EstatusServicio>>($"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerestatus", ct);
+            return await SendStatusServiceGetAsync<List<EstatusServicio>>($"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerestatus", ct);
         }
 
         public async Task<List<VentanaMantenimiento>> ConsultarVentanasMantenimientoAsync(CancellationToken ct = default)
         {
-            return await SendUnauthenticatedGetAsync<List<VentanaMantenimiento>>($"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerventanasmantenimiento", ct);
+            return await SendStatusServiceGetAsync<List<VentanaMantenimiento>>($"{_config.EstatusServiciosUrl}/api/estatusservicios/obtenerventanasmantenimiento", ct);
         }
 
         public async Task<string> VerificarEstadoAmbienteAsync(AmbienteEnum ambiente, CancellationToken ct = default)

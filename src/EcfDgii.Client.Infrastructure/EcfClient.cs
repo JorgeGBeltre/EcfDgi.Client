@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using EcfDgii.Client.Domain.Interfaces;
 using EcfDgii.Client.Domain.Entities;
 using EcfDgii.Client.Domain.Exceptions;
+using EcfDgii.Client.Application.Common.Interfaces;
 using EcfDgii.Client.Application.Services;
 using EcfDgii.Client.Infrastructure.Dgii;
 using EcfDgii.Client.Infrastructure.Security;
@@ -28,13 +29,32 @@ namespace EcfDgii.Client
 
         private const decimal RfceThreshold = 250_000.00m;
 
+        public static readonly HttpClient SharedHttpClient = CreateSharedHttpClient();
+
+        private static HttpClient CreateSharedHttpClient()
+        {
+            var handler = new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                EnableMultipleHttp2Connections = true,
+                MaxConnectionsPerServer = 64
+            };
+            return new HttpClient(handler, disposeHandler: false)
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
+        }
+
         public EcfClient(
             EcfClientOptions? options = null,
             IEcfTransport? transport = null,
             IEcfSequenceProvider? sequenceProvider = null,
             IEcfXmlSigner? signer = null,
             IEcfSchemaValidator? schemaValidator = null,
-            HttpClient? httpClient = null)
+            HttpClient? httpClient = null,
+            ICacheService? cacheService = null)
         {
             _options = options ?? new EcfClientOptions();
             _validator = new EcfValidator();
@@ -56,14 +76,8 @@ namespace EcfDgii.Client
             }
             else
             {
-                var handler = new SocketsHttpHandler
-                {
-                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
-                    PooledConnectionIdleTimeout = TimeSpan.FromSeconds(45),
-                    ConnectTimeout = TimeSpan.FromSeconds(10)
-                };
-                _httpClient = new HttpClient(handler, disposeHandler: true) { Timeout = TimeSpan.FromSeconds(30) };
-                _ownsHttpClient = true;
+                _httpClient = SharedHttpClient;
+                _ownsHttpClient = false;
             }
 
             if (_options.Mode == IntegrationMode.DgiiDirect)
@@ -79,7 +93,7 @@ namespace EcfDgii.Client
                     _ => AmbienteEnum.Certificacion
                 };
                 var envConfig = EcfEnvironmentConfig.GetConfig(ambiente);
-                var tokenManager = new EcfTokenManager(_httpClient, _signer, envConfig, _options.RncEmisor);
+                var tokenManager = new EcfTokenManager(_httpClient, _signer, envConfig, _options.RncEmisor, cacheService);
 
                 _transport = new DgiiDirectTransport(_httpClient, tokenManager, envConfig);
             }

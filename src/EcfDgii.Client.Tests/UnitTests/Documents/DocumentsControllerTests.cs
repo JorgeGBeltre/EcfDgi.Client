@@ -1117,5 +1117,75 @@ namespace EcfDgii.Client.UnitTests.Documents
                 s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
                 Times.Never);
         }
+
+        [Fact]
+        public async Task SubmitCanonicalDocument_WhenConsultarResultadoReturnsAceptadoImmediately_TransitionsDirectlyToAcceptedByDgii()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock.Setup(s => s.GetNextEncfAsync("default-tenant", "E31", It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E310000000795");
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-IMM-795" });
+            ecfClientMock.Setup(c => c.ConsultarResultadoAsync("TRACK-IMM-795", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaResultadoResponse { Estado = "Aceptado" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock.Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
+                .Returns((string xml, string rnc) => FakeSignedXml);
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var result = await controller.SubmitCanonicalDocument(MakeDto("TXN-IMM-795", "1"));
+
+            var accepted = Assert.IsType<AcceptedResult>(result);
+            var json = System.Text.Json.JsonSerializer.Serialize(accepted.Value);
+            Assert.Contains("AcceptedByDgii", json);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Equal("AcceptedByDgii", stored.State);
+            Assert.Equal("TRACK-IMM-795", stored.TrackId);
+            Assert.Equal(1, stored.StatusCheckAttempts);
+            Assert.NotNull(stored.LastStatusCheckAt);
+        }
+
+        [Fact]
+        public async Task GetBySourceTxnId_WhenDocumentIsSignedAndDgiiConfirmedAceptado_DynamicallyReconcilesAndPersistsAcceptedByDgii()
+        {
+            var db = NewDb();
+            db.EcfDocuments.Add(new EcfDocument
+            {
+                TenantId = "default-tenant",
+                SourceTxnId = "TXN-LIVE-795",
+                EditSequence = "1",
+                ENcf = "E310000000796",
+                RncEmisor = "101000001",
+                RncComprador = "130000000",
+                TrackId = "TRACK-LIVE-796",
+                SecurityCode = "AbC123",
+                Ambiente = "PreCertificacion",
+                State = "Signed",
+                SentToDgiiAt = DateTime.UtcNow.AddSeconds(-6),
+                XmlContent = "<ECF/>",
+                SignedXmlContent = FakeSignedXml
+            });
+            await db.SaveChangesAsync();
+
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock.Setup(c => c.ConsultarResultadoAsync("TRACK-LIVE-796", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaResultadoResponse { Estado = "Aceptado" });
+            var signerMock = new Mock<IEcfXmlSigner>();
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var result = await controller.GetBySourceTxnId("TXN-LIVE-795");
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
+            Assert.Contains("AcceptedByDgii", json);
+
+            var stored = await db.EcfDocuments.SingleAsync();
+            Assert.Equal("AcceptedByDgii", stored.State);
+            Assert.Equal(1, stored.StatusCheckAttempts);
+        }
     }
 }
