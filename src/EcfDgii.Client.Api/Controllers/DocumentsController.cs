@@ -615,6 +615,12 @@ namespace EcfDgii.Client.Api.Controllers
 
             var editSequence = dto.SourceReference.EditSequence ?? string.Empty;
 
+            var buyerRuleError = await ResolveAndValidateNoteBuyerIdentifiersAsync(dto, tenantId, ambiente);
+            if (buyerRuleError != null)
+            {
+                return BadRequest(new { error = buyerRuleError });
+            }
+
             var creditNoteCapError = await ValidateCreditNoteCapAgainstModifiedDocumentAsync(dto, tenantId, ambiente);
             if (creditNoteCapError != null)
             {
@@ -759,6 +765,174 @@ namespace EcfDgii.Client.Api.Controllers
             return null;
         }
 
+        private static bool ModifiesRncMandatoryVoucher(string? rawRefEncf)
+        {
+            if (string.IsNullOrWhiteSpace(rawRefEncf)) return false;
+            var trimmed = rawRefEncf.Trim();
+            var normalized = NcfNormalizer.Normalize(trimmed);
+            return trimmed.StartsWith("E31", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("E31", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("B01", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("E41", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("E41", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("B11", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("E45", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("E45", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("B15", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ModifiesExportVoucher(string? rawRefEncf)
+        {
+            if (string.IsNullOrWhiteSpace(rawRefEncf)) return false;
+            var trimmed = rawRefEncf.Trim();
+            var normalized = NcfNormalizer.Normalize(trimmed);
+            return trimmed.StartsWith("E46", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("E46", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("B16", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ModifiesGastosMenoresVoucher(string? rawRefEncf)
+        {
+            if (string.IsNullOrWhiteSpace(rawRefEncf)) return false;
+            var trimmed = rawRefEncf.Trim();
+            var normalized = NcfNormalizer.Normalize(trimmed);
+            return trimmed.StartsWith("E43", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("E43", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("B13", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task<string?> ResolveAndValidateNoteBuyerIdentifiersAsync(CanonicalDocumentDto dto, string tenantId, AmbienteEnum ambiente)
+        {
+            if (!string.Equals(dto.TipoComprobante, "E34", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(dto.TipoComprobante, "E33", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var rawRef = dto.References?.CorrectsENcf?.Trim();
+            if (string.IsNullOrWhiteSpace(rawRef) || ModifiesGastosMenoresVoucher(rawRef))
+            {
+                return null;
+            }
+
+            EcfDocument? modifiedDoc = null;
+            if (rawRef.StartsWith("E", StringComparison.OrdinalIgnoreCase))
+            {
+                var envStr = ambiente.ToString();
+                var rncEmisor = !string.IsNullOrWhiteSpace(dto.Header?.RncEmisor) ? dto.Header.RncEmisor.Trim() : _emisorRnc;
+                modifiedDoc = await _db.EcfDocuments
+                    .AsNoTracking()
+                    .Where(d => d.ENcf == rawRef &&
+                                (d.TenantId == tenantId || d.RncEmisor == rncEmisor) &&
+                                (d.Ambiente == null || d.Ambiente == envStr) &&
+                                d.State != "RejectedByDgii")
+                    .OrderByDescending(d => d.State == "AcceptedByDgii" ? 1 : 0)
+                    .ThenByDescending(d => d.CreatedAt)
+                    .FirstOrDefaultAsync();
+            }
+
+            string? origXmlRnc = null;
+            string? origXmlForeignId = null;
+            var origXml = modifiedDoc?.SignedXmlContent ?? modifiedDoc?.XmlContent;
+            if (!string.IsNullOrWhiteSpace(origXml))
+            {
+                var rncMatch = System.Text.RegularExpressions.Regex.Match(origXml, @"<RNCComprador>\s*([^<\s]+)\s*</RNCComprador>");
+                if (rncMatch.Success) origXmlRnc = rncMatch.Groups[1].Value.Trim();
+
+                var foreignMatch = System.Text.RegularExpressions.Regex.Match(origXml, @"<IdentificadorExtranjero>\s*([^<]+?)\s*</IdentificadorExtranjero>");
+                if (foreignMatch.Success) origXmlForeignId = foreignMatch.Groups[1].Value.Trim();
+            }
+
+            dto.Header ??= new CanonicalHeaderDto();
+
+            if (ModifiesRncMandatoryVoucher(rawRef) || !string.IsNullOrWhiteSpace(origXmlRnc))
+            {
+                dto.Header.IdentificadorExtranjero = null;
+
+                var incomingRawRnc = dto.Header.RncComprador?.Trim() ?? string.Empty;
+                var incomingHasAlpha = !string.IsNullOrEmpty(incomingRawRnc) && System.Text.RegularExpressions.Regex.IsMatch(incomingRawRnc, @"[A-Za-z]");
+                var incomingDigits = incomingHasAlpha
+                    ? string.Empty
+                    : System.Text.RegularExpressions.Regex.Replace(incomingRawRnc, @"[^\d]", "");
+
+                if (incomingDigits.Length is not (9 or 11))
+                {
+                    var fallbackDigits = System.Text.RegularExpressions.Regex.Replace(
+                        origXmlRnc ?? modifiedDoc?.RncComprador ?? string.Empty,
+                        @"[^\d]",
+                        "");
+                    if (fallbackDigits.Length is 9 or 11)
+                    {
+                        incomingDigits = fallbackDigits;
+                    }
+                }
+
+                if (incomingDigits.Length is not (9 or 11))
+                {
+                    _logger.LogWarning(
+                        "Regla DGII [1381] bloqueada antes de asignar secuencia: {Tipo} {TxnId} modifica '{TargetRef}' pero carece de RNCComprador válido (recibido: '{RawRnc}').",
+                        dto.TipoComprobante, dto.SourceReference?.TxnId, rawRef, dto.Header.RncComprador);
+                    return $"[Rechazado] [1381] El campo RNCComprador del área Comprador de la sección Encabezado es obligatorio para {dto.TipoComprobante} que modifica el comprobante '{rawRef}'. Debe registrar un RNC (9 dígitos) o Cédula (11 dígitos) válido.";
+                }
+
+                dto.Header.RncComprador = incomingDigits;
+                return null;
+            }
+
+            if (ModifiesExportVoucher(rawRef) || (!string.IsNullOrWhiteSpace(origXmlForeignId) && string.IsNullOrWhiteSpace(origXmlRnc)))
+            {
+                dto.Header.RncComprador = string.Empty;
+                if (!string.IsNullOrWhiteSpace(origXmlForeignId))
+                {
+                    dto.Header.IdentificadorExtranjero = origXmlForeignId;
+                }
+                else if (string.IsNullOrWhiteSpace(dto.Header.IdentificadorExtranjero))
+                {
+                    dto.Header.IdentificadorExtranjero = "EXTRANJERO";
+                }
+                return null;
+            }
+
+            var rawRnc = dto.Header.RncComprador?.Trim() ?? string.Empty;
+            var hasAlpha = !string.IsNullOrEmpty(rawRnc) && System.Text.RegularExpressions.Regex.IsMatch(rawRnc, @"[A-Za-z]");
+            var cleanRnc = System.Text.RegularExpressions.Regex.Replace(rawRnc, @"[^\d]", "");
+            var rawForeign = dto.Header.IdentificadorExtranjero?.Trim() ?? string.Empty;
+
+            if (!hasAlpha && cleanRnc.Length is 9 or 11 && !string.IsNullOrEmpty(rawForeign))
+            {
+                var foreignDigits = System.Text.RegularExpressions.Regex.Replace(rawForeign, @"[^\d]", "");
+                if (string.Equals(foreignDigits, cleanRnc, StringComparison.Ordinal) || !System.Text.RegularExpressions.Regex.IsMatch(rawForeign, @"[A-Za-z]"))
+                {
+                    dto.Header.IdentificadorExtranjero = null;
+                }
+            }
+
+            var normalizedRef = NcfNormalizer.Normalize(rawRef);
+            var modifiesPagosExterior = rawRef.StartsWith("E47", StringComparison.OrdinalIgnoreCase) ||
+                                        normalizedRef.StartsWith("E47", StringComparison.OrdinalIgnoreCase) ||
+                                        normalizedRef.StartsWith("B17", StringComparison.OrdinalIgnoreCase);
+            if (!modifiesPagosExterior)
+            {
+                var isForeignCurr = !string.IsNullOrWhiteSpace(dto.Currency?.Code) &&
+                                    !string.Equals(dto.Currency.Code.Trim(), "DOP", StringComparison.OrdinalIgnoreCase) &&
+                                    (dto.Currency?.ExchangeRate ?? 0m) > 0m;
+                var totalDop = isForeignCurr
+                    ? Math.Round((dto.Totals?.MontoTotal ?? 0m) * dto.Currency!.ExchangeRate, 2, MidpointRounding.AwayFromZero)
+                    : (dto.Totals?.MontoTotal ?? 0m);
+                if (totalDop >= 250000m)
+                {
+                    var hasValidRnc = !hasAlpha && cleanRnc.Length is 9 or 11;
+                    var hasValidForeign = !string.IsNullOrWhiteSpace(dto.Header.IdentificadorExtranjero) || hasAlpha;
+                    if (!hasValidRnc && !hasValidForeign)
+                    {
+                        return $"[Rechazado] [1381] El campo RNCComprador (o IdentificadorExtranjero) del área Comprador de la sección Encabezado es obligatorio para {dto.TipoComprobante} con MontoTotal >= RD$250,000.00.";
+                    }
+                }
+            }
+
+            return null;
+        }
+
         private async Task<IActionResult> HandleExistingDocumentAsync(EcfDocument existingDoc, CanonicalDocumentDto dto, string editSequence, AmbienteEnum? ambiente = null, bool? isDefaultFallbackParam = null)
         {
             var isDefaultFallback = isDefaultFallbackParam ?? ComputeIsDefaultFallback(existingDoc.TenantId, dto, dto.Environment, false);
@@ -783,6 +957,12 @@ namespace EcfDgii.Client.Api.Controllers
 
                 var rawEnv = Request.Headers.TryGetValue("X-Environment", out var hEnv) ? hEnv.ToString() : dto.Environment;
                 var effectiveAmbiente = ambiente ?? ResolveAmbienteEnum(rawEnv);
+
+                var buyerRuleError = await ResolveAndValidateNoteBuyerIdentifiersAsync(dto, tenantId, effectiveAmbiente);
+                if (buyerRuleError != null)
+                {
+                    return BadRequest(new { error = buyerRuleError });
+                }
 
                 var creditNoteCapError = await ValidateCreditNoteCapAgainstModifiedDocumentAsync(dto, tenantId, effectiveAmbiente);
                 if (creditNoteCapError != null)
@@ -2099,29 +2279,45 @@ namespace EcfDgii.Client.Api.Controllers
                 }
                 else
                 {
-                    if (!string.IsNullOrWhiteSpace(dto.Header?.IdentificadorExtranjero) && tipoEcf is "32" or "33" or "34" or "44")
+                    var requiresDomesticRnc = tipoEcf is "31" or "41" or "45" ||
+                                              (tipoEcf is "33" or "34" && ModifiesRncMandatoryVoucher(rawRefEncf));
+                    var rawRnc = dto.Header?.RncComprador?.Trim() ?? string.Empty;
+                    var cleanRnc = System.Text.RegularExpressions.Regex.Replace(rawRnc, @"[^\d]", "");
+                    var rncHasAlpha = !string.IsNullOrEmpty(rawRnc) && System.Text.RegularExpressions.Regex.IsMatch(rawRnc, @"[A-Za-z]");
+                    var rawForeign = dto.Header?.IdentificadorExtranjero?.Trim() ?? string.Empty;
+                    var foreignDigits = System.Text.RegularExpressions.Regex.Replace(rawForeign, @"[^\d]", "");
+                    var foreignDuplicatesDomesticRnc = !rncHasAlpha && cleanRnc.Length is 9 or 11 &&
+                        !string.IsNullOrEmpty(rawForeign) &&
+                        (string.Equals(foreignDigits, cleanRnc, StringComparison.Ordinal) || !System.Text.RegularExpressions.Regex.IsMatch(rawForeign, @"[A-Za-z]"));
+
+                    if (requiresDomesticRnc)
                     {
-                        var foreignId = dto.Header.IdentificadorExtranjero.Trim();
-                        if (foreignId.Length > 20) foreignId = foreignId[..20];
+                        var effectiveDomesticRnc = !rncHasAlpha && cleanRnc.Length is 9 or 11
+                            ? cleanRnc
+                            : (foreignDigits.Length is 9 or 11 ? foreignDigits : cleanRnc);
+                        if (!string.IsNullOrEmpty(effectiveDomesticRnc))
+                        {
+                            sb.AppendLine($"      <RNCComprador>{effectiveDomesticRnc}</RNCComprador>");
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(rawForeign) && !foreignDuplicatesDomesticRnc && tipoEcf is "32" or "33" or "34" or "44")
+                    {
+                        var foreignId = rawForeign.Length > 20 ? rawForeign[..20] : rawForeign;
                         sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
                     }
-                    else if (!string.IsNullOrWhiteSpace(dto.Header?.RncComprador))
+                    else if (!string.IsNullOrWhiteSpace(rawRnc))
                     {
-                        if (System.Text.RegularExpressions.Regex.IsMatch(dto.Header.RncComprador, @"[A-Za-z]") && tipoEcf is "32" or "33" or "34" or "44")
+                        if (rncHasAlpha && tipoEcf is "32" or "33" or "34" or "44")
                         {
-                            var foreignId = dto.Header.RncComprador.Length > 20 ? dto.Header.RncComprador[..20] : dto.Header.RncComprador;
+                            var foreignId = rawRnc.Length > 20 ? rawRnc[..20] : rawRnc;
                             sb.AppendLine($"      <IdentificadorExtranjero>{EscapeXml(foreignId)}</IdentificadorExtranjero>");
                         }
-                        else
+                        else if (cleanRnc.Length is 9 or 11 || tipoEcf is "31" or "41" or "45")
                         {
-                            var cleanRnc = System.Text.RegularExpressions.Regex.Replace(dto.Header.RncComprador, @"[^\d]", "");
-                            if (cleanRnc.Length is 9 or 11 || tipoEcf is "31" or "41" or "45")
-                            {
-                                sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
-                            }
+                            sb.AppendLine($"      <RNCComprador>{cleanRnc}</RNCComprador>");
                         }
                     }
-                    else if (tipoEcf is "33" or "34" && (dto.References?.CorrectsENcf?.Trim().StartsWith("E46", StringComparison.OrdinalIgnoreCase) == true || NcfNormalizer.Normalize(dto.References?.CorrectsENcf).StartsWith("B16", StringComparison.OrdinalIgnoreCase)))
+                    else if (tipoEcf is "33" or "34" && ModifiesExportVoucher(rawRefEncf))
                     {
                         sb.AppendLine("      <IdentificadorExtranjero>EXTRANJERO</IdentificadorExtranjero>");
                     }
