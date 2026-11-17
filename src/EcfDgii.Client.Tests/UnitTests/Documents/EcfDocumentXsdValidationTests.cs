@@ -2005,5 +2005,61 @@ namespace EcfDgii.Client.UnitTests.Documents
             var val43 = new EcfSchemaValidator().Validate(xml43, XsdPath("e-CF 43 v.1.0.xsd"));
             Assert.True(val43.IsValid, string.Join("\n", val43.Errors));
         }
+
+        [Fact]
+        public async Task Tipo34_ModifyingE31_WithDuplicateIdentificadorExtranjero_EmitsRncCompradorAndPassesOfficialXsd()
+        {
+            var (controller34, db34, _, _) = MakeRealController("E340000000825");
+            var dto34 = new CanonicalDocumentDto
+            {
+                DocumentKind = "CreditNote",
+                TipoComprobante = "E34",
+                SourceReference = new SourceReferenceDto { TxnId = "TXN-34-1381-XSD", EditSequence = "1" },
+                Header = new CanonicalHeaderDto
+                {
+                    RncComprador = "00100000018",
+                    IdentificadorExtranjero = "00100000018",
+                    RazonSocialComprador = "COMERCIAL DEMO",
+                    FechaEmision = "2026-11-17"
+                },
+                Totals = new CanonicalTotalsDto
+                {
+                    MontoSubtotal = 1566400.00m,
+                    MontoGravadoTotal = 1566400.00m,
+                    MontoItbis = 281952.00m,
+                    MontoTotal = 1848352.00m
+                },
+                Lines =
+                [
+                    new()
+                    {
+                        LineNumber = 1,
+                        ItemName = "Descuento por Ajuste de precios",
+                        Quantity = 1m,
+                        UnitPrice = 1566400.00m,
+                        Amount = 1566400.00m,
+                        IndicadorFacturacion = "1"
+                    }
+                ],
+                References = new CanonicalReferencesDto
+                {
+                    CorrectsENcf = "E310000000139",
+                    CodigoModificacion = 3,
+                    FechaNcfModificado = "2026-10-28",
+                    RazonModificacion = "Ajuste de precios"
+                }
+            };
+
+            var res34 = await controller34.SubmitCanonicalDocument(dto34);
+            Assert.IsType<AcceptedResult>(res34);
+            var doc34 = await db34.EcfDocuments.SingleAsync();
+            var xml34 = doc34.SignedXmlContent!;
+
+            Assert.Contains("<RNCComprador>00100000018</RNCComprador>", xml34);
+            Assert.DoesNotContain("<IdentificadorExtranjero>", xml34);
+
+            var val34 = new EcfSchemaValidator().Validate(xml34, XsdPath("e-CF 34 v.1.0.xsd"));
+            Assert.True(val34.IsValid, string.Join("\n", val34.Errors));
+        }
     }
 }

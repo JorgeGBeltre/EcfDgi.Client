@@ -1187,5 +1187,122 @@ namespace EcfDgii.Client.UnitTests.Documents
             Assert.Equal("AcceptedByDgii", stored.State);
             Assert.Equal(1, stored.StatusCheckAttempts);
         }
+
+        [Fact]
+        public async Task CreditNote_ModifyingE31_WithDuplicateIdentificadorExtranjero_EmitsRncCompradorAndOmitsIdentificadorExtranjero()
+        {
+            var db = NewDb();
+            db.EcfDocuments.Add(new EcfDocument
+            {
+                TenantId = "default-tenant",
+                Ambiente = "PreCertificacion",
+                RncEmisor = "101000001",
+                RncComprador = "00100000018",
+                ENcf = "E310000000050",
+                SourceTxnId = "ORIG-100000050",
+                EditSequence = "100000050",
+                State = "AcceptedByDgii",
+                TrackId = "TRACK-ORIG-050",
+                SecurityCode = "ABC050",
+                TotalAmount = 2000000.00m,
+                ItbisAmount = 305084.75m,
+                CreatedAt = DateTime.UtcNow.AddDays(-10),
+                XmlContent = "<ECF><Encabezado><Comprador><RNCComprador>00100000018</RNCComprador><RazonSocialComprador>CLIENTE DEMO</RazonSocialComprador></Comprador></Encabezado></ECF>",
+                SignedXmlContent = "<ECF><Encabezado><Comprador><RNCComprador>00100000018</RNCComprador><RazonSocialComprador>CLIENTE DEMO</RazonSocialComprador></Comprador></Encabezado></ECF>"
+            });
+            await db.SaveChangesAsync();
+
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            sequenceManagerMock
+                .Setup(s => s.GetNextEncfAsync(It.IsAny<string>(), "E34", It.IsAny<CancellationToken>()))
+                .ReturnsAsync("E340000000050");
+
+            var ecfClientMock = new Mock<IEcfClient>();
+            ecfClientMock
+                .Setup(c => c.SendEcfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new EcfRecepcionResponse { TrackId = "TRACK-CRN-050" });
+            ecfClientMock
+                .Setup(c => c.ConsultarResultadoAsync("TRACK-CRN-050", It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ConsultaResultadoResponse { Estado = "Aceptado" });
+
+            var signerMock = new Mock<IEcfXmlSigner>();
+            signerMock
+                .Setup(s => s.SignXml(It.IsAny<string>(), It.IsAny<string>()))
+                .Returns((string xml, string rnc) => FakeSignedXml);
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var dto = MakeDto("TXN-CRN-1381-A", "400000050");
+            dto.TipoComprobante = "E34";
+            dto.Header.RncComprador = "00100000018";
+            dto.Header.IdentificadorExtranjero = "00100000018";
+            dto.Header.RazonSocialComprador = "CLIENTE DEMO";
+            dto.Totals = new CanonicalTotalsDto
+            {
+                MontoSubtotal = 1000000.00m,
+                MontoGravadoTotal = 1000000.00m,
+                MontoItbis = 180000.00m,
+                MontoTotal = 1180000.00m
+            };
+            dto.Lines = new List<CanonicalLineDto>
+            {
+                new()
+                {
+                    LineNumber = 1,
+                    ItemName = "Descuento por ajuste de precios",
+                    Quantity = 1m,
+                    UnitPrice = 1000000.00m,
+                    Amount = 1000000.00m,
+                    IndicadorFacturacion = "1"
+                }
+            };
+            dto.References = new CanonicalReferencesDto
+            {
+                CorrectsENcf = "E310000000050",
+                CodigoModificacion = 3,
+                FechaNcfModificado = "2026-10-28",
+                RazonModificacion = "B0100000050"
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            Assert.IsType<AcceptedResult>(result);
+            var stored = await db.EcfDocuments.SingleAsync(d => d.ENcf == "E340000000050");
+            Assert.Contains("<RNCComprador>00100000018</RNCComprador>", stored.XmlContent);
+            Assert.DoesNotContain("<IdentificadorExtranjero>", stored.XmlContent);
+            Assert.Equal("AcceptedByDgii", stored.State);
+        }
+
+        [Fact]
+        public async Task CreditNote_ModifyingB01_WithoutRncComprador_ReturnsBadRequestRule1381WithoutAllocatingSequence()
+        {
+            var db = NewDb();
+            var sequenceManagerMock = new Mock<IEcfSequenceManager>();
+            var ecfClientMock = new Mock<IEcfClient>();
+            var signerMock = new Mock<IEcfXmlSigner>();
+
+            var controller = MakeController(db, sequenceManagerMock, ecfClientMock, signerMock);
+            var dto = MakeDto("TXN-CRN-1381-B", "400000051");
+            dto.TenantId = "sede-principal";
+            dto.Environment = "Produccion";
+            dto.TipoComprobante = "E34";
+            dto.Header.RncEmisor = "130000002";
+            dto.Header.RazonSocialEmisor = "COMERCIAL EJEMPLO SRL";
+            dto.Header.RncComprador = "";
+            dto.Header.RazonSocialComprador = "CLIENTE SIN RNC";
+            dto.References = new CanonicalReferencesDto
+            {
+                CorrectsENcf = "B0100000099",
+                CodigoModificacion = 3,
+                FechaNcfModificado = "2026-10-20",
+                RazonModificacion = "Ajuste parcial"
+            };
+
+            var result = await controller.SubmitCanonicalDocument(dto);
+
+            var badReq = Assert.IsType<BadRequestObjectResult>(result);
+            var json = System.Text.Json.JsonSerializer.Serialize(badReq.Value);
+            Assert.Contains("[1381]", json);
+            sequenceManagerMock.Verify(s => s.GetNextEncfAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
     }
 }
