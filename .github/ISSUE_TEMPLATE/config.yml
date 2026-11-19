@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/JorgeGBeltre/EcfDgi.Client/security/advisories/new
+    about: Privately report a security vulnerability. Do not open a public issue.
+  - name: Repository documentation
+    url: https://github.com/JorgeGBeltre/EcfDgi.Client#readme
+    about: Review the EcfDgii.Client API & SDK documentation before opening an issue.

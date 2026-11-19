@@ -1,0 +1,98 @@
+name: Bug report
+description: Report a reproducible defect in the EcfDgii.Client SDK, REST API, or DGII integration.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues before submitting.
+        Do not include `.p12`/`.pfx` certificates, private keys, passwords, JWT/HMAC secrets, real taxpayer RNCs/names, or unredacted fiscal XML.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Canonical ingestion or XML builder (/api/documents)
+        - Local XSD schema validation (15 DGII schemas)
+        - W3C XMLDSig signing or TenantSignerResolver
+        - DGII HTTP client, Semilla authentication, or direct endpoints (/api/ecf)
+        - Status polling or Uncertain document reconciliation
+        - B2B Emisor-Receptor interoperability (/fe/...)
+        - Multi-currency (OtraMoneda) or decimal calculations
+        - Persistence, EF Core migrations, or sequence allocation
+        - Security, JwtBearer, WorkerAuth HMAC, or multi-tenant isolation
+        - Docker, TestRunner (--sample-pdfs), or configuration
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: project_version
+    attributes:
+      label: Project version or commit SHA
+      description: Release tag or Git commit hash.
+    validations:
+      required: true
+  - type: input
+    id: dotnet_version
+    attributes:
+      label: .NET SDK / runtime version
+      placeholder: e.g. .NET 10.0.x (dotnet --info)
+  - type: dropdown
+    id: dgii_environment
+    attributes:
+      label: Target DGII environment, if applicable
+      options:
+        - Not applicable / offline unit test
+        - PreCertificacion (TestEcf)
+        - Certificacion (CertEcf)
+        - Produccion (Ecf)
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and infrastructure
+      placeholder: e.g. Ubuntu 24.04 / Windows 11, Docker Alpine, PostgreSQL 15, Redis 7
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem summary
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce using synthetic data
+      description: Include minimal CanonicalDocumentDto JSON, synthetic XML, or CLI steps (use demo RNCs like 101000001).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs, HTTP ProblemDetails, or stack trace
+      description: Redact credentials, personal/taxpayer data, certificate material, tokens, and real e-NCFs.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I searched existing issues before opening this report.
+          required: true
+        - label: I used strictly synthetic or anonymized demo data.
+          required: true
+        - label: I removed all secrets, certificates, tokens, and real taxpayer data.
+          required: true
