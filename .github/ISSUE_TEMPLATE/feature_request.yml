@@ -1,0 +1,67 @@
+name: Feature request
+description: Propose an enhancement to the EcfDgii.Client SDK, REST API, or DGII fiscal workflows.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For substantial architectural or REST contract changes, please describe the integration boundary clearly before submitting a pull request.
+        Do not include confidential customer, taxpayer, or credential information.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What limitation, ERP integration requirement, or operational need would this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Project area
+      multiple: true
+      options:
+        - Canonical DTO & ingestion (/api/documents)
+        - Core SDK & DGII transport (IEcfClient / DgiiDirectTransport)
+        - B2B Emisor-Receptor interoperability (/fe/*)
+        - e-CF document types (E31-E47, RFCE, ARECF, ACECF, ANECF)
+        - XML generation or 15-schema XSD validation
+        - W3C XMLDSig signing & certificate resolution
+        - Multi-currency (OtraMoneda)
+        - Persistence, sequences, or status reconciliation
+        - Security, JwtBearer, or WorkerAuth HMAC
+        - Docker, TestRunner, or developer experience
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: fiscal_reference
+    attributes:
+      label: DGII or technical reference
+      description: For fiscal features, cite the official DGII technical specification, rule, or XSD schema. Do not guess rule numbers.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and impact
+      description: Could this affect REST contracts, CanonicalDocumentDto, e-CF XML output, currency math, EF Core migrations, or multi-tenant isolation?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I searched existing issues before submitting this request.
+          required: true
+        - label: This request contains no secrets, certificates, or real taxpayer data.
+          required: true

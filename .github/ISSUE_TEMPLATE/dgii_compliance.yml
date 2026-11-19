@@ -1,0 +1,112 @@
+name: DGII compliance or fiscal behavior
+description: Report a suspected discrepancy involving DGII e-CF schemas, XML generation, or fiscal validation rules.
+title: "[DGII]: "
+labels:
+  - fiscal-compliance
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Provide an official DGII technical reference or XSD citation when available. Use only synthetic or fully anonymized examples.
+        Never publish a real e-CF, taxpayer/customer RNC or name, PKCS#12 certificate, or private key.
+  - type: dropdown
+    id: document_type
+    attributes:
+      label: e-CF document type
+      options:
+        - E31 (Factura de Crédito Fiscal)
+        - E32 (Factura de Consumo)
+        - E33 (Nota de Débito)
+        - E34 (Nota de Crédito)
+        - E41 (Comprobante de Compras)
+        - E43 (Gastos Menores)
+        - E44 (Regímenes Especiales)
+        - E45 (Gubernamental)
+        - E46 (Exportaciones)
+        - E47 (Pagos al Exterior)
+        - RFCE 32 (Resumen Factura de Consumo < RD$250,000)
+        - ARECF (Acuse de Recibo)
+        - ACECF (Aprobación Comercial)
+        - ANECF (Anulación de Secuencias)
+        - Semilla or authentication
+        - Other or multiple types
+    validations:
+      required: true
+  - type: input
+    id: project_version
+    attributes:
+      label: Project version or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: execution_path
+    attributes:
+      label: Where does the behavior occur?
+      options:
+        - Canonical ingestion & XML builder (POST /api/documents)
+        - Direct XML / RFCE endpoints (/api/ecf/*)
+        - B2B Emisor-Receptor endpoints (/fe/*)
+        - Local XSD validator (EcfSchemaValidator) or XMLDSig signer
+        - DGII status polling / Uncertain reconciliation
+        - Multiple components
+        - Not yet determined
+    validations:
+      required: true
+  - type: input
+    id: xml_section
+    attributes:
+      label: Affected XML section or element
+      placeholder: e.g. Encabezado/Comprador/RNCComprador, OtraMoneda, InformacionReferencia
+  - type: input
+    id: rule
+    attributes:
+      label: DGII rejection code or validation rule
+      placeholder: e.g. [613], [615], [1381]
+      description: Include only if verified from an official DGII response or specification.
+  - type: textarea
+    id: official_reference
+    attributes:
+      label: Official DGII reference
+      description: Technical report name, version, section, XSD file in "Documentación Técnica (XSD)", or official DGII documentation URL.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected fiscal behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual EcfDgii.Client behavior
+    validations:
+      required: true
+  - type: textarea
+    id: synthetic_example
+    attributes:
+      label: Synthetic CanonicalDocumentDto JSON or XML example
+      description: Use fictional demo RNCs (e.g. 101000001) and synthetic values only.
+      render: xml
+  - type: input
+    id: xsd
+    attributes:
+      label: XSD schema file/version, if known
+      placeholder: e.g. e-CF 34 v.1.0.xsd, RFCE 32 v.1.0.xsd
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Data safety confirmation
+      options:
+        - label: All examples and identifiers are synthetic or fully anonymized.
+          required: true
+        - label: No real taxpayer, customer, or employee data is included.
+          required: true
+        - label: No certificate, private key, password, API key, or token is included.
+          required: true
